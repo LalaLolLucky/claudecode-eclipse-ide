@@ -121,6 +121,11 @@ function list_sessions(string $root): array {
  *                            color the tool had live (green/red)
  *   {t:answered, text}     - the user's answer to an askUserQuestion card
  *   {t:text, text}         - assistant prose
+ *   {t:compact, trigger, preTokens, postTokens} - a /compact (or auto-compact)
+ *                            boundary; becomes the "Compacted chat" collapsible
+ *   {t:compact_summary, text} - that collapsible's body
+ *   {t:error, text}        - a backend error (rate limit, 529, ...) shown as the
+ *                            muted "! ..." line, never as assistant prose
  */
 function load_session(string $root, string $sid): array {
     $dir = projects_dir($root);
@@ -141,6 +146,13 @@ function load_session(string $root, string $sid): array {
         if ($type === 'user') {
             $c = $e['message']['content'] ?? '';
             if (is_string($c)) {
+                // A post-compaction summary is stored as a user line flagged
+                // isCompactSummary - surface it as the expandable "Compacted chat"
+                // body, never as a (huge) user bubble. Mirrors the Rust loader.
+                if (!empty($e['isCompactSummary'])) {
+                    $items[] = ['t' => 'compact_summary', 'text' => $c];
+                    continue;
+                }
                 $item = ['t' => 'user', 'content' => $c];
                 // The transcript uuid, so the GUI can target THIS message for
                 // per-message actions (rewind/fork/delete). Matches what the Rust
@@ -208,10 +220,41 @@ function load_session(string $root, string $sid): array {
                     }
                 }
             }
+        } elseif ($type === 'system') {
+            // Compaction marker (written by /compact or auto-compact). The jsonl
+            // uses camelCase compactMetadata (unlike the stream's compact_metadata).
+            if (($e['subtype'] ?? '') === 'compact_boundary') {
+                $md = $e['compactMetadata'] ?? [];
+                $trigger = (is_array($md) && is_string($md['trigger'] ?? null)) ? $md['trigger'] : 'manual';
+                $items[] = [
+                    't'          => 'compact',
+                    'trigger'    => $trigger,
+                    'preTokens'  => (int) (is_array($md) ? ($md['preTokens'] ?? 0) : 0),
+                    'postTokens' => (int) (is_array($md) ? ($md['postTokens'] ?? 0) : 0),
+                ];
+            }
         } elseif ($type === 'assistant') {
             if (!empty($e['partial'])) continue;
             $content = $e['message']['content'] ?? null;
             if (!is_array($content)) continue;
+            // A synthetic assistant message standing in for a backend error (529
+            // overload, session-limit hit, ...). The CLI flags it isApiErrorMessage;
+            // live it renders as the muted "! ..." line via onError, never as a
+            // paragraph, so a reload has to rebuild that same line.
+            if (!empty($e['isApiErrorMessage'])) {
+                $etext = '';
+                foreach ($content as $b) {
+                    if (($b['type'] ?? '') !== 'text') continue;
+                    $s2 = $b['text'] ?? '';
+                    if (is_string($s2) && $s2 !== '') {
+                        if ($etext !== '') $etext .= "
+";
+                        $etext .= $s2;
+                    }
+                }
+                if ($etext !== '') $items[] = ['t' => 'error', 'text' => $etext];
+                continue;
+            }
             // The model this turn ran on — attached to each item so the GUI can
             // resume the conversation with its last-used model + show it in the bar.
             $model = is_string($e['message']['model'] ?? null) ? $e['message']['model'] : '';
