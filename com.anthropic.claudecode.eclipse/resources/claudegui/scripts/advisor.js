@@ -40,6 +40,10 @@ function advisorCurrent() {
  *  once the user actually picks an advisor (nothing is echoed on cancel). */
 function openAdvisorCard(echoText) {
   closeMenus(); closeSlash();
+  // Opened synchronously by the user's own /advisor command — always the active
+  // tab, never a background stream tab (unlike onApprovalRequest/onAskQuestion,
+  // which are raised by a possibly-backgrounded tab's own CLI process).
+  const owner = activeTab();
   const OPTS = advisorOptions();
   const advisorChoice = advisorCurrent();
   const card = document.createElement('div'); card.className = 'decision advisor';
@@ -68,7 +72,7 @@ function openAdvisorCard(echoText) {
     resolved = true;
     document.removeEventListener('keydown', onKey, true);
     unregisterOverlayCancel();
-    clearBottomCard();
+    clearBottomCard(owner);
   }
   function cancel() { if (!resolved) done(); }
   function confirm(i) {
@@ -84,10 +88,11 @@ function openAdvisorCard(echoText) {
     // The "/advisor" echo lands HERE, not when the card opened: the command only
     // becomes part of the conversation once a choice is made. Cancel/Esc runs
     // cancel() instead, which adds nothing at all.
-    if (echoText) addUserMessage(echoText);
+    if (echoText) addUserMessage(echoText, null, null, null, nowIso());
     // Target the active tab: addSystem() would follow the render tab instead.
     addSystemTo(activeTab(), value ? 'Advisor set to ' + label + '.' : 'Advisor disabled.');
-    scrollBottom();
+    // force only with Smart Scroll Lock on — see its comment in chat.js.
+    scrollBottom(smartScrollLock);
   }
   function paint() {
     card.querySelectorAll('.dec-opt').forEach((el, j) => el.classList.toggle('sel', j === sel));
@@ -137,12 +142,8 @@ function openAdvisorCard(echoText) {
     if (n >= 1 && n <= OPTS.length) { e.preventDefault(); confirm(n - 1); }
   }
   document.addEventListener('keydown', onKey, true);
-  registerOverlayCancel(cancel, true);   // bottom card → tab-visibility guard applies
+  registerOverlayCancel(cancel, true, owner);   // bottom card → tab-visibility guard applies
 
-  showBottomCard(card);
-  // This card belongs to the tab it was opened from — never a background stream tab
-  // (showBottomCard defaults to rtab, which may be mid-stream elsewhere).
-  pendingCardOwner = activeTab();
-  renderBottomCard();
+  showBottomCard(card, owner);
 }
 

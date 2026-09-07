@@ -22,11 +22,25 @@ public final class NativeCore {
     }
 
     /**
-     * Loads the native library.  Tries OSGi's Bundle-NativeCode resolution first
-     * (which requires java.library.path to be set correctly), then falls back to
-     * extracting the library from the bundle's classpath resources to a temp file.
-     * The fallback is the reliable path on Linux/macOS where Bundle-NativeCode
-     * resolution may fail when the class is initialized on a non-OSGi worker thread.
+     * Loads the native library.  Tries OSGi's Bundle-NativeCode resolution
+     * first, then falls back to extracting the library out of the bundle's
+     * classpath resources into a temp file.
+     *
+     * This comment used to say the fallback was the reliable path on Linux and
+     * macOS because resolution "may fail when the class is initialized on a
+     * non-OSGi worker thread".  That was the wrong diagnosis of a real symptom.
+     * Every Bundle-NativeCode clause ended in a \ borrowed from Java source
+     * style; manifests continue on a newline plus one space and treat no
+     * character as an escape, so unfolding left the \ inside the value.  The
+     * osname attribute therefore parsed under the name "\ osname" and came back
+     * null on all nine clauses, matching fell to processor alone, the first
+     * x86-64 clause won on every OS, and a Linux or macOS JVM was handed the
+     * Windows .dll -- which failed here, silently, leaving the fallback to do
+     * the real work.  The header was corrected 2026-09-05.
+     *
+     * The fallback stays, and is still load-bearing: it is what serves any
+     * caller outside a running framework, such as a test harness loading this
+     * class straight off the classpath.
      */
     private static void loadNativeLibrary() {
         try {
@@ -61,11 +75,42 @@ public final class NativeCore {
     private static String nativeResourcePath() {
         String os   = System.getProperty("os.name",  "").toLowerCase(java.util.Locale.ROOT);
         String arch = System.getProperty("os.arch",  "").toLowerCase(java.util.Locale.ROOT);
-        String dir  = (arch.equals("aarch64") || arch.equals("arm64")) ? "aarch64" : "x86_64";
-        if (os.contains("win"))   return "/native/windows/" + dir + "/claude_eclipse_core.dll";
-        if (os.contains("linux")) return "/native/linux/"   + dir + "/libclaude_eclipse_core.so";
-        if (os.contains("mac"))   return "/native/macos/"   + dir + "/libclaude_eclipse_core.dylib";
+        String dir  = nativeArchDir(arch);
+        if (dir == null) return null;
+        if (os.contains("linux")) return "/native/linux/" + dir + "/libclaude_eclipse_core.so";
+
+        // Linux is the only riscv64 build, because Eclipse itself publishes a
+        // riscv64 IDE for Linux and for nothing else.  Without this guard a
+        // riscv64 JVM on any other OS resolves to a path that cannot exist --
+        // native/windows/riscv64/ and friends -- and fails in System.load()
+        // rather than reporting the platform as unsupported.
+        if ("riscv64".equals(dir)) return null;
+
+        if (os.contains("win"))     return "/native/windows/" + dir + "/claude_eclipse_core.dll";
+        if (os.contains("mac"))     return "/native/macos/"   + dir + "/libclaude_eclipse_core.dylib";
+        if (os.contains("freebsd")) return "/native/freebsd/" + dir + "/libclaude_eclipse_core.so";
         return null;
+    }
+
+    /**
+     * Maps {@code os.arch} onto a bundled native directory, or null when no
+     * build exists for that architecture.
+     *
+     * Returning null matters.  Defaulting an unrecognized architecture to
+     * x86_64 hands a ppc64le or s390x JVM an x86-64 binary that extracts
+     * successfully and then fails inside {@code System.load()}, instead of
+     * reporting the platform as unsupported.
+     *
+     * This maps the architecture alone; which OS/arch pairs actually ship is
+     * decided by the caller, which is where riscv64 is confined to Linux.
+     */
+    private static String nativeArchDir(String arch) {
+        switch (arch) {
+            case "aarch64": case "arm64":  return "aarch64";
+            case "amd64":   case "x86_64": return "x86_64";
+            case "riscv64":                return "riscv64";
+            default:                       return null;
+        }
     }
 
     // ── Server lifecycle ──────────────────────────────────────────────────────
@@ -299,6 +344,14 @@ public final class NativeCore {
          * followed by {@code {"phase":"summary","text":…}}. Non-blocking.
          */
         default void onCompact(String json) {}
+        /**
+         * A tool finished: {@code {"id":…,"isError":bool,"text":…}}. {@code id} is
+         * the {@code tool_use_id} that {@link #onToolStart} carried, so the GUI can
+         * resolve THAT tool's dot; {@code text} is the one-line reason a failure
+         * gave (empty for successes, and for failures the user themselves caused —
+         * a declined tool keeps its red dot and says nothing). Non-blocking.
+         */
+        default void onToolEnd(String json) {}
     }
 
     // ── Embedded console (replaces PTY + xterm.js for the CLI view) ─────────
@@ -406,6 +459,20 @@ public final class NativeCore {
      * as it looked live.
      */
     public static native String sessionLoad(String workspaceRoot, String sessionId);
+
+    /**
+     * Greps the given sessions' message text (not titles) for {@code query}, first
+     * match per session wins. Returns a JSON array of {@code {sessionId, snippet}}
+     * for sessions that matched. Meant to run only over sessions whose title didn't
+     * already match — the caller filters those out first.
+     *
+     * @param ownMessagesOnly restrict the scan to the user's own messages, skipping
+     *     assistant turns — a narrower scope than the full conversation.
+     * @param generation this search's ordinal in the caller's own sequence (bump on
+     *     every new query). Lets an in-progress scan notice a newer one has since
+     *     started and stop early instead of finishing a scan the UI will discard.
+     */
+    public static native String sessionSearchContent(String workspaceRoot, String sessionIdsJson, String query, boolean ownMessagesOnly, long generation);
 
     /**
      * Ordered transcript uuids of a session's user messages, as a JSON array of

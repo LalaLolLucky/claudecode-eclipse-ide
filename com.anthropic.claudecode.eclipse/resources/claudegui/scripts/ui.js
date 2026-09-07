@@ -3,11 +3,26 @@
 
 /* ---- front-end-only interactions ---- */
 let openMenuEl = null, openAnchor = null;   // openAnchor = the trigger element the menu is glued to
-function closeMenus() { document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
+function closeMenus() {
+  // history-panel is the one .menu that also needs the Java-side cancel-key context
+  // (see registerOverlayCancel in history.js) — every OTHER close path for it funnels
+  // through here (click-outside, opening a different menu, …), so this is the one
+  // place that can defer to closeHistoryPanel's own unregister when it was open.
+  //
+  // Guarded by identity, not just "was it open": activeCardCancel is ONE global slot,
+  // and a later overlay (e.g. an in-transcript image's lightbox, registered during the
+  // click's target phase) can install ITS OWN cancel before this listener runs in the
+  // bubble phase — unregistering unconditionally here would wipe that newer
+  // registration and tell Java the wrong overlay just closed.
+  const hist = document.getElementById('history-panel');
+  const histWasOpen = hist && hist.classList.contains('open');
+  document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
   document.querySelectorAll('.tbtn.active-tmp').forEach(b=>b.classList.remove('active-tmp'));
   // per-message badges are pinned visible while their menu is up — unpin them
   document.querySelectorAll('.msg-actions.open').forEach(w => w.classList.remove('open'));
-  openMenuEl = null; openAnchor = null; }
+  openMenuEl = null; openAnchor = null;
+  if (histWasOpen && activeCardCancel === closeHistoryPanel) unregisterOverlayCancel();
+}
 
 /* Position a menu relative to its trigger button, so it stays glued to that element
    (in X and Y) when the view is resized — its reference is the element behind it.
@@ -36,6 +51,36 @@ function toggleMenu(id, anchor) {
   openMenuEl = menu; openAnchor = anchor;
 }
 
+/* Drops a menu from the page's top-right corner rather than gluing it to an in-page
+   button — for a trigger that lives OUTSIDE the webview entirely (a native Eclipse
+   toolbar Action has no DOM element of its own to hand positionMenu/getBoundingClientRect).
+   The Eclipse view toolbar sits directly above the browser viewport with its actions
+   right-aligned, so pinning to the page's own top edge (see the `top` calculation
+   below) is the closest approximation to "under those buttons" available without Java
+   pushing the toolbar's actual screen coordinates across the bridge — not true
+   anchoring, just a fixed spot that reads as coming from up there.
+   No openAnchor is set (there's nothing to re-anchor to) — clampOpenMenu re-runs THIS
+   instead, keyed off the data-fixed-top marker set below. */
+function positionMenuFixed(menu, rightGap) {
+  if (!menu) return;
+  const mw = menu.offsetWidth;
+  const gap = rightGap != null ? rightGap : 8;
+  const left = Math.max(8, window.innerWidth - mw - gap);
+  // The very top edge of the page, NOT the top of #toolbar or any other in-page row.
+  // The button that opens this is in Eclipse's own view toolbar, ABOVE the entire
+  // webview, so the panel should read as hanging straight off it. Anchoring to a row
+  // inside the page instead started the panel below whichever chrome rows happened to
+  // be visible (#supertab-row, #cwd-row) — moving it for reasons that have nothing to
+  // do with where its button is. As an overlay it just covers those rows, and
+  // #update-banner along with them, which is why the banner needs no special case here.
+  // The reset in tokens.css zeroes the body margin, so #app (this menu's offset parent)
+  // starts at the viewport's own origin and 0 really is the top edge.
+  // Remembered so clampOpenMenu can re-run this on resize rather than falling into its
+  // generic anchorless clamp, whose 8px minimum would nudge the panel back down.
+  menu.dataset.fixedTop = String(gap);
+  menu.style.left = left + 'px'; menu.style.top = '0px';
+}
+
 // Disable the browser right-click context menu (no "Inspect element" in the plugin).
 document.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -62,12 +107,54 @@ function openLinkExternally(e) {
 document.addEventListener('click', openLinkExternally, true);
 document.addEventListener('auxclick', (e) => { if (e.button === 1) openLinkExternally(e); }, true);
 
+/* Where the pointer gesture in progress STARTED. A click event's target is the nearest
+   common ancestor of its mousedown and its mouseup, so a drag that begins inside an open
+   menu and ends outside it reports a target OUTSIDE the menu — indistinguishable, to the
+   close-on-click-outside rule below, from a real click outside. That is what closed the
+   whole history panel when you pressed inside its rename field and drag-selected past the
+   field's edge before releasing.
+   Capture phase, so it is recorded before anything can stopPropagation() it — the history
+   rename input does exactly that on mousedown (see startHistoryRename). */
+let gestureStartTarget = null;
+document.addEventListener('mousedown', (e) => { gestureStartTarget = e.target; }, true);
+
 document.addEventListener('click', (e) => {
-  if (openMenuEl && !openMenuEl.contains(e.target) &&
-      !e.target.closest('#plus-btn,#slash-btn,#modes-btn,#history-btn')) closeMenus();
+  // Consumed here, so a later click carrying no mousedown of its own (a keyboard-activated
+  // button, say) can't inherit this gesture's origin and suppress a close it should do.
+  const startedAt = gestureStartTarget;
+  gestureStartTarget = null;
+  // A gesture that STARTED inside the open menu is not a click outside it, however far the
+  // pointer travelled before release. A press that starts outside still closes as always,
+  // so genuine click-outside-to-dismiss is untouched.
+  const startedInsideMenu = openMenuEl && startedAt && openMenuEl.contains(startedAt);
+  // #history-btn is gone (moved to the native toolbar, see openHistoryFromToolbar in
+  // history.js) — its trigger is now outside the page entirely, so there's no in-page
+  // button click for this listener to exempt; nothing else changes here.
+  if (openMenuEl && !startedInsideMenu && !openMenuEl.contains(e.target) &&
+      !e.target.closest('#plus-btn,#slash-btn,#modes-btn')) closeMenus();
   // The slash menu isn't tracked by openMenuEl — close it on any click outside it,
   // the input, or the slash button.
   if (slashState.open && !e.target.closest('#slash-menu,#input,#slash-btn')) closeSlash();
+});
+
+// Escape closes whichever .menu is open (history panel, modes/actions/plus menus, …) —
+// these only had click-outside to dismiss them before, unlike every CARD/dialog in the
+// app (cards.js, advisor.js, rewind.js, models.js, images.js, tabs.js), which each
+// already handle Escape themselves via their own document-level capture-phase listener.
+// No target/field check needed: none of the inputs living inside these menus (e.g.
+// #hist-search) have their own Escape handling to preserve, so closing the menu out
+// from under a focused search box is exactly the wanted behavior, not a conflict.
+//
+// Bails when activeCardCancel (carddock.js) is set — a card/overlay is up. This is
+// NOT just about listener ordering: e.preventDefault() (what every card's own Escape
+// handler calls) does not stop propagation or other listeners, only stopPropagation
+// does, and no card ever calls that. So without this check, Escape meant to dismiss a
+// card that happened to appear while a menu was ALSO left open (the two systems don't
+// coordinate — a background tab's approval card can appear at any time, regardless of
+// what the foreground tab has open) would incorrectly close the menu too, alongside
+// whatever the card's own handler does.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && openMenuEl && !activeCardCancel) { e.preventDefault(); closeMenus(); }
 });
 
 // Re-pin the open menu/panel so it stays on-screen — snaps its right edge near the
@@ -78,6 +165,13 @@ function clampOpenMenu() {
   if (!openMenuEl || !openMenuEl.classList.contains('open')) return;
   // Re-anchor to the trigger element so the menu tracks it (X and Y) as the view resizes.
   if (openAnchor && document.body.contains(openAnchor)) { positionMenu(openMenuEl, openAnchor); return; }
+  // Placed by positionMenuFixed (a native-toolbar trigger, so no in-page anchor exists):
+  // re-run it, which re-right-aligns for the new width AND keeps the panel on the top
+  // edge — the generic clamp below would push it down to its 8px minimum instead.
+  if (openMenuEl.dataset.fixedTop !== undefined) {
+    positionMenuFixed(openMenuEl, parseFloat(openMenuEl.dataset.fixedTop));
+    return;
+  }
   // Anchorless popups (e.g. the inline / autocomplete): just keep them on-screen.
   const m = openMenuEl, mw = m.offsetWidth, mh = m.offsetHeight;
   const left = Math.max(8, Math.min(parseFloat(m.style.left) || 0, window.innerWidth - mw - 8));

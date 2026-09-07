@@ -21,7 +21,10 @@ public class ClaudePreferenceInitializer extends AbstractPreferenceInitializer {
         store.setDefault(Constants.PREF_TRACK_SELECTION, true);
         store.setDefault(Constants.PREF_TERMINAL_POSITION, "bottom");
         store.setDefault(Constants.PREF_DEBUG_MODE, false);
+        store.setDefault(Constants.PREF_SCROLL_LOCK_DEFAULT, false);
+        store.setDefault(Constants.PREF_SMART_SCROLL_LOCK, false);
         store.setDefault(Constants.PREF_CLI_CTRLCLICK_HINT_DISMISSED, false);
+        store.setDefault(Constants.PREF_CLI_RENAME_HINT_SHOWN, false);
 
         store.setDefault(Constants.PREF_HTTP_PROXY, "");
         store.setDefault(Constants.PREF_HTTPS_PROXY, "");
@@ -42,11 +45,17 @@ public class ClaudePreferenceInitializer extends AbstractPreferenceInitializer {
         store.setDefault(Constants.PREF_STATUSLINE_SHOW_CONTEXT, true);
         store.setDefault(Constants.PREF_STATUSLINE_SHOW_COST, false);
         store.setDefault(Constants.PREF_STATUSLINE_SHOW_SESSION_5H, true);
+        store.setDefault(Constants.PREF_STATUSLINE_SHOW_SESSION_5H_RESET, true);
         store.setDefault(Constants.PREF_STATUSLINE_SHOW_WEEKLY, true);
+        store.setDefault(Constants.PREF_STATUSLINE_SHOW_WEEKLY_RESET, true);
         store.setDefault(Constants.PREF_STATUSLINE_REFRESH_SECONDS, 60);
+
+        store.setDefault(Constants.PREF_HISTORY_SHOW_TIMESTAMPS, false);
 
         // Claude Code view spinner verbs — the three that were already in rotation
         // stay on; dank and the vibecoder claim are opt-in.
+        store.setDefault(Constants.PREF_HIDE_ROOT_DIRECTORIES_ROW, false);
+
         store.setDefault(Constants.PREF_SPINNER_DEPRECATED, true);
         store.setDefault(Constants.PREF_SPINNER_PACK_ONE, true);
         store.setDefault(Constants.PREF_SPINNER_PACK_TWO, true);

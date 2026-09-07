@@ -26,8 +26,30 @@ public final class Constants {
     public static final String PREF_TERMINAL_POSITION = "terminalPosition";
     public static final String PREF_DEBUG_MODE = "debugMode";
 
+    /** Initial state of the Scroll Lock toolbar toggle for a newly created view instance —
+     *  a configured default, not a remembered last state. Shared by both the Claude Code
+     *  (GUI) view (ClaudeGuiView#createToolBar, one view-wide toggle) and the Claude
+     *  Terminal view (ClaudeCliView#configureActionBars, applied to each new tab's own
+     *  TerminalSession — see the per-tab isScrollLock/setScrollLock there). */
+    public static final String PREF_SCROLL_LOCK_DEFAULT = "scrollLockDefault";
+
+    /** In the Claude Code (GUI) view, while Scroll Lock is armed, still jump to the bottom
+     *  for the user's OWN deliberate actions (sending a message, answering an approval or
+     *  question card) and when Claude raises a NEW approval or question card, rather than
+     *  holding through those too. A card timing out on its own is NOT one of these — that
+     *  was never forced even before Scroll Lock existed. Off matches the plugin's current
+     *  upstream behavior.
+     *
+     *  <p>GUI view only by design — Terminal's Scroll Lock is TM Terminal's own viewport
+     *  freeze, with no "user sent input" seam to hook a bypass onto. */
+    public static final String PREF_SMART_SCROLL_LOCK = "smartScrollLock";
+
     /** Set once the user dismisses the Ctrl+Click hint bar in the Claude Terminal view (per-workspace). */
     public static final String PREF_CLI_CTRLCLICK_HINT_DISMISSED = "cliCtrlClickHintDismissed";
+
+    /** Set once the one-time "this sends /rename to the prompt" tooltip has been shown for
+     *  double-click tab renaming in the Claude Terminal view (per-workspace). */
+    public static final String PREF_CLI_RENAME_HINT_SHOWN = "cliRenameHintShown";
 
     public static final String PREF_HTTP_PROXY = "httpProxy";
     public static final String PREF_HTTPS_PROXY = "httpsProxy";
@@ -66,9 +88,30 @@ public final class Constants {
     public static final String PREF_STATUSLINE_SHOW_CONTEXT = "statuslineShowContext";
     public static final String PREF_STATUSLINE_SHOW_COST = "statuslineShowCost";
     public static final String PREF_STATUSLINE_SHOW_SESSION_5H = "statuslineShowSession5h";
+    /** Show "(resets in ...)" next to the Session meter — the reset epoch lands in the
+     *  same process-wide {@code ClaudeStatusStore} regardless of which view's data
+     *  channel supplied it, so this applies in both views. */
+    public static final String PREF_STATUSLINE_SHOW_SESSION_5H_RESET = "statuslineShowSession5hReset";
     public static final String PREF_STATUSLINE_SHOW_WEEKLY = "statuslineShowWeekly";
+    /** Show "(resets in ...)" next to the Weekly meter (see PREF_STATUSLINE_SHOW_SESSION_5H_RESET). */
+    public static final String PREF_STATUSLINE_SHOW_WEEKLY_RESET = "statuslineShowWeeklyReset";
     /** Claude's idle re-run timer for the statusLine command, in seconds. */
     public static final String PREF_STATUSLINE_REFRESH_SECONDS = "statuslineRefreshSeconds";
+
+    /** Show a small timestamp line above each of your own messages, in the Claude Code
+     *  view — live sends and loaded history both, in local time (the record itself is
+     *  UTC; see {@code load_session_history} in {@code session.rs}). Off by default:
+     *  the same information is already one hover away in the History panel's own
+     *  per-session time, so this trades a bit of vertical space for always-visible detail. */
+    public static final String PREF_HISTORY_SHOW_TIMESTAMPS = "historyShowTimestamps";
+
+    /** Hide the root ("supertab") directory row entirely, in the Claude Code view —
+     *  no picker, no per-session show/hide toggle (supertabsVisible), nothing. For a
+     *  user who only ever works in one folder, the row (plus the toggle's own collapsed
+     *  #cwd-row stand-in) is pure vertical space spent on a feature they never use. Off
+     *  by default: multi-root conversations are the new upstream behavior, and this is
+     *  an opt-out, not the other way around. */
+    public static final String PREF_HIDE_ROOT_DIRECTORIES_ROW = "hideRootDirectoriesRow";
 
     // ── Spinner verbs ───────────────────────────────────────────────────────
     // Which optional slices of the working-indicator gerund list are in rotation.

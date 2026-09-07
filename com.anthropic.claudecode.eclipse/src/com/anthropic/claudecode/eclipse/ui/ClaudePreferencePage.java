@@ -152,6 +152,18 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                 "Debug mode",
                 getFieldEditorParent()));
 
+        addField(new BooleanFieldEditor(
+                Constants.PREF_SCROLL_LOCK_DEFAULT,
+                "Scroll Lock enabled by default (Claude Code and Claude Terminal views)",
+                getFieldEditorParent()));
+
+        addField(new BooleanFieldEditor(
+                Constants.PREF_SMART_SCROLL_LOCK,
+                "Smart Scroll Lock: in the Claude Code view, still jump to the bottom for "
+                        + "your own actions (sending a message, answering a card) even while "
+                        + "Scroll Lock is on",
+                getFieldEditorParent()));
+
         Label statusSeparator = new Label(getFieldEditorParent(), SWT.SEPARATOR | SWT.HORIZONTAL);
         statusSeparator.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 3, 1));
 
@@ -196,8 +208,18 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                 getFieldEditorParent()));
 
         addStatuslineDependent(new BooleanFieldEditor(
+                Constants.PREF_STATUSLINE_SHOW_SESSION_5H_RESET,
+                "Show reset time for 5-hour (session) usage limit",
+                getFieldEditorParent()));
+
+        addStatuslineDependent(new BooleanFieldEditor(
                 Constants.PREF_STATUSLINE_SHOW_WEEKLY,
                 "Show weekly (7-day) usage limit",
+                getFieldEditorParent()));
+
+        addStatuslineDependent(new BooleanFieldEditor(
+                Constants.PREF_STATUSLINE_SHOW_WEEKLY_RESET,
+                "Show reset time for weekly (7-day) usage limit",
                 getFieldEditorParent()));
 
         IntegerFieldEditor refreshSeconds = new IntegerFieldEditor(
@@ -252,6 +274,16 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         Label miscLabel = new Label(getFieldEditorParent(), SWT.NONE);
         miscLabel.setText("Miscellaneous Configuration");
         miscLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 3, 1));
+
+        addField(new BooleanFieldEditor(
+                Constants.PREF_HISTORY_SHOW_TIMESTAMPS,
+                "Show a timestamp above your own messages, in the Claude Code view",
+                getFieldEditorParent()));
+
+        addField(new BooleanFieldEditor(
+                Constants.PREF_HIDE_ROOT_DIRECTORIES_ROW,
+                "Hide the root directories row, in the Claude Code view (for single-folder use)",
+                getFieldEditorParent()));
 
         addField(new BooleanFieldEditor(
                 Constants.PREF_SPINNER_DEPRECATED,

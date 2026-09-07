@@ -7,6 +7,7 @@ const SLASH_COMMANDS = [
   { cmd: '/clear',   desc: 'Start a new session (tab)' },
   { cmd: '/compact', desc: 'Clear conversation history but keep a summary in context' },
   { cmd: '/model',   desc: 'Switch model' },
+  { cmd: '/resume',  desc: 'Open session history' },
   { cmd: '/rewind',  desc: 'Restore code and fork from an earlier message' },
   { cmd: '/help',    desc: 'Show available commands' },
 ];
@@ -86,15 +87,24 @@ function handleSlashCommand(text) {
   // Clears the conversation IN THE CURRENT TAB, then echoes the command so it's
   // the only message left in the fresh session (joebiden7). Deliberately not
   // newSession() — VSCode stays on the tab /clear was invoked from.
-  if (cmd === '/clear') { clearSession(); addUserMessage(text); return true; }
+  if (cmd === '/clear') { clearSession(); addUserMessage(text, null, null, null, nowIso()); return true; }
   if (cmd === '/compact') { sendCompact(); return true; }          // echoes itself
   // Echo is deferred to the card's confirm() — cancel/Esc adds nothing.
   if (cmd === '/advisor') { openAdvisorCard(text); return true; }
   if (cmd === '/model') { handleModelCommand(text); return true; }
   if (cmd === '/rewind') { openRewindDialog(); return true; }      // deliberately unchanged
+  // Opens the SAME history panel the toolbar's Session History button does, but via
+  // openHistoryForResume (not openHistoryFromToolbar) — picking a session here loads
+  // it into the CURRENT tab in place, matching the CLI's own /resume typed at an
+  // existing Claude Terminal prompt (see history.js's historyResumeInPlace). The CLI's
+  // real /resume is an interactive picker (local-jsx) that only exists in its terminal
+  // TUI; this headless process (-p --input-format stream-json) has no such thing to
+  // send it to, same reason /model is reproduced locally above rather than forwarded.
+  // No echo: nothing was actually sent, just a panel opened, like /rewind.
+  if (cmd === '/resume') { openHistoryForResume(); return true; }
   if (cmd === '/help') {
     const ht = activeTab();
-    addUserMessage(text);
+    addUserMessage(text, null, null, null, nowIso());
     addSystemTo(ht, 'Commands: /advisor — set up an advisor model · /clear — new conversation · /compact — compact the conversation into a summary · /model — switch model · /rewind — restore code and fork from an earlier message · /help — this list. Type / to see them.');
     return true;
   }
@@ -113,7 +123,7 @@ function handleModelCommand(text) {
   // one you typed in — a reply to a command you just ran belongs in the tab you
   // ran it in, so target it explicitly.
   const t = activeTab();
-  addUserMessage(text);
+  addUserMessage(text, null, null, null, nowIso());
   const arg = text.slice('/model'.length).trim();
   if (!arg) {
     addSystemTo(t, 'Current model: ' + modelLabelFor(curModel) + ' (effort: ' + effort + ')\n'
@@ -160,7 +170,7 @@ function sendSlashToCli(text) {
   t.cancelled = false;
   loadRender(t);
   const queueing = !!t.streaming;
-  addUserMessage(text);
+  addUserMessage(text, null, null, null, nowIso());
   closeSlash();
   if (!queueing) { setStreaming(true); showWorking(); }
   else if (!workingEl) showWorking();
@@ -177,7 +187,7 @@ function sendCompact() {
   t.cancelled = false;
   loadRender(t);
   const queueing = !!t.streaming;
-  addUserMessage('/compact');
+  addUserMessage('/compact', null, null, null, nowIso());
   input.value = ''; input.style.height = 'auto'; t.draft = ''; closeSlash();
   t.compacting = true;
   if (!queueing) { setStreaming(true); showWorking(); }

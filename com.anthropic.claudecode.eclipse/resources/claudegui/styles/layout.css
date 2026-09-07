@@ -16,7 +16,7 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
 
 /* ── Top toolbar (VSCode editor-tab strip) ───────────────── */
 #toolbar { display: flex; align-items: stretch; height: 35px; flex-shrink: 0;
-  background: var(--bg); border-bottom: 1px solid var(--border-soft); }
+  background: var(--tab-bg); border-bottom: 1px solid var(--border-soft); }
 /* min-width:0 lets the strip shrink within the toolbar so its tabs scroll INTERNALLY
    (instead of pushing the toolbar tools off-screen). Thin bottom scrollbar, thumb
    visible only on hover — like VSCode. */
@@ -27,13 +27,17 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
 #tabs::-webkit-scrollbar-track { background: transparent; }
 #tabs::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
 #tabs.sb-show::-webkit-scrollbar-thumb { background: var(--scrollbar-track); }
+/* --border (not --toolbar's --border-soft): now that inactive tabs share the
+   strip's own fill (--tab-bg) instead of standing out from it, they need a
+   visible edge to read as separate tabs rather than one undifferentiated bar. */
 .tab { display: flex; align-items: center; gap: 7px; padding: 0 10px; height: 100%; cursor: pointer;
-  background: var(--bg); border-right: 1px solid var(--border-soft); border-top: 2px solid transparent;
+  background: var(--tab-bg); border-right: 1px solid var(--border); border-top: 2px solid transparent;
   font-size: 12.5px; color: var(--fg-dim); max-width: 200px; flex-shrink: 0; }
-.tab.active { background: var(--bg-soft); border-top-color: var(--accent); color: var(--fg); }
-/* Hovering an unfocused tab previews it with the active tab's bg + text colors
-   (the accent top border stays exclusive to the truly active tab). */
-.tab:hover { background: var(--bg-soft); color: var(--fg); }
+.tab.active { background: var(--tab-bg-active); border-top-color: var(--accent); color: var(--fg); }
+/* Unchanged from the original --bg-soft behavior (--tab-hover-preview equals
+   --tab-bg-active in dark, same as before this token split) — hovering previews
+   the active look, and only the accent top border marks the truly active tab. */
+.tab:hover { background: var(--tab-hover-preview); color: var(--fg); }
 /* drag-to-reorder: dragged tab dims; a 2px accent line marks the drop position */
 .tab.dragging { opacity: .4; }
 .tab.drop-before { box-shadow: inset 2px 0 0 0 var(--accent); }
@@ -45,12 +49,46 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
    A fixed square with the glyph flex-centred: as an inline box the 13px SVG sat on
    the text baseline, which left the descender gap below it and pushed both the glyph
    and its hover fill visibly above centre. */
-.tab .tab-close, .stab .stab-close {
+.tab .tab-close, .stab .stab-close, .tab .tab-edit {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; padding: 0; margin-left: 2px;
+  width: 18px; height: 18px; padding: 0;
   color: var(--fg-dim); cursor: pointer; border-radius: 3px; flex-shrink: 0; visibility: hidden; }
+.stab .stab-close { margin-left: 2px; }   /* root tabs have no action group — space it itself */
 .tab.active .tab-close, .tab:hover .tab-close { visibility: visible; }
-.tab .tab-close:hover, .stab .stab-close:hover { background: var(--bg-hover); color: var(--fg); }
+.tab .tab-close:hover, .stab .stab-close:hover, .tab .tab-edit:hover {
+  background: var(--bg-hover); color: var(--fg); }
+/* The rename (pencil) sits just LEFT of the close, and unlike the close it shows on
+   HOVER ONLY — never on the merely-active tab, since renaming is a rarer, more
+   deliberate act than closing and shouldn't sit lit on the tab you're working in.
+   It borrows .tab-close's box above (same 18px square).
+   The pair lives in its own flex group with the SAME 2px gap as the history list's
+   own action buttons (#history-list .h-actions), so the two look identical. It has
+   to be a group: .tab's own 7px flex gap is what separates the icon and title, and
+   applying that same 7px between two adjacent 18px icon buttons pushed them far
+   apart. The group takes that 7px as a whole, which is the gap the title had from
+   the close before the pencil existed.
+   visibility (NOT display) on the buttons is the whole point: the slots are reserved
+   at all times, so revealing the pencil on hover cannot widen the tab or shove its
+   neighbours along the strip — the reflow-on-hover that made the old header's pencil
+   need a hand-measured width allowance. */
+.tab .tab-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.tab .tab-edit svg { width: 13px; height: 13px; }   /* match the close glyph's weight */
+.tab:hover .tab-edit { visibility: visible; }
+/* Editing state: the input takes the whole tab. The action group goes to display:none
+   rather than visibility:hidden — here we WANT its slots back, since every pixel they'd
+   reserve is width the field could be using, and neither button is actionable while a
+   rename is in flight (a click on the close would land mid-edit on a tab whose title is
+   unsaved). */
+.tab.editing .tab-actions { display: none; }
+/* Double-click a tab's title, or click its pencil (tabs.js: startTitleEdit), to
+   rename in place — this replaces the old separate #convo-header row entirely.
+   Widened past the normal 200px cap so a rename isn't typed through a keyhole;
+   #tabs already scrolls horizontally, so one wider tab during an edit doesn't
+   crowd the others out. */
+.tab.editing { max-width: 340px; }
+.tab .title-input { width: 100%; height: 20px; box-sizing: border-box;
+  background: var(--bg-code); border: 1px solid var(--accent); border-radius: 4px;
+  padding: 0 4px; color: var(--fg); font-size: 12.5px; font-weight: inherit; outline: none; }
 .pane > .turn:first-child { margin-top: 0; }
 #toolbar .spacer { flex: 1; }
 #toolbar .tools { display: flex; align-items: center; gap: 2px; padding-right: 8px; }
@@ -62,10 +100,13 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
 /* ── Root ("supertab") row ────────────────────────────────
    The folder each conversation runs in. Same 35px as the tab strip below it, and
    the same internal-scroll rule (min-width:0 + overflow-x) so a long list of roots
-   scrolls inside the row instead of pushing its buttons off a narrow view. A
-   slightly recessed background separates the two rows without a second border. */
+   scrolls inside the row instead of pushing its buttons off a narrow view. Shares
+   #toolbar's sampled --tab-bg rather than --bg-soft: this row is tab chrome, so it
+   belongs to Eclipse's own editor-tab colors, and --bg-soft inverts in light mode
+   (#f3f3f3 is DARKER than --bg) — the very bug the tab strip below was fixed for.
+   The two rows are separated by border-bottom, not by a fill difference. */
 #supertab-row { display: flex; align-items: stretch; height: 35px; flex-shrink: 0;
-  background: var(--bg-soft); border-bottom: 1px solid var(--border-soft); }
+  background: var(--tab-bg); border-bottom: 1px solid var(--border-soft); }
 #supertabs { display: flex; align-items: stretch; height: 100%; min-width: 0; overflow-x: auto; overflow-y: hidden; }
 #supertabs::-webkit-scrollbar { height: 4px; }
 #supertabs::-webkit-scrollbar-track { background: transparent; }
@@ -80,10 +121,10 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
 .stab { display: flex; align-items: center; gap: 7px; padding: 0 10px; height: 100%; cursor: pointer;
   background: transparent; border-right: 1px solid var(--border-soft); border-top: 2px solid transparent;
   font-size: 12.5px; color: var(--fg); max-width: 200px; flex-shrink: 0; }
-.stab:hover { background: var(--bg); }
+.stab:hover { background: var(--tab-hover-preview); }
 /* After :hover, and repeated for the hovered case — equal specificity means source
    order decides, and the active root must stay accent-coloured under the cursor. */
-.stab.active, .stab.active:hover { background: var(--bg); border-top-color: var(--accent); color: var(--accent); }
+.stab.active, .stab.active:hover { background: var(--tab-bg-active); border-top-color: var(--accent); color: var(--accent); }
 .stab.dragging { opacity: .4; }
 .stab.drop-before { box-shadow: inset 2px 0 0 0 var(--accent); }
 .stab.drop-after { box-shadow: inset -2px 0 0 0 var(--accent); }
@@ -104,14 +145,10 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
    than a real row, sharing the root row's background, and left-aligned on the same
    10px the tab labels use so the three rows read as one column. */
 #cwd-row { display: none; align-items: center; gap: 6px; height: 22px; flex-shrink: 0;
-  padding: 0 10px; background: var(--bg-soft); border-bottom: 1px solid var(--border-soft);
+  padding: 0 10px; background: var(--tab-bg); border-bottom: 1px solid var(--border-soft);
   font-size: 11px; color: var(--fg-dim); }
 #cwd-row .ci { display: inline-flex; flex-shrink: 0; color: var(--accent); }
 #cwd-row .ct { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-
-/* ── Conversation header ─────────────────────────────────── */
-#convo-header { display: flex; align-items: center; justify-content: space-between;
-  padding: 9px 14px; flex-shrink: 0; border-bottom: 1px solid var(--border); }
 
 /* ---- CLI update banner ----
    Shown only when the installed Claude Code is behind the published release, so
@@ -130,21 +167,6 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
 #update-banner .ub-x { flex-shrink: 0; cursor: pointer; color: var(--warn-fg); opacity: .7;
   display: inline-flex; border-radius: 3px; }
 #update-banner .ub-x:hover { opacity: 1; background: var(--bg-hover); }
-/* The pill (.title-wrap) is the outer container at a fixed 32px height. The input sits
-   INSIDE it at its own smaller natural size, so the pill encompasses the input. Only the
-   pill's height is set here — the input is never forced to the pill's height. */
-#convo-header .title-wrap { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 340px;
-  height: 32px; box-sizing: border-box; padding: 0 6px; border-radius: 8px; margin: -1px -6px; cursor: pointer; }
-#convo-header .title-wrap:hover { background: var(--bg-hover); }
-#convo-header .title { font-weight: 600; font-size: 13px; color: var(--fg); overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
-#convo-header .title-edit { color: var(--fg-faint); display: none; flex-shrink: 0; }
-#convo-header .title-wrap:hover .title-edit { display: inline-flex; }
-#convo-header .title-input { max-width: 340px; box-sizing: border-box;
-  background: var(--bg-code); border: 1px solid var(--accent); border-radius: 5px;
-  padding: 3px 6px; color: var(--fg); font-size: 13px; font-weight: 600; outline: none; }
-#convo-header .actions { display: flex; gap: 2px; }
-
 
 /* ── Composer ────────────────────────────────────────────── */
 /* position: relative so #jump-to-latest (chat.css) can anchor to this element's

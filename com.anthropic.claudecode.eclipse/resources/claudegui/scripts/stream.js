@@ -20,7 +20,7 @@ window.onStreamText    = (tabId, t) => withTab(tabId, () => appendAssistant(t));
    stay hidden until then). */
 window.onStreamEnd     = (tabId) => withTab(tabId, (t) => { t.compacting = false; hideWorking(); endAssistant(); setStreaming(false); backfillMessageIds(t); });
 window.onToolStart     = (tabId, n) => withTab(tabId, () => addToolLine(n));
-window.onToolEnd       = () => {};
+window.onToolEnd       = (tabId, j) => withTab(tabId, () => applyToolResult(j));
 window.onSystemMessage = () => {};   /* backend system/init noise — ignored */
 window.onError         = (tabId, m) => withTab(tabId, () => { hideWorking(); endAssistant(); setStreaming(false); addSystem('⚠ ' + augmentError(m)); });
 window.onStatusUpdate  = () => {};
@@ -102,9 +102,19 @@ function addCompacted(pane, trigger, freed, summaryText) {
 
 /* Light/dark theming (issue #78). Java pushes the ambient Eclipse theme via
    onTheme('light'|'dark') on load, on refocus, and on the workbench theme change;
-   the <html> class toggles the :root.light token overrides. Dark is the default. */
-window.onTheme = (mode) => {
+   the <html> class toggles the :root.light token overrides. Dark is the default.
+
+   tabBg/tabBgActive (optional): the REAL editor-area tab-folder colors, sampled
+   directly off Eclipse's own CTabFolder widget (ClaudeGuiView.findEditorAreaTabColors)
+   rather than guessed at in tokens.css — a hardcoded value can't be right for every
+   OS/GTK theme. Set as inline styles on :root, which win over both :root and
+   :root.light in the cascade without touching any selector; omitted (both undefined)
+   when Java couldn't sample them, leaving tokens.css's own values as the fallback. */
+window.onTheme = (mode, tabBg, tabBgActive) => {
   document.documentElement.classList.toggle('light', mode === 'light');
+  const root = document.documentElement.style;
+  if (tabBg) root.setProperty('--tab-bg', tabBg); else root.removeProperty('--tab-bg');
+  if (tabBgActive) root.setProperty('--tab-bg-active', tabBgActive); else root.removeProperty('--tab-bg-active');
 };
 
 /* A "User answered:" card left in the flow (at the decision point) when the user

@@ -49,18 +49,6 @@
     </div>
   </div>
 
-  <!-- Conversation header -->
-  <div id="convo-header">
-    <div class="title-wrap" id="title-wrap" onclick="startTitleEdit()">
-      <span class="title" id="convo-title">Claude Code</span>
-      <span class="title-edit" id="title-edit" title="Rename">__PENCIL__</span>
-    </div>
-    <div class="actions">
-      <div class="tbtn" id="history-btn" title="Session history" onclick="toggleHistory(this)">__CLOCK__</div>
-      <div class="tbtn" title="New session" onclick="newSession()">__NEWCHAT__</div>
-    </div>
-  </div>
-
   <!-- CLI update banner (shown only when the installed Claude Code is outdated) -->
   <div id="update-banner">
     <span class="ub-ic">__BOLT__</span>
@@ -177,7 +165,10 @@
       <div class="hist-tab active" id="hist-tab-local" onclick="histTab('local')">__MONITOR__ Local</div>
       <div class="hist-tab" id="hist-tab-web" onclick="histTab('web')">__GLOBE__ Web</div>
     </div>
-    <div class="hist-search"><input id="hist-search" type="text" placeholder="Search sessions…" oninput="renderHistoryList()"></div>
+    <div class="hist-search">
+      <input id="hist-search" type="text" placeholder="Search sessions…" oninput="onHistorySearchInput()">
+      <span class="hist-search-scope" id="hist-search-scope" title="Search: titles only" onclick="cycleSearchScope(event)">__SEARCH__</span>
+    </div>
     <div id="history-list"></div>
     <div id="history-web"><div class="h-empty">Web history isn't available yet.</div></div>
   </div>

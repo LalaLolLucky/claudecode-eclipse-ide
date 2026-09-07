@@ -97,6 +97,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction newSessionFn;
     @SuppressWarnings("unused") private BrowserFunction listSessionsFn;
     @SuppressWarnings("unused") private BrowserFunction listSessionsAsyncFn;
+    @SuppressWarnings("unused") private BrowserFunction searchSessionContentFn;
     @SuppressWarnings("unused") private BrowserFunction loadSessionFn;
     @SuppressWarnings("unused") private BrowserFunction deleteSessionFn;
     @SuppressWarnings("unused") private BrowserFunction renameSessionFn;
@@ -151,6 +152,12 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private ClaudeStatusBar statusBar;
     // Live-applies PREF_STATUSLINE_* changes (enable/toggles/refresh) without a restart.
     private org.eclipse.jface.util.IPropertyChangeListener statusPrefListener;
+    // Live-applies PREF_HISTORY_SHOW_TIMESTAMPS changes without a restart or page reload.
+    private org.eclipse.jface.util.IPropertyChangeListener historyShowTimestampsPrefListener;
+    // Live-applies PREF_HIDE_ROOT_DIRECTORIES_ROW changes without a restart or page reload.
+    private org.eclipse.jface.util.IPropertyChangeListener hideRootRowPrefListener;
+    // Live-applies PREF_SMART_SCROLL_LOCK changes without a restart or page reload.
+    private org.eclipse.jface.util.IPropertyChangeListener smartScrollLockPrefListener;
     // Re-pushes light/dark to the webview when the Eclipse workbench theme changes.
     private org.eclipse.jface.util.IPropertyChangeListener themeChangeListener;
     // Re-pushes the right-click menu's key hints when the user's bindings change.
@@ -221,6 +228,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // this view sees them without having to send a turn first (issue #99).
         fetchUsageAsync();
         registerStatusPrefListener();
+        registerHistoryShowTimestampsPrefListener();
+        registerHideRootRowPrefListener();
+        registerSmartScrollLockPrefListener();
         registerThemeListener();
         registerBindingListener();
         registerEditHandlers();
@@ -303,6 +313,31 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                     }
                 });
             }, "claude-history-load").start();
+            return null;
+        });
+        // Content search: greps the given sessions' message text off the UI thread.
+        // requestId round-trips so JS can discard a result that arrived after a
+        // newer search superseded it (the user kept typing).
+        searchSessionContentFn = new SimpleFunction(browser, "_searchSessionContentAsync", a -> {
+            final Browser b = browser;
+            final String root = activeRoot();
+            final String sessionIdsJson = a.length > 0 && a[0] instanceof String s ? s : "[]";
+            final String query = a.length > 1 && a[1] instanceof String s ? s : "";
+            final String requestId = a.length > 2 && a[2] instanceof String s ? s : "";
+            final boolean ownMessagesOnly = a.length > 3 && a[3] instanceof Boolean own && own;
+            // Same ordinal as requestId — reused as the cancellation generation Rust
+            // checks between session files (see NativeCore#sessionSearchContent).
+            long gen; try { gen = Long.parseLong(requestId); } catch (NumberFormatException e) { gen = 0; }
+            final long generation = gen;
+            new Thread(() -> {
+                String json = safeSessionSearchContent(root, sessionIdsJson, query, ownMessagesOnly, generation);
+                Display.getDefault().asyncExec(() -> {
+                    if (b != null && !b.isDisposed() && pageLoaded) {
+                        b.execute("window.onSessionSearchResult && window.onSessionSearchResult('"
+                                + esc(json) + "', '" + esc(requestId) + "')");
+                    }
+                });
+            }, "claude-history-search").start();
             return null;
         });
         loadSessionFn  = new SimpleFunction(browser, "_loadSession", a ->
@@ -572,11 +607,14 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             pushCliModels();         // ditto for the installed binary's model support
             pushEditKeyHints();      // label the right-click menu with the user's real keys
             pushDebugMode();         // let the page report its keys while Debug mode is on
+            pushHistoryShowTimestamps(); // whether to show a timestamp above your own messages
+            pushHideRootDirectoriesRow(); // whether the root directories row is hidden entirely
             pushSpinnerVerbs();      // which gerund categories the working indicator cycles
             // An "Open Claude Code Here" that arrived while the view was still loading.
             String queuedRoot = pendingRootPath;
             if (queuedRoot != null) { pendingRootPath = null; openRootDirectory(queuedRoot); }
             pushScrollLock();        // the toolbar toggle outlives the page — re-apply it
+            pushSmartScrollLock();   // ditto for the Smart Scroll Lock preference
             for (int ms : new int[]{50, 200, 500, 1000, 1500}) {
                 Display.getCurrent().timerExec(ms, this::activateInput);
                 // Re-push the theme too: the root composite's CSS-themed background may not
@@ -656,6 +694,32 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      */
     private void createToolBar() {
         IToolBarManager toolBar = getViewSite().getActionBars().getToolBarManager();
+
+        // Same two actions, same icons, as the Claude Terminal's own toolbar (see
+        // ClaudeCliView#configureActionBars) — moved out of the webview's own
+        // #convo-header row for visual consistency between the two views. Unlike the
+        // Terminal's (which spawn/resume a whole new CLI process directly), these call
+        // back into the page: the GUI's "new session" and "history" are page-level UI
+        // concepts (a new tab, an in-page searchable panel), not new OS processes.
+        Action newSession = new Action("New Session") {
+            @Override
+            public void run() { pushToolbarAction("newSession"); }
+        };
+        newSession.setToolTipText("New Claude Session");
+        newSession.setImageDescriptor(Activator.getImageDescriptor(
+                com.anthropic.claudecode.eclipse.Constants.IMG_NEW_CLI_SESSION));
+        toolBar.add(newSession);
+
+        Action sessionHistory = new Action("Session history") {
+            @Override
+            public void run() { pushToolbarAction("openHistoryFromToolbar"); }
+        };
+        sessionHistory.setToolTipText("Session history");
+        sessionHistory.setImageDescriptor(Activator.getImageDescriptor(
+                com.anthropic.claudecode.eclipse.Constants.IMG_SESSION_HISTORY));
+        toolBar.add(sessionHistory);
+        toolBar.add(new org.eclipse.jface.action.Separator());
+
         scrollLockAction = new Action("Scroll Lock", Action.AS_CHECK_BOX) {
             @Override
             public void run() { pushScrollLock(); }
@@ -663,7 +727,19 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         scrollLockAction.setToolTipText("Scroll Lock");
         scrollLockAction.setImageDescriptor(Activator.getImageDescriptor(
                 com.anthropic.claudecode.eclipse.Constants.IMG_SCROLL_LOCK));
+        // A configured default for a newly created view instance (Preferences > Claude
+        // Code), not a remembered last state — every new view starts from this setting.
+        scrollLockAction.setChecked(Activator.getDefault().getPreferenceStore()
+                .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_SCROLL_LOCK_DEFAULT));
         toolBar.add(scrollLockAction);
+    }
+
+    /** Runs a no-argument page-side function by name, e.g. from a toolbar Action's
+     *  run() — the action lives outside the webview, so it has no DOM element of its
+     *  own to drive the call from the page side the way an in-page button would. */
+    private void pushToolbarAction(String jsFunctionName) {
+        if (browser == null || browser.isDisposed() || !pageLoaded) return;
+        browser.execute("window." + jsFunctionName + " && window." + jsFunctionName + "()");
     }
 
     /**
@@ -676,6 +752,17 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         if (browser == null || browser.isDisposed() || !pageLoaded) return;
         boolean locked = scrollLockAction != null && scrollLockAction.isChecked();
         browser.execute("window.onScrollLock && window.onScrollLock(" + locked + ")");
+    }
+
+    /** Pushes the Smart Scroll Lock preference into the webview. Called on page load
+     *  AND on every live Preferences change (see {@link #registerSmartScrollLockPrefListener()}) —
+     *  a Preferences dialog OK doesn't reload the page, so without the live push a mid-session
+     *  toggle wouldn't take effect until the view was recreated. */
+    private void pushSmartScrollLock() {
+        if (browser == null || browser.isDisposed() || !pageLoaded) return;
+        boolean smart = Activator.getDefault().getPreferenceStore()
+                .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_SMART_SCROLL_LOCK);
+        browser.execute("window.onSmartScrollLock && window.onSmartScrollLock(" + smart + ")");
     }
 
     /** Resolves installed-vs-latest CLI versions and pushes the result to the webview. */
@@ -709,11 +796,153 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      * :root.light CSS token overrides. The theme is derived from the perceived luminance
      * of the widget background — the actually-painted color, so it's correct for custom
      * themes too (issue #78). Dark is the default and stays visually unchanged.
+     *
+     * <p>Also pushes the ACTUAL native editor-area tab-folder colors when reachable (see
+     * {@link #findEditorAreaTabColors()}), so the webview's own tab strip (#toolbar /
+     * #convo-header) matches Eclipse's real chrome instead of a hardcoded guess at it —
+     * a single hardcoded value can't be right for every OS/GTK theme (the GTK chrome
+     * gray looks nothing like Windows' or macOS'). Passed as optional 2nd/3rd args;
+     * the webview's tokens.css values are the fallback when null (the editor area
+     * isn't reachable or rendered yet — see that method's comment). Deliberately the
+     * EDITOR area specifically, not wherever this view itself happens to be docked:
+     * the view-stack and editor-stack active-tab styling differ in Eclipse, and the
+     * editor style is the one this webview's own tab strip is designed to match.
      */
     private void pushTheme() {
         if (browser == null || browser.isDisposed() || !pageLoaded) return;
-        String mode = isDarkTheme() ? "dark" : "light";
-        browser.execute("window.onTheme && window.onTheme('" + mode + "')");
+        boolean isDark = isDarkTheme();
+        String mode = isDark ? "dark" : "light";
+        String[] tabColors = findEditorAreaTabColors(isDark);
+        if (tabColors != null) lastEditorAreaTabColors = tabColors;
+        // Falls back to the last successfully sampled colors (not the CSS default)
+        // when the editor area is momentarily unreachable (e.g. zero editors open),
+        // so the tab strip doesn't visibly shift color depending on editor state.
+        String[] use = tabColors != null ? tabColors : lastEditorAreaTabColors;
+        if (Activator.getDefault().getPreferenceStore().getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_DEBUG_MODE)) {
+            Activator.log("editor-area tab colors: "
+                    + (use == null ? "unavailable" : use[0] + " / " + use[1]) + " (mode=" + mode + ")"
+                    + " [" + lastTabColorsDiagnostic + "]");
+        }
+        String call = "window.onTheme && window.onTheme('" + mode + "'"
+                + (use != null ? ",'" + use[0] + "','" + use[1] + "'" : "")
+                + ")";
+        browser.execute(call);
+    }
+
+    /** Last successfully sampled {@code {inactiveHex, activeHex}} from {@link
+     *  #findEditorAreaTabColors()}, kept so a momentarily-unreachable editor area
+     *  (e.g. zero editors open) doesn't flicker the tab strip back to the CSS default. */
+    private String[] lastEditorAreaTabColors;
+
+    /**
+     * Finds the EDITOR area's {@link org.eclipse.swt.custom.CTabFolder} — the real
+     * "History | Claude Code | ..." tab strip when editors are docked there — via
+     * the E4 model, and samples its actual painted colors: inactive-tab background
+     * ({@code getBackground()}) and active-tab background ({@code
+     * getSelectionBackground()}). Both are read directly off the widget rather than
+     * through the CSS engine: E4 themes a CTabFolder by calling these same setters,
+     * so the getters already return the themed value, and going through {@code
+     * IThemeEngine}'s CSS layer would mean casting its implementation to an internal
+     * type and manually disposing the Color objects it allocates — extra risk for a
+     * value the widget already holds. Returns {@code {inactiveHex, activeHex}}, or
+     * {@code null} if the editor area isn't in the model yet, isn't rendered as a
+     * CTabFolder (e.g. zero editors open), the colors aren't readable, or (Cocoa only)
+     * the sampled active-tab color is implausible for {@code isDark} — see the
+     * Bugzilla-470168-class workaround inline below.
+     *
+     * @param isDark whether the workbench is currently in dark theme, per {@link
+     *               #isDarkTheme()} — passed in rather than re-derived so the Cocoa
+     *               sanity check compares against the same theme decision the caller
+     *               already made, not a possibly-racing second read.
+     */
+    /** Set by {@link #findEditorAreaTabColors(boolean)} on every call — which step it
+     *  got to, for the debug-mode log line in {@link #pushTheme()} (this method itself
+     *  only returns null/non-null, so this is the only way to see WHERE it failed). */
+    private String lastTabColorsDiagnostic = "not yet run";
+
+    private String[] findEditorAreaTabColors(boolean isDark) {
+        try {
+            org.eclipse.ui.IWorkbench wb = org.eclipse.ui.PlatformUI.getWorkbench();
+            org.eclipse.e4.ui.workbench.modeling.EModelService modelService =
+                    wb.getService(org.eclipse.e4.ui.workbench.modeling.EModelService.class);
+            org.eclipse.e4.ui.model.application.MApplication application =
+                    wb.getService(org.eclipse.e4.ui.model.application.MApplication.class);
+            if (modelService == null || application == null) {
+                lastTabColorsDiagnostic = "modelService=" + modelService + " application=" + application;
+                return null;
+            }
+
+            org.eclipse.e4.ui.model.application.ui.MUIElement element =
+                    modelService.find(org.eclipse.ui.IPageLayout.ID_EDITOR_AREA, application);
+            String elementClassBeforeDeref = element == null ? "null" : element.getClass().getName();
+            if (element instanceof org.eclipse.e4.ui.model.application.ui.advanced.MPlaceholder ph) {
+                element = ph.getRef();
+            }
+            // ID_EDITOR_AREA resolves to an MArea (the editor area's own container),
+            // NOT the MPartStack directly — confirmed by logging the actual class here
+            // against a live GTK session. The real per-editor tab folder (the one
+            // showing open file tabs) is a descendant of it, tagged by E4's renderer
+            // with a CSS class name containing "EditorStack" — findElements walks
+            // down to find it rather than assuming a fixed nesting depth, since that
+            // can vary with split editors / multiple editor areas.
+            if (!(element instanceof org.eclipse.e4.ui.model.application.ui.advanced.MArea area)) {
+                lastTabColorsDiagnostic = "find(" + org.eclipse.ui.IPageLayout.ID_EDITOR_AREA + ") -> "
+                        + elementClassBeforeDeref + ", after MPlaceholder deref -> "
+                        + (element == null ? "null" : element.getClass().getName()) + " (want MArea)";
+                return null;
+            }
+            // A split editor area has more than one MPartStack descendant. Prefer the
+            // one E4 itself tags as the primary data stack (confirmed present as a
+            // literal tag, not the element ID, via a live GTK log dump); fall back to
+            // the first live one so a split editor still works even if some future
+            // Eclipse version stops tagging it this way.
+            org.eclipse.swt.custom.CTabFolder tabFolder = null;
+            org.eclipse.swt.custom.CTabFolder firstLive = null;
+            for (org.eclipse.e4.ui.model.application.ui.basic.MPartStack stack
+                    : modelService.findElements(area, null, org.eclipse.e4.ui.model.application.ui.basic.MPartStack.class)) {
+                if (!(stack.getWidget() instanceof org.eclipse.swt.custom.CTabFolder ctf) || ctf.isDisposed()) continue;
+                if (firstLive == null) firstLive = ctf;
+                if (stack.getTags().contains("org.eclipse.e4.primaryDataStack")) { tabFolder = ctf; break; }
+            }
+            if (tabFolder == null) tabFolder = firstLive;
+            if (tabFolder == null) {
+                lastTabColorsDiagnostic = "MArea found, but no descendant MPartStack has a live CTabFolder widget"
+                        + " (zero editors open, or the editor area isn't rendered yet)";
+                return null;
+            }
+
+            org.eclipse.swt.graphics.Color inactive = tabFolder.getBackground();
+            org.eclipse.swt.graphics.Color active = tabFolder.getSelectionBackground();
+            if (inactive == null || inactive.isDisposed() || active == null || active.isDisposed()) {
+                lastTabColorsDiagnostic = "inactive=" + inactive + " active=" + active + " (disposed or null)";
+                return null;
+            }
+            org.eclipse.swt.graphics.RGB activeRgb = active.getRGB();
+            // Cocoa-only workaround (Eclipse Bugzilla 470168 / 480788 / 559312): the E4 CSS
+            // theme engine reliably themes CTabFolder#getBackground() on every platform, but
+            // getSelectionBackground() has a long-standing gap on the Cocoa peer where the
+            // dark-theme rule for the SELECTED tab doesn't reach native paint code, so it comes
+            // back a plain white regardless of the workbench being in dark theme (confirmed live
+            // on macOS: inactive sampled correctly as #48484c while active came back #ffffff).
+            // GTK/Win32 don't have this gap, so this is deliberately scoped to macOS only.
+            // Detected as: sampled active-tab luminance falls on the opposite side of the dark
+            // threshold from the theme we already know we're in — e.g. white in dark mode.
+            // When that happens the sample is discarded (return null) in favor of the CSS
+            // default / last-known-good color already handled by pushTheme()'s caller.
+            if ("cocoa".equals(org.eclipse.swt.SWT.getPlatform())) {
+                boolean activeLooksDark = ColorUtils.luminance(activeRgb) < DARK_BG_LUMINANCE_THRESHOLD;
+                if (isDark != activeLooksDark) {
+                    lastTabColorsDiagnostic = "cocoa active-tab sample " + ColorUtils.toHex(activeRgb)
+                            + " implausible for mode=" + (isDark ? "dark" : "light") + " (Bugzilla 470168-class); discarded";
+                    return null;
+                }
+            }
+            lastTabColorsDiagnostic = "ok";
+            return new String[]{ ColorUtils.toHex(inactive.getRGB()), ColorUtils.toHex(activeRgb) };
+        } catch (Exception e) {
+            lastTabColorsDiagnostic = "threw " + e;
+            return null;
+        }
     }
 
     /**
@@ -952,6 +1181,39 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             });
         };
         Activator.getDefault().getPreferenceStore().addPropertyChangeListener(statusPrefListener);
+    }
+
+    /** Live-applies a Preferences change to "show message timestamps" without needing a
+     *  page reload or the view to regain focus — mirrors {@link #registerStatusPrefListener()}.
+     *  Without this, saving the preference from a Preferences dialog that never took focus
+     *  away from (and back to) this view left the old value pushed at page-load in place
+     *  until the next {@link #setFocus()}. */
+    private void registerHistoryShowTimestampsPrefListener() {
+        historyShowTimestampsPrefListener = event -> {
+            if (!com.anthropic.claudecode.eclipse.Constants.PREF_HISTORY_SHOW_TIMESTAMPS.equals(event.getProperty())) return;
+            Display.getDefault().asyncExec(this::pushHistoryShowTimestamps);
+        };
+        Activator.getDefault().getPreferenceStore().addPropertyChangeListener(historyShowTimestampsPrefListener);
+    }
+
+    /** Live-applies a Preferences change to "hide root directories row" without needing a
+     *  page reload — mirrors {@link #registerStatusPrefListener()}. */
+    private void registerHideRootRowPrefListener() {
+        hideRootRowPrefListener = event -> {
+            if (!com.anthropic.claudecode.eclipse.Constants.PREF_HIDE_ROOT_DIRECTORIES_ROW.equals(event.getProperty())) return;
+            Display.getDefault().asyncExec(this::pushHideRootDirectoriesRow);
+        };
+        Activator.getDefault().getPreferenceStore().addPropertyChangeListener(hideRootRowPrefListener);
+    }
+
+    /** Live-applies a Preferences change to Smart Scroll Lock without needing a page
+     *  reload — mirrors {@link #registerStatusPrefListener()}. */
+    private void registerSmartScrollLockPrefListener() {
+        smartScrollLockPrefListener = event -> {
+            if (!com.anthropic.claudecode.eclipse.Constants.PREF_SMART_SCROLL_LOCK.equals(event.getProperty())) return;
+            Display.getDefault().asyncExec(this::pushSmartScrollLock);
+        };
+        Activator.getDefault().getPreferenceStore().addPropertyChangeListener(smartScrollLockPrefListener);
     }
 
     /**
@@ -1296,6 +1558,34 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     }
 
     /**
+     * Tells the page whether to show a timestamp above each of your own messages.
+     * Re-pushed on activation and on every live Preferences change (see
+     * {@link #registerHistoryShowTimestampsPrefListener()}) — a Preferences dialog OK
+     * doesn't reload the page or necessarily refocus this view, so without the live
+     * push a mid-session toggle would sit unapplied until the next focus.
+     */
+    private void pushHistoryShowTimestamps() {
+        if (browser == null || browser.isDisposed() || !pageLoaded) return;
+        boolean show = Activator.getDefault().getPreferenceStore()
+                .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_HISTORY_SHOW_TIMESTAMPS);
+        browser.execute("window.__historyShowTimestamps = " + show + ";");
+    }
+
+    /**
+     * Tells the page whether to hide the root ("supertab") directory row entirely.
+     * Re-pushed on activation and on every live Preferences change (see
+     * {@link #registerHideRootRowPrefListener()}). Calls into the page's own
+     * {@code renderSupertabs()} area rather than just setting a flag, since hiding the
+     * row has to take effect immediately — see {@code window.onHideRootDirectoriesRow}.
+     */
+    private void pushHideRootDirectoriesRow() {
+        if (browser == null || browser.isDisposed() || !pageLoaded) return;
+        boolean hide = Activator.getDefault().getPreferenceStore()
+                .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_HIDE_ROOT_DIRECTORIES_ROW);
+        browser.execute("window.onHideRootDirectoriesRow && window.onHideRootDirectoriesRow(" + hide + ")");
+    }
+
+    /**
      * Tells the page which optional slices of the working-indicator gerund list are in
      * rotation (Preferences &gt; Claude Code &gt; Miscellaneous Configuration). Sent as one
      * JSON object rather than positional booleans so adding a category later doesn't
@@ -1476,9 +1766,16 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         m.setOnText(t -> display.asyncExec(() -> executeJS("window.onStreamText && window.onStreamText('" + tj + "','" + esc(t) + "')")));
         m.setOnStreamEnd(() -> display.asyncExec(() -> executeJS("window.onStreamEnd && window.onStreamEnd('" + tj + "')")));
         m.setOnToolStart(n -> display.asyncExec(() -> executeJS("window.onToolStart && window.onToolStart('" + tj + "','" + esc(n) + "')")));
+        m.setOnToolEnd(j -> display.asyncExec(() -> executeJS("window.onToolEnd && window.onToolEnd('" + tj + "','" + esc(j) + "')")));
         m.setOnThinking(t -> display.asyncExec(() -> executeJS("window.onThinking && window.onThinking('" + tj + "','" + esc(t) + "')")));
         m.setOnTokens(n -> display.asyncExec(() -> executeJS("window.onTokens && window.onTokens('" + tj + "','" + esc(n) + "')")));
-        m.setOnRateLimit(j -> display.asyncExec(() -> executeJS("window.onRateLimit && window.onRateLimit('" + tj + "','" + esc(j) + "')")));
+        m.setOnRateLimit(j -> {
+            ClaudeStatusStore.acceptRateLimitEvent(j);
+            display.asyncExec(() -> {
+                refreshStatusBar();
+                executeJS("window.onRateLimit && window.onRateLimit('" + tj + "','" + esc(j) + "')");
+            });
+        });
         m.setOnSessionId(id -> display.asyncExec(() -> executeJS("window.onSessionId && window.onSessionId('" + tj + "','" + esc(id) + "')")));
         m.setOnError(msg -> display.asyncExec(() -> executeJS("window.onError && window.onError('" + tj + "','" + esc(msg) + "')")));
         m.setOnCompact(j -> display.asyncExec(() -> executeJS("window.onCompact && window.onCompact('" + tj + "','" + esc(j) + "')")));
@@ -1779,6 +2076,13 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         catch (Throwable t) { return "[]"; }
     }
 
+    /** @param root captured on the UI thread before the scan, same reason as
+     *  {@link #safeSessionList(String)}. */
+    private String safeSessionSearchContent(String root, String sessionIdsJson, String query, boolean ownMessagesOnly, long generation) {
+        try { return NativeCore.sessionSearchContent(root, sessionIdsJson, query, ownMessagesOnly, generation); }
+        catch (Throwable t) { return "[]"; }
+    }
+
     /** Message ids in render order. An older DLL has no such symbol → "[]", which
      *  the GUI reads as "no per-message actions here" rather than failing a click. */
     private String safeMessageIds(String id) {
@@ -1925,6 +2229,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // change shows up in the right-click menu's hints on the next activation.
         pushEditKeyHints();
         pushDebugMode();
+        pushHistoryShowTimestamps();
+        pushHideRootDirectoriesRow();
         pushSpinnerVerbs();
     }
 
@@ -2391,6 +2697,21 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(statusPrefListener); }
             catch (Throwable ignored) {}
             statusPrefListener = null;
+        }
+        if (historyShowTimestampsPrefListener != null) {
+            try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(historyShowTimestampsPrefListener); }
+            catch (Throwable ignored) {}
+            historyShowTimestampsPrefListener = null;
+        }
+        if (hideRootRowPrefListener != null) {
+            try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(hideRootRowPrefListener); }
+            catch (Throwable ignored) {}
+            hideRootRowPrefListener = null;
+        }
+        if (smartScrollLockPrefListener != null) {
+            try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(smartScrollLockPrefListener); }
+            catch (Throwable ignored) {}
+            smartScrollLockPrefListener = null;
         }
         if (themeChangeListener != null) {
             try {

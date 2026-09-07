@@ -13,7 +13,12 @@ function clearWelcome(pane) { if (!pane) return; const w = pane.querySelector('.
      off  → the transcript always scrolls to the bottom on every render (the original
             behavior, untouched).
      on   → it scrolls only while you are already at the bottom. Scroll up to read and
-            it holds; scroll back down and it resumes on its own.
+            it holds; scroll back down and it resumes on its own. Exception: with Smart
+            Scroll Lock also on (a separate preference, see smartScrollLock below), your
+            OWN deliberate actions — sending a message, answering an approval or question
+            card — still jump you to the bottom, and so does Claude raising a NEW
+            approval or question card (the session is blocked until it's answered); a
+            card timing out on its own does not.
 
    View-wide, not per-tab: #messages is a single scroll container shared by every tab's
    pane (chat.css), so one toggle governs every conversation in the view. Java owns the
@@ -25,6 +30,14 @@ window.onScrollLock = function(locked) {
   // Both edges: unlocking has to retire the button now, not at the next render.
   updateJumpToLatest();
 };
+// Smart Scroll Lock (Preferences > Claude Code): while the lock is armed, still jump to
+// the bottom for the user's OWN deliberate actions (sending a message, answering a card)
+// AND when Claude raises a new approval/question card, instead of holding through those
+// too — see scrollBottom's `force` param and its call sites in cards.js/chat.js. A card
+// timing out on its own is excluded, matching the plugin's pre-Scroll-Lock behavior. Off
+// matches the plugin's current upstream behavior (the lock holds through everything).
+let smartScrollLock = false;
+window.onSmartScrollLock = function(smart) { smartScrollLock = !!smart; };
 // How far from the true bottom still counts as "at the bottom" for the purpose of
 // (re-)arming followTail — has to clear the viewport settling on first render
 // (scrollHeight starts equal to clientHeight before any content), not a streamed
@@ -93,17 +106,45 @@ function scrollBottom(force) {
   }
   autoScroll();
 }
+/** The timestamp a LIVE send happens at — pass this explicitly at every send call
+ *  site (never inferred inside addUserMessage itself, see its own doc comment). */
+function nowIso() { return new Date().toISOString(); }
+/** Formats an ISO timestamp as a short local time for TODAY, or date+time otherwise —
+ *  same today/older split as history.js's own relTime(), so the two read consistently. */
+function absTime(iso) {
+  const t = Date.parse(iso); if (isNaN(t)) return '';
+  const d = new Date(t);
+  const timePart = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const today = new Date();
+  const isToday = d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth()
+      && d.getDate() === today.getDate();
+  return isToday ? timePart : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + timePart;
+}
 /**
  * @param {string} text @param {string|null} [ctx] context-chip label (file:lines)
  * @param {{url: string, name: string, w: number, h: number}[]} [images] pasted-image chips
  * @param {string} [id] transcript uuid — enables this bubble's hover actions. A
  *   live send has none yet (the CLI writes the line after us); backfillMessageIds
  *   fills it in once the turn ends.
+ * @param {string} [ts] ISO timestamp for the opt-in line above the bubble
+ *   (PREF_HISTORY_SHOW_TIMESTAMPS / window.__historyShowTimestamps). NOT defaulted to
+ *   "now" here on purpose: a caller reconstructing history that has no recorded
+ *   timestamp (an older session predating this field, or a line the CLI itself never
+ *   stamped) must pass nothing and get no line, rather than this function silently
+ *   rendering today's time on a message from last week. Every LIVE send site passes
+ *   `new Date().toISOString()` itself instead.
  */
-function addUserMessage(text, ctx, images, id) {
+function addUserMessage(text, ctx, images, id, ts) {
   const pane = activeTab() ? activeTab().pane : messagesEl;
   clearWelcome(pane);
   const turn = document.createElement('div'); turn.className = 'turn';
+  if (window.__historyShowTimestamps && ts) {
+    const label = absTime(ts);
+    if (label) {
+      const tsEl = document.createElement('div'); tsEl.className = 'msg-ts'; tsEl.textContent = label;
+      turn.appendChild(tsEl);
+    }
+  }
   const box = document.createElement('div'); box.className = 'user-msg';
   if (id) box.dataset.mid = id;
   box.appendChild(makeMsgActions());
@@ -127,11 +168,13 @@ function addUserMessage(text, ctx, images, id) {
     box.appendChild(body);
   }
   turn.appendChild(box); pane.appendChild(turn);
-  // NOT scrollBottom(true): with the lock armed, sending must not move the view either.
-  // The lock means "leave my scroll position alone" without exception — being thrown to
-  // the bottom by your own message is the same interruption as being thrown there by a
-  // streamed chunk. Unlocked, this still jumps to the bottom as it always did.
-  scrollBottom();
+  // force only with Smart Scroll Lock on: by default, with the lock armed, sending must
+  // not move the view either — the lock means "leave my scroll position alone" without
+  // exception, being thrown to the bottom by your own message is the same interruption
+  // as being thrown there by a streamed chunk. Smart Scroll Lock opts into the opposite
+  // read: your OWN deliberate action is expected to land you at the bottom. Unlocked,
+  // this jumps to the bottom either way, as it always did.
+  scrollBottom(smartScrollLock);
 }
 // Lazily create the assistant turn — only when real content (text or a tool)
 // arrives. While Claude is just "thinking", nothing but the working sunburst shows.
@@ -243,7 +286,17 @@ function toolLabel(name) {
 function planOutcomeText(rejected) {
   return rejected ? 'Stayed in plan mode' : 'User approved the plan';
 }
-function makeToolLine(name, input, status) {
+/* The muted one-liner under a failed tool ("⚠ File does not exist…"). Shared by the
+   live path (onToolEnd) and the reload path (makeToolLine) so a conversation renders
+   the same either way — the two disagreeing is the bug this fixes. Idempotent: a
+   second result for the same tool replaces the line instead of stacking another. */
+function setToolError(line, text) {
+  if (!line || !text) return;
+  let sub = line.querySelector(':scope > .tool-sub.err');
+  if (!sub) { sub = document.createElement('div'); sub.className = 'tool-sub err'; line.appendChild(sub); }
+  sub.textContent = '⚠ ' + text;
+}
+function makeToolLine(name, input, status, errorText) {
   input = input || {};
   const path = input.file_path || input.path || input.notebook_path || '';
   const detail = path || input.command || input.pattern || input.query || input.url || input.prompt || '';
@@ -265,6 +318,10 @@ function makeToolLine(name, input, status) {
     sub.textContent = planOutcomeText(status === 'interrupted');
     line.appendChild(sub);
   }
+  // Reload path: why it failed, when the loader kept a reason. A turn that was
+  // simply cut off has no result and no text — the red dot alone still reads
+  // "stopped", which is what it meant live.
+  if (status === 'interrupted') setToolError(line, errorText);
   return line;
 }
 function addToolLine(payload) {
@@ -272,12 +329,40 @@ function addToolLine(payload) {
   if (!ensureTurn()) return;
   markToolsDone(curTurn);   // a new tool starting means the previous one finished → green
   let info; try { info = JSON.parse(payload); } catch (e) { info = { name: payload, input: {} }; }
-  curTurn.appendChild(makeToolLine(info.name || 'tool', info.input || {}));
+  const line = makeToolLine(info.name || 'tool', info.input || {});
+  // The tool_use id, so this line can be found again when its result lands. An
+  // older core sends no id — the line then just keeps the inferred green dot.
+  if (info.id) line.dataset.tuid = info.id;
+  curTurn.appendChild(line);
   // End the current text body so any text Claude emits AFTER this tool starts a new
   // body BELOW the tool line (otherwise the closing "Done…" merges in above the edits).
   curBody = null; curText = '';
   relinkTurn(curTurn);
   scrollBottom();
+}
+/* A tool finished (live). Resolves THAT tool's dot from what actually happened
+   instead of the optimistic green markToolsDone would infer, and shows the reason
+   when it failed. Searches the whole pane, not just curTurn: a result can land
+   after the turn ended, by which point curTurn is null.
+   @param {string} payload {"id":…,"isError":bool,"text":…} */
+function applyToolResult(payload) {
+  let info; try { info = JSON.parse(payload); } catch (e) { return; }
+  if (!info || !info.id) return;
+  const pane = streamPane() || (activeTab() ? activeTab().pane : null);
+  if (!pane) return;
+  // Matched by walking the nodes rather than an attribute selector — tool ids come
+  // from the CLI and are never interpolated into a selector this way.
+  let line = null;
+  pane.querySelectorAll('.tool-line[data-tuid]').forEach(el => {
+    if (el.dataset.tuid === info.id) line = el;
+  });
+  if (!line) return;
+  // A tool still holding a decision card keeps its pending look until the card
+  // resolves it — that path sets its own colour.
+  if (line.classList.contains('pending')) return;
+  const dot = line.querySelector('.dot');
+  if (dot) dot.className = info.isError ? 'dot red' : 'dot done';
+  if (info.isError) setToolError(line, info.text);
 }
 /* Minimal LCS line diff (guarded against pathological sizes). */
 function lineDiff(oldStr, newStr) {
@@ -427,7 +512,7 @@ function doSend() {
   const queueing = !!t.streaming;
   const withCtx = !!(ctxEnabled && ctxData && ctxData.fileName);
   const imagesJson = (typeof pendingImagesJson === 'function') ? pendingImagesJson(t) : '';
-  addUserMessage(text, withCtx ? ctxChipLabel() : null, imgs);
+  addUserMessage(text, withCtx ? ctxChipLabel() : null, imgs, null, nowIso());
   if (!t.titled && text) setTabTitle(t, text);   // title from text; an image-only first turn stays untitled
   input.value = ''; input.style.height = 'auto'; t.draft = ''; closeSlash();
   if (typeof clearPendingImages === 'function') clearPendingImages(t);   // consumed → clear the strip
