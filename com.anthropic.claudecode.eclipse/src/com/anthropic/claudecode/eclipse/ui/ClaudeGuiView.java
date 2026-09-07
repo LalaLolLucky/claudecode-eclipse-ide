@@ -42,6 +42,7 @@ import org.eclipse.swt.graphics.ImageLoader;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.DirectoryDialog;
 import org.eclipse.swt.widgets.Display;
+import org.eclipse.ui.IMemento;
 import org.eclipse.ui.part.IShowInTarget;
 import org.eclipse.ui.part.ShowInContext;
 import org.eclipse.ui.part.ViewPart;
@@ -72,6 +73,36 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private boolean pageLoaded = false;
     /** View-toolbar Scroll Lock toggle; see {@link #createToolBar()}. */
     private Action scrollLockAction;
+
+    /** {@link IMemento} key holding the page's own view-state blob (see {@link #viewStateJson}). */
+    private static final String MEMENTO_VIEW_STATE = "claudeViewState";
+    /**
+     * The page's last-known layout — which roots are open, their conversations, the
+     * active one, the root row's collapsed state — as the JSON the page itself built.
+     * Java never parses it; it only has to survive a restart, so its shape stays a JS
+     * concern (see viewstate.js).
+     *
+     * <p>Pushed up by {@code _saveViewState} on every change rather than read out of
+     * the page at {@link #saveState} time: by then the {@link Browser} may already be
+     * disposed, and a crash or a killed PDE runtime never reaches saveState at all.
+     * Holding the latest push means the worst case loses only changes made after it.
+     */
+    private volatile String viewStateJson = null;
+
+    @Override
+    public void init(org.eclipse.ui.IViewSite site, IMemento memento) throws org.eclipse.ui.PartInitException {
+        super.init(site, memento);
+        // Per-workspace by construction — this rides in the workbench's own state, so
+        // two workspaces open on different projects can't overwrite each other.
+        if (memento != null) viewStateJson = memento.getString(MEMENTO_VIEW_STATE);
+    }
+
+    @Override
+    public void saveState(IMemento memento) {
+        super.saveState(memento);
+        final String s = viewStateJson;
+        if (s != null && !s.isEmpty()) memento.putString(MEMENTO_VIEW_STATE, s);
+    }
 
     // One claude process per conversation/tab, so tabs never block each other.
     private final java.util.Map<String, ChatProcessManager> managers = new java.util.concurrent.ConcurrentHashMap<>();
@@ -108,6 +139,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction modelConfigFn;
     @SuppressWarnings("unused") private BrowserFunction accountInfoFn;
     @SuppressWarnings("unused") private BrowserFunction defaultRootFn;
+    @SuppressWarnings("unused") private BrowserFunction savedViewStateFn;
+    @SuppressWarnings("unused") private BrowserFunction saveViewStateFn;
     @SuppressWarnings("unused") private BrowserFunction pickDirectoryFn;
     @SuppressWarnings("unused") private BrowserFunction folderInfoFn;
     @SuppressWarnings("unused") private BrowserFunction trustFolderFn;
@@ -353,6 +386,17 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         });
         // ── Working roots ("supertabs") ────────────────────────────────────────
         defaultRootFn  = new SimpleFunction(browser, "_defaultRoot", a -> workspaceRoot());
+        // ── View state across restarts ─────────────────────────────────────────
+        // Read SYNCHRONOUSLY during the page's own boot (like _defaultRoot), not pushed
+        // after `completed` fires: init.js has to know whether to restore or to open the
+        // usual single empty conversation, and a later push would mean building that
+        // default only to tear it down again.
+        savedViewStateFn = new SimpleFunction(browser, "_savedViewState",
+                a -> viewStateJson == null ? "" : viewStateJson);
+        saveViewStateFn = new SimpleFunction(browser, "_saveViewState", a -> {
+            if (a.length > 0 && a[0] instanceof String s) viewStateJson = s;
+            return null;
+        });
         // The folder picker is ASYNC on purpose: opening a modal SWT dialog while
         // WebView2 is still inside the JS call that triggered it deadlocks on Windows.
         // Java answers by calling window.onDirectoryPicked once the dialog closes.

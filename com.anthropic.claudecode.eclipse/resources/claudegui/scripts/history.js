@@ -368,7 +368,13 @@ function appendTextStatic(turn, text) {
   el.querySelector('.a-body').innerHTML = renderMarkdown(text);
   turn.appendChild(el);
 }
-function loadHistory(id, title) {
+/**
+ * @param {Tab} [targetTab] render INTO this existing tab instead of picking one. Used
+ *   by the restore path (viewstate.js), which has already built the tab and only needs
+ *   its transcript rebuilt — so neither the "already open" dedupe nor the two entry
+ *   point behaviours below apply to it.
+ */
+function loadHistory(id, title, targetTab) {
   closeMenus();
   // Read-and-reset IMMEDIATELY: historyResumeInPlace must never outlive this one
   // open→pick cycle. Past this line the module flag is back to its default, so any
@@ -376,12 +382,16 @@ function loadHistory(id, title) {
   // entry point was used here.
   const resumeInPlace = historyResumeInPlace;
   historyResumeInPlace = false;
-  // Already open in ANOTHER tab → don't open a second instance of the same
-  // conversation; just switch to that tab. (Re-opening it in its OWN tab still
-  // reloads as before.) Applies to BOTH entry points below — never worth a duplicate
-  // tab, in place or not.
-  const already = tabs.find(tb => tb.sessionId === id && tb.id !== activeId);
-  if (already) { switchTab(already.id); return; }
+  // Already open → never a second instance of the same conversation. In another tab,
+  // switch to it; in the tab you are already on, do nothing at all (the panel has
+  // closed above, which is the whole of the interaction). Excluding the active tab
+  // here used to fall through to the createTab branch below — reuseCurrent is false
+  // for a tab already holding a real session — so picking the session you were
+  // looking at duplicated it into a new tab. Applies to BOTH entry points below.
+  if (!targetTab) {
+    const already = tabs.find(tb => tb.sessionId === id);
+    if (already) { if (already.id !== activeId) switchTab(already.id); return; }
+  }
   let items = [];
   try { items = JSON.parse(window._loadSession(id) || '[]'); } catch (e) {}
 
@@ -405,7 +415,12 @@ function loadHistory(id, title) {
   //    "browse history" with no such context — the two are allowed to differ.
   const reuseCurrent = resumeInPlace || isTabEmpty(activeTab());
   let t;
-  if (reuseCurrent) {
+  if (targetTab) {
+    t = targetTab;
+    loadRender(t);                        // operate on THIS tab's render state
+    // Restore only ever targets a tab built moments ago from the stored session id:
+    // no stream to cancel, no live content to clear.
+  } else if (reuseCurrent) {
     t = activeTab(); if (!t) return;
     loadRender(t);                        // operate on THIS tab's render state
     // An in-flight stream on the tab being overwritten must stop NOW, or its output
@@ -561,6 +576,8 @@ function loadHistory(id, title) {
   if (t === activeTab()) { permMode = pm; if (typeof applyModeUI === 'function') applyModeUI(pm); }
   if (typeof notifyStatusSelection === 'function') notifyStatusSelection();
   pane.scrollTop = 0;
-  messagesEl.scrollTop = 0;
+  // #messages is shared by every pane, so only move it when the tab just rebuilt is
+  // the visible one — a restore rendering a background tab must not yank the view.
+  if (t === activeTab()) messagesEl.scrollTop = 0;
 }
 

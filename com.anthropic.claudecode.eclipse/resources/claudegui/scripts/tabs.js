@@ -161,7 +161,25 @@ function switchTab(id) {
     followTail = true;
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
-  updateJumpToLatest();
+  // A conversation restored from the last Eclipse session holds only its session id
+  // until it is first shown (see viewstate.js) — rebuilding every transcript at
+  // startup would cost one full reconstruction per tab, for panes nobody is looking
+  // at. Render here, on the switch that makes it visible, then place the scroll the
+  // user left it at: the block above ran against a pane that was still empty, and
+  // with Scroll Lock off it lands at the bottom unconditionally.
+  if (t && t._restore) {
+    const rs = t._restore;
+    t._restore = null;                    // cleared FIRST — this must not re-enter
+    loadHistory(rs.sessionId, rs.title, t);
+    if (rs.scrollTop > 0) {
+      messagesEl.scrollTop = Math.min(rs.scrollTop, messagesEl.scrollHeight);
+      t.scrollTop = messagesEl.scrollTop;
+      // Only meaningful while the lock is armed; with it off the transcript follows
+      // unconditionally and followTail is forced true on every switch anyway.
+      if (scrollLocked) { followTail = false; t.followTail = false; }
+    }
+    updateJumpToLatest();
+  }
 }
 /* Loads a tab's stored model/effort/thinking/permission-mode into the composer UI
    + status bar. */

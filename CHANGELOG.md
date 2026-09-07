@@ -4,7 +4,19 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.21.exp] — 2026-09-06 *(current)*
+## [3.1.22.exp] — 2026-09-07 *(current)*
+
+### Added
+- **Search in Session History**, the button beside the search box cycles titles, your own messages, or the whole conversation, and matches show the line they were found in ([@jmoraleda](https://github.com/jmoraleda), PR #113).
+- **Persistent view state**, Claude Code view only: your conversations, which one you were in, your working-directory folders, the row's collapsed state, and your scroll position are restored on restart.
+
+### Fixed
+- Opening the conversation you are already in no longer duplicates its tab, Claude Code view only.
+- Line breaks are now visible in Claude Code view.
+
+---
+
+## [3.1.21.exp] — 2026-09-06
 
 ### Added
 - **Scroll Lock can start switched on**, as a preference shared by the Claude Code and Claude Terminal views ([@jmoraleda](https://github.com/jmoraleda), PR #111).

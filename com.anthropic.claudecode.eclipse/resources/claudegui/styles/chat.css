@@ -63,7 +63,12 @@
   padding: 2px 8px; margin-bottom: 8px; font-size: 11.5px; color: var(--fg-dim);
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .user-msg .ctx-chip svg { flex-shrink: 0; opacity: .8; }
-.user-msg .body { color: var(--fg); line-height: 1.5; }
+/* pre-wrap, so the line breaks you typed survive into the bubble. textContent already
+   carries them; without this they collapse to single spaces and a message written as
+   paragraphs reads as one run-on line. Does NOT undo the containment fix: the
+   inherited overflow-wrap:anywhere from #messages still breaks a long unbroken token,
+   which white-space only stops for `pre`/`nowrap`, not for pre-wrap. */
+.user-msg .body { color: var(--fg); line-height: 1.5; white-space: pre-wrap; }
 
 /* ── Per-message actions (joebiden8) ─────────────────────────────────────────
    Hovering a sent message floats round badges over its top-right corner: the
