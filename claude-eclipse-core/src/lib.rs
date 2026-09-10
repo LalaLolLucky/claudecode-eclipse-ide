@@ -7,6 +7,7 @@ mod mcp;
 mod server;
 mod session;
 mod shell_env;
+mod stt;
 mod teleport;
 mod web_history;
 
@@ -1245,4 +1246,59 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_remoteCo
     };
     let svg = bridge::rc_qr_svg(&u);
     env.new_string(svg).unwrap_or_else(|_| env.new_string("").unwrap()).into_raw()
+}
+
+// ---------------------------------------------------------------------------
+// Dictation
+// ---------------------------------------------------------------------------
+
+/// One capture per IDE: the composer that started dictation is the only one
+/// that can be typing into, and a second device open would fail anyway.
+static DICTATION: OnceLock<stt::Dictation> = OnceLock::new();
+
+fn dictation() -> &'static stt::Dictation {
+    DICTATION.get_or_init(stt::Dictation::new)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttRegisterCallbacks(
+    env: JNIEnv,
+    _class: JClass,
+    callbacks: JObject,
+) {
+    let global_ref = match env.new_global_ref(callbacks) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    dictation().register_callbacks(java_vm(), global_ref);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttStart(
+    mut env: JNIEnv,
+    _class: JClass,
+    keyterms: JString,
+) {
+    // Hints are optional: an empty string just means no x-config-keyterms header.
+    let terms: String = env
+        .get_string(&keyterms)
+        .map(|s| s.into())
+        .unwrap_or_default();
+    dictation().start(terms);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttStop(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    dictation().stop();
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttIsRecording(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    u8::from(dictation().is_recording())
 }

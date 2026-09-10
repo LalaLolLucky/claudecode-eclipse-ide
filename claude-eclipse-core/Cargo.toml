@@ -21,3 +21,17 @@ base64         = "0.22"
 vt100          = "0.15"
 ureq           = { version = "2", features = ["json"] }
 qrcode = { version = "0.14.1", default-features = false }
+
+# Dictation. Capture is native (cpal) and transcription is Anthropic's own
+# streaming service, reached over a WebSocket from Rust -- NOT from the webview.
+# Two reasons it lives here rather than in JS: the OAuth bearer token must never
+# enter the browser's JS context (the GUI renders model output as HTML), and
+# native capture sidesteps WebView2/WebKitGTK getUserMedia permission plumbing
+# entirely.
+#
+# All pure Rust: the nine-target build has no C++ cross-toolchain. cpal does link
+# libasound on the five Unix targets, so those images need libasound2-dev and the
+# FreeBSD sysroot needs alsa-lib.
+cpal            = "0.15"
+rubato          = "0.15"
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }

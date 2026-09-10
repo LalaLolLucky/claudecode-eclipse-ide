@@ -716,4 +716,49 @@ public final class NativeCore {
      * Enables or disables debug logging in native code.
      */
     public static native void setDebugMode(boolean enabled);
+
+    // ---- Dictation -------------------------------------------------------
+
+    /**
+     * Transcript events for one dictation take. Every one arrives on a native
+     * worker thread, never the UI thread.
+     */
+    public interface SttCallbacks {
+        /** Revised guess at the current utterance; supersedes the previous one. */
+        void onSttPartial(String text);
+        /** The settled transcript for the take. */
+        void onSttFinal(String text);
+        /** The tail has been flushed; no further events for this take. */
+        void onSttDone();
+        void onSttError(String message);
+        /** Input loudness, "0.0".."1.0", roughly every 100ms while recording. */
+        default void onSttLevel(String rms) {}
+        /**
+         * Diagnostic line for the server view. Only emitted while native debug
+         * logging is on, so this stays silent unless Debug mode is enabled.
+         */
+        default void onSttLog(String line) {}
+    }
+
+    /** Registers dictation callbacks. Process-wide: there is one capture at a time. */
+    public static native void sttRegisterCallbacks(SttCallbacks callbacks);
+
+    /**
+     * Opens the default input device and streams it to the transcription
+     * service. Returns as soon as the worker is spawned; results arrive via
+     * {@link SttCallbacks}.
+     *
+     * <p>Requires a signed-in Claude.ai account: the stream authenticates with
+     * the OAuth token, which is read and zeroized natively and never crosses
+     * into Java or the webview.
+     *
+     * @param keyterms comma-joined recognition hints (project name, git branch,
+     *                 …), or empty for none
+     */
+    public static native void sttStart(String keyterms);
+
+    /** Ends the take. The final transcript follows on {@link SttCallbacks}. */
+    public static native void sttStop();
+
+    public static native boolean sttIsRecording();
 }

@@ -189,9 +189,84 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
   padding: 8px 10px 6px; transition: border-color .15s; }
 #input-wrap.blur { border-color: var(--border); }
 .input-row { display: flex; align-items: flex-start; gap: 8px; }
-#input { flex: 1; background: transparent; border: none; outline: none; resize: none; color: var(--fg);
+/* flex:1 moved off the textarea onto its wrapper so the mirror has a positioned
+   box to fill. min-width:0 lets a flex child actually shrink. */
+#input-field { position: relative; flex: 1; min-width: 0; }
+#input { display: block; width: 100%; background: transparent; border: none; outline: none; resize: none;
+  color: var(--fg);
   font-family: inherit; font-size: 13px; line-height: 1.5; max-height: 160px; min-height: 22px; }
 #input::placeholder { color: var(--fg-faint); }
+
+/* ---- dictation mirror ---------------------------------------------------
+   A textarea renders uniformly styled text, so partial italics are impossible
+   in it. This is a non-interactive copy stacked exactly over the field: while a
+   take runs the textarea's glyphs go transparent (its CARET does not) and this
+   layer draws the same text with the dictated span in italics.
+
+   Every metric here must match #input exactly or the two will wrap differently.
+   That is unusually safe in this composer: the padding and border live on
+   #input-wrap, and the field itself has no padding, no border, no letter-spacing
+   and no text-indent -- the three usual causes of drift are simply absent.
+
+   Shown ONLY during a take. Outside one it is display:none and the composer is
+   exactly what it was before, so nothing in the normal typing path can be
+   affected by it. */
+#input-mirror { display: none; position: absolute; inset: 0; pointer-events: none;
+  overflow: hidden; color: var(--fg);
+  font-family: inherit; font-size: 13px; line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: break-word; }
+#input-mirror i { font-style: italic; }
+#input-field.mirroring #input-mirror { display: block; }
+#input-field.mirroring #input { color: transparent; caret-color: var(--fg); }
+/* The textarea paints its selection ON TOP of the mirror, so an opaque highlight
+   would blank the glyphs showing through. Translucent keeps them readable. */
+#input-field.mirroring #input::selection { background: rgba(120, 170, 255, .35); }
+
+/* ---- dictation ----------------------------------------------------------
+   Geometry and colour measured off the reference recording at native
+   resolution (RemoteSystemsTempFiles/ref, 10fps crop): bars 4px wide on an 8px
+   pitch, 6px tall at rest and ~16px at peak, growing symmetrically about the
+   centre line; #5aa2f7 for both the bars and the mic disc; #1e2830 for the
+   panel that appears behind the pair while recording. At rest there is no
+   panel and no meter -- only the outline glyph. */
+/* Squared to 6px like the button it wraps, and the same 26px tall, so the
+   panel that appears around the meter + button while recording lines up with
+   the rest of the composer instead of reading as a stray pill. */
+#mic-dock { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+  height: 26px; margin-top: -1px; border-radius: 6px; padding: 0;
+  background: transparent; transition: background-color .12s, padding .12s; }
+#mic-dock.recording { background: #1e2830; padding-left: 9px; }
+
+/* Square, on the composer's own terms: same 26px box and 6px radius as .pill,
+   and like .pill it draws no chrome at rest -- the glyph sits bare until the
+   pointer is over it or a take is running. (The reference uses a circular disc;
+   squared off deliberately to match this composer's other buttons.) */
+#mic-btn { display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; flex-shrink: 0;
+  border-radius: 6px; color: var(--fg-dim); cursor: pointer;
+  transition: background-color .12s, color .12s; }
+#mic-btn:hover { color: var(--fg); background: var(--bg-hover); }
+#mic-btn.recording { background: #5aa2f7; color: #fff; }
+#mic-btn.recording:hover { background: #6dadf9; color: #fff; }
+/* Disabled while a transcript is being flushed -- a second start before the
+   tail lands would interleave two takes. */
+#mic-btn.busy { opacity: .45; pointer-events: none; }
+
+/* Level meter. Heights are set from JS off the real input RMS; only the
+   transition lives here, so a quiet moment eases back down rather than
+   snapping. */
+#mic-level { display: inline-flex; align-items: center; gap: 4px; height: 26px;
+  flex-shrink: 0; }
+/* MUST be explicit: an author `display` beats the UA stylesheet's [hidden],
+   so without this the meter stays on screen permanently. */
+#mic-level[hidden] { display: none; }
+#mic-level i { width: 4px; height: 6px; border-radius: 2px; background: #5aa2f7;
+  transition: height .09s linear; }
+
+/* NOTE: the field itself is never italicised. It used to be, but italic glyphs
+   are a different width, so the textarea would wrap differently from the mirror
+   stacked on it and the two would visibly disagree. Only #input-mirror styles
+   text now -- see the dictation mirror block above. */
 
 #composer-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
 .cb-left, .cb-right { display: flex; align-items: center; gap: 6px; }

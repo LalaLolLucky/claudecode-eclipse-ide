@@ -68,10 +68,10 @@ const CALL_TIMEOUT_SECS: u64 = 20;
 /// `write_volatile` plus a `SeqCst` fence is the standard shape — the volatile
 /// write can't be elided as a dead store, and the fence stops it being sunk
 /// past the deallocation.
-struct Secret(String);
+pub(crate) struct Secret(String);
 
 impl Secret {
-    fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
     fn len(&self) -> usize {
@@ -122,15 +122,15 @@ fn home_dir() -> Option<PathBuf> {
 
 /// What the credential store had to say. `expires_at_ms` is the CLI's own
 /// `expiresAt` (epoch ms), so we can tell "stale, go refresh" from "gone".
-struct Credential {
-    token: Secret,
+pub(crate) struct Credential {
+    pub(crate) token: Secret,
     expires_at_ms: u64,
 }
 
 impl Credential {
     /// True when the CLI's own clock says this access token is past its life.
     /// Checked locally so an expired token costs us a refresh, not a round trip.
-    fn is_expired(&self) -> bool {
+    pub(crate) fn is_expired(&self) -> bool {
         self.expires_at_ms != 0 && now_ms() >= self.expires_at_ms
     }
 }
@@ -151,7 +151,7 @@ fn now_ms() -> u64 {
 /// normally exist. Shelled out through `security` because that is the CLI's own
 /// read path, and it leaves the OS — not us — deciding whether this process may
 /// see the secret.
-fn read_credential() -> Option<Credential> {
+pub(crate) fn read_credential() -> Option<Credential> {
     #[cfg(target_os = "macos")]
     {
         if let Some(c) = read_credential_keychain() {

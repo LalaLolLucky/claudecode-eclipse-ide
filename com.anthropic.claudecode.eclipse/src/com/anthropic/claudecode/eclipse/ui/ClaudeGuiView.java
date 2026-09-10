@@ -125,6 +125,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction disposeTabFn;
     @SuppressWarnings("unused") private BrowserFunction activeTabFn;
     @SuppressWarnings("unused") private BrowserFunction newSessionFn;
+    @SuppressWarnings("unused") private BrowserFunction sttStartFn;
+    @SuppressWarnings("unused") private BrowserFunction sttStopFn;
     @SuppressWarnings("unused") private BrowserFunction listSessionsFn;
     @SuppressWarnings("unused") private BrowserFunction listSessionsAsyncFn;
     @SuppressWarnings("unused") private BrowserFunction searchSessionContentFn;
@@ -257,6 +259,23 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         gl.marginWidth = 0; gl.marginHeight = 0; gl.verticalSpacing = 0; gl.horizontalSpacing = 0;
         parent.setLayout(gl);
         root = parent;
+
+        // Makes the Ctrl+D dictation binding live only while this view has focus.
+        // Taken from the SITE's context service rather than the workbench's: a
+        // site-scoped activation is tied to part activation automatically, so
+        // there is no listener to add and nothing to deactivate by hand. Scoped
+        // because an unscoped Ctrl+D would shadow delete-line in every editor.
+        try {
+            org.eclipse.ui.contexts.IContextService ctx =
+                    getSite().getService(org.eclipse.ui.contexts.IContextService.class);
+            if (ctx != null) {
+                ctx.activateContext("com.anthropic.claudecode.eclipse.contexts.guiFocused");
+            }
+        } catch (Exception e) {
+            // No context service (non-workbench harness): the mic button still works.
+            Activator.logError("Could not activate the Claude composer key context", e);
+        }
+
         browser = new Browser(parent, SWT.NONE);
         browser.setLayoutData(new org.eclipse.swt.layout.GridData(SWT.FILL, SWT.FILL, true, true));
 
@@ -364,6 +383,21 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             return null;
         });
         newSessionFn   = new SimpleFunction(browser, "_newSession", a -> null);   // new tab = new manager (JS creates the tab)
+        // Dictation. Capture and transcription are both native; this only starts
+        // the take and hands over the recognition hints.
+        sttStartFn     = new SimpleFunction(browser, "_sttStart", a -> {
+            String terms = sttKeyterms();
+            ClaudeCodeView.debug("[voice] start requested (keyterms: "
+                    + (terms.isEmpty() ? "none" : terms) + ")");
+            NativeCore.sttStart(terms);
+            return null;
+        });
+        sttStopFn      = new SimpleFunction(browser, "_sttStop", a -> {
+            ClaudeCodeView.debug("[voice] stop requested");
+            NativeCore.sttStop();
+            return null;
+        });
+        registerSttCallbacks();
         listSessionsFn = new SimpleFunction(browser, "_listSessions", a -> safeSessionList());
         // Async variant: compute the list off the UI thread (scanning many jsonl
         // files can take a moment), then push it back to JS. Keeps the history
@@ -2554,6 +2588,60 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         }
     }
 
+    /**
+     * Recognition hints for the transcriber: the working folder's name and the
+     * current git branch. Both are routinely spoken aloud while dictating and
+     * are exactly the words a general recogniser gets wrong.
+     */
+    private String sttKeyterms() {
+        java.util.List<String> terms = new java.util.ArrayList<>();
+        String root = activeRoot();
+        if (root != null && !root.isEmpty()) {
+            java.nio.file.Path p = java.nio.file.Paths.get(root);
+            java.nio.file.Path name = p.getFileName();
+            if (name != null) terms.add(name.toString());
+            try {
+                // Read .git/HEAD directly rather than shelling out: this runs on
+                // the UI thread from a BrowserFunction, where a process spawn
+                // would be felt as a stutter on every mic press.
+                String head = new String(java.nio.file.Files.readAllBytes(p.resolve(".git/HEAD")),
+                        java.nio.charset.StandardCharsets.UTF_8).trim();
+                if (head.startsWith("ref: refs/heads/")) {
+                    terms.add(head.substring("ref: refs/heads/".length()));
+                }
+                // A detached HEAD is a bare sha -- not a word anyone says, so skipped.
+            } catch (Exception ignored) {
+                // No repo, or unreadable: hints are optional by design.
+            }
+        }
+        return String.join(",", terms);
+    }
+
+    /** Transcript events land on a native worker thread; the browser is UI-thread only. */
+    private void pushStt(String fn, String arg) {
+        Display.getDefault().asyncExec(() -> executeJS(
+                "window." + fn + " && window." + fn + "('" + esc(arg) + "')"));
+    }
+
+    private void registerSttCallbacks() {
+        NativeCore.sttRegisterCallbacks(new NativeCore.SttCallbacks() {
+            @Override public void onSttPartial(String text) { pushStt("onSttPartial", text); }
+            @Override public void onSttFinal(String text)   { pushStt("onSttFinal", text); }
+            @Override public void onSttError(String message) {
+                ClaudeCodeView.debug("[voice] ERROR: " + message);
+                pushStt("onSttError", message);
+            }
+            @Override public void onSttDone() {
+                ClaudeCodeView.debug("[voice] done");
+                Display.getDefault().asyncExec(() -> executeJS("window.onSttDone && window.onSttDone()"));
+            }
+            /** Straight through to the meter; deliberately NOT logged -- it fires
+             *  ten times a second and would bury everything else in the view. */
+            @Override public void onSttLevel(String rms) { pushStt("onSttLevel", rms); }
+            @Override public void onSttLog(String line) { ClaudeCodeView.debug(line); }
+        });
+    }
+
     private static String esc(String s) {
         if (s == null) return "";
         return s.replace("\\", "\\\\").replace("'", "\\'")
@@ -2910,6 +2998,21 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             return;
         }
         view.browser.execute("window.cancelActiveCard && window.cancelActiveCard()");
+    }
+
+    /**
+     * Invoked by {@link com.anthropic.claudecode.eclipse.ui.handlers.ToggleDictationHandler}
+     * when the bound key is pressed. Delegates to the page's own toggle so the
+     * keyboard and the mic button cannot disagree about whether a take is running;
+     * the page treats a keyboard toggle as a latching one, never a hold.
+     */
+    public static void toggleDictation() {
+        ClaudeGuiView view = active;
+        if (view == null || view.browser == null || view.browser.isDisposed()
+                || !view.pageLoaded) {
+            return;
+        }
+        view.browser.execute("window.micToggle && window.micToggle()");
     }
 
     /** Pushes the current cancel-key label to the page. UI thread; call before raising a card. */

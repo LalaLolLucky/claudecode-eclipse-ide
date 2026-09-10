@@ -57,6 +57,11 @@
             description="Show the Claude IDE Server view"
             categoryId="com.anthropic.claudecode.eclipse.commands.category"/>
       <command
+            id="com.anthropic.claudecode.eclipse.commands.toggleDictation"
+            name="Toggle Dictation"
+            description="Start or stop voice dictation in the Claude Code composer"
+            categoryId="com.anthropic.claudecode.eclipse.commands.category"/>
+      <command
             id="com.anthropic.claudecode.eclipse.commands.toggleGui"
             name="Activate Claude Code"
             description="Show the Claude Code view"
@@ -93,6 +98,11 @@
         deactivated by ClaudeGuiView.cardOpened/cardClosed. -->
    <extension point="org.eclipse.ui.contexts">
       <context
+            id="com.anthropic.claudecode.eclipse.contexts.guiFocused"
+            name="Claude Code Composer"
+            description="The Claude Code view has focus"
+            parentId="org.eclipse.ui.contexts.window"/>
+      <context
             id="com.anthropic.claudecode.eclipse.contexts.cardOpen"
             name="Claude Card Open"
             description="A Claude permission, question or diff-review card is awaiting an answer"
@@ -119,6 +129,9 @@
       <handler
             commandId="com.anthropic.claudecode.eclipse.commands.activateCli"
             class="com.anthropic.claudecode.eclipse.ui.handlers.ActivateClaudeCliHandler"/>
+      <handler
+            commandId="com.anthropic.claudecode.eclipse.commands.toggleDictation"
+            class="com.anthropic.claudecode.eclipse.ui.handlers.ToggleDictationHandler"/>
       <handler
             commandId="com.anthropic.claudecode.eclipse.commands.dismissCard"
             class="com.anthropic.claudecode.eclipse.ui.handlers.DismissCardHandler"/>
@@ -149,6 +162,21 @@
            is not active in a view. Both are scoped to the card context, so the card
            advertises whichever binding is actually live — see
            ClaudeGuiView.cancelKeyLabel(). -->
+      <!-- Scoped to the composer context, NOT the window: unscoped, this would
+           shadow Ctrl+D (delete line) in every editor. Declared for both schemes
+           because Emacs binds Ctrl+D to delete-char under textEditorScope, which
+           is not active in a view, so the two never collide. Rebindable from
+           Preferences > General > Keys like any other command. -->
+      <key
+            commandId="com.anthropic.claudecode.eclipse.commands.toggleDictation"
+            schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+            contextId="com.anthropic.claudecode.eclipse.contexts.guiFocused"
+            sequence="M1+D"/>
+      <key
+            commandId="com.anthropic.claudecode.eclipse.commands.toggleDictation"
+            schemeId="org.eclipse.ui.emacsAcceleratorConfiguration"
+            contextId="com.anthropic.claudecode.eclipse.contexts.guiFocused"
+            sequence="M1+D"/>
       <key
             commandId="com.anthropic.claudecode.eclipse.commands.dismissCard"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
