@@ -567,7 +567,7 @@ function loadHistory(id, title, targetTab) {
       appendThinkStatic(assistantTurn(), it.text || '');
     } else if (ty === 'tool') {
       flushCompact();
-      assistantTurn().appendChild(makeToolLine(it.name || 'tool', it.input || {}, it.status, it.errorText));
+      assistantTurn().appendChild(makeToolLine(it.name || 'tool', it.input || {}, it.status, it.errorText, rootPathOf(t)));
     } else { // text
       flushCompact();
       appendTextStatic(assistantTurn(), it.text || it.content || '');
