@@ -91,6 +91,11 @@
             name="Dismiss Claude Card"
             description="Dismiss the permission, question or diff-review card awaiting an answer"
             categoryId="com.anthropic.claudecode.eclipse.commands.category"/>
+      <command
+            id="com.anthropic.claudecode.eclipse.commands.findInConversation"
+            name="Find in Conversation"
+            description="Search the active Claude Code conversation"
+            categoryId="com.anthropic.claudecode.eclipse.commands.category"/>
    </extension>
 
    <!-- Active only while a card is awaiting an answer, so the binding below cannot
@@ -106,6 +111,16 @@
             id="com.anthropic.claudecode.eclipse.contexts.cardOpen"
             name="Claude Card Open"
             description="A Claude permission, question or diff-review card is awaiting an answer"
+            parentId="org.eclipse.ui.contexts.window"/>
+      <!-- Active only while the Claude Code view's browser control has keyboard focus —
+           activated/deactivated by a FocusListener in ClaudeGuiView, the same
+           activate/deactivate shape as contexts.cardOpen, just keyed to widget focus
+           instead of card state. Scoping the binding below to this context is what
+           keeps it from taking Ctrl+F away from every editor in the IDE. -->
+      <context
+            id="com.anthropic.claudecode.eclipse.contexts.guiViewFocus"
+            name="Claude Code View Focus"
+            description="The Claude Code view has keyboard focus"
             parentId="org.eclipse.ui.contexts.window"/>
    </extension>
 
@@ -135,6 +150,9 @@
       <handler
             commandId="com.anthropic.claudecode.eclipse.commands.dismissCard"
             class="com.anthropic.claudecode.eclipse.ui.handlers.DismissCardHandler"/>
+      <handler
+            commandId="com.anthropic.claudecode.eclipse.commands.findInConversation"
+            class="com.anthropic.claudecode.eclipse.ui.handlers.FindInConversationHandler"/>
    </extension>
 
    <!-- Key Bindings -->
@@ -187,6 +205,21 @@
             schemeId="org.eclipse.ui.emacsAcceleratorConfiguration"
             contextId="com.anthropic.claudecode.eclipse.contexts.cardOpen"
             sequence="CTRL+G"/>
+      <!-- Default binding for a new command, so it shows up (and is rebindable) under
+           Preferences > Keys like any other Eclipse action. Scoped to guiViewFocus so
+           it never shadows Ctrl+F elsewhere in the IDE (e.g. text editors). Declared
+           only under the default scheme — unlike dismissCard above, this needs no
+           separate Emacs entry: emacsAcceleratorConfiguration's parentId is the default
+           scheme (see org.eclipse.ui's own plugin.xml), and Emacs defines nothing of
+           its own for the guiViewFocus context, so it inherits this binding as-is.
+           dismissCard needed the split only because Escape itself is claimed by Emacs
+           at a broader scope (textEditorScope's multi-stroke prefix), not because of
+           anything about inheritance. -->
+      <key
+            commandId="com.anthropic.claudecode.eclipse.commands.findInConversation"
+            schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+            contextId="com.anthropic.claudecode.eclipse.contexts.guiViewFocus"
+            sequence="M1+F"/>
    </extension>
 
    <!-- Menus and Toolbar -->

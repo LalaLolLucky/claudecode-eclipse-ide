@@ -72,7 +72,17 @@ const jumpToLatestEl = document.getElementById('jump-to-latest');
 function updateJumpToLatest() {
   if (jumpToLatestEl) jumpToLatestEl.classList.toggle('show', scrollLocked && !followTail);
 }
-messagesEl.addEventListener('scroll', () => { followTail = isNearBottom(); updateJumpToLatest(); });
+// Set by find.js immediately before a programmatic scrollIntoView (jumping to a search
+// match) and cleared right after: the 'scroll' event this fires is asynchronous relative
+// to the call that caused it, so a plain "set followTail then restore it" in find.js
+// would race this listener — it could run AFTER the restore and clobber followTail back
+// to isNearBottom()'s value. Checking a flag the listener itself respects is the only
+// race-free way to except one particular scroll from recomputing followTail.
+let suppressFollowTailUpdate = false;
+messagesEl.addEventListener('scroll', () => {
+  if (suppressFollowTailUpdate) return;
+  followTail = isNearBottom(); updateJumpToLatest();
+});
 /* The one place the transcript decides whether to move. Shared with showWorking, which
    appends outside of scrollBottom. */
 function autoScroll() {
@@ -284,6 +294,9 @@ function toolLabel(name) {
  * @param {string} name  raw tool name (mcp__… prefixes get stripped for display)
  * @param {Object} input tool_use input (file_path/command/pattern/… picked for detail)
  * @param {"done"|"interrupted"|undefined} [status] reload path only — colors the dot
+ * @param {string} [errorText] reload path only
+ * @param {string} [root] the OWNING conversation's working directory, for resolving a
+ *   relative file_path when the line is clicked — see .tpath's onclick below.
  * @returns {HTMLElement} the .tool-line item
  */
 /* Outcome text for an ExitPlanMode line. Shared by the LIVE decision path
@@ -304,7 +317,7 @@ function setToolError(line, text) {
   if (!sub) { sub = document.createElement('div'); sub.className = 'tool-sub err'; line.appendChild(sub); }
   sub.textContent = '⚠ ' + text;
 }
-function makeToolLine(name, input, status, errorText) {
+function makeToolLine(name, input, status, errorText, root) {
   input = input || {};
   const path = input.file_path || input.path || input.notebook_path || '';
   const detail = path || input.command || input.pattern || input.query || input.url || input.prompt || '';
@@ -312,7 +325,21 @@ function makeToolLine(name, input, status, errorText) {
   const dotClass = status === 'done' ? 'dot done' : status === 'interrupted' ? 'dot red' : 'dot';
   line.innerHTML = '<span class="' + dotClass + '"></span><span class="tname"></span> <span class="tpath"></span>';
   line.querySelector('.tname').textContent = toolLabel(name);   // generic label, not the raw name
-  line.querySelector('.tpath').textContent = detail;
+  const tpathEl = line.querySelector('.tpath');
+  tpathEl.textContent = detail;
+  // Only an actual file path is clickable — never the bash/grep/url/prompt fallbacks
+  // `detail` also covers. Silently a no-op if the path turns out stale (deleted,
+  // renamed) or unresolvable; see ClaudeGuiView#openFileInEditor.
+  if (path && window._openFileInEditor) {
+    tpathEl.classList.add('clickable');
+    tpathEl.title = 'Open in editor';
+    // No stopPropagation: unlike msgactions.js's icons (which sit inside a clickable
+    // .item), no ancestor of .tool-line has its own onclick, and this transcript sits
+    // inside the same page as menus tracked by openMenuEl — stopping propagation here
+    // would silently stop clicking a path from also closing an open menu via ui.js's
+    // click-outside handler, same class of bug as cycleSearchScope's innerHTML swap.
+    tpathEl.onclick = () => window._openFileInEditor(path, root || rootPathOf(activeTab()));
+  }
   const diff = buildToolDiff(name, input);
   if (diff) {
     const sub = document.createElement('div'); sub.className = 'tool-sub'; sub.textContent = diff.summary;
@@ -337,7 +364,9 @@ function addToolLine(payload) {
   if (!ensureTurn()) return;
   markToolsDone(curTurn);   // a new tool starting means the previous one finished → green
   let info; try { info = JSON.parse(payload); } catch (e) { info = { name: payload, input: {} }; }
-  const line = makeToolLine(info.name || 'tool', info.input || {});
+  // rtab, not activeTab(): a background tab's own stream must resolve a relative
+  // file_path against ITS OWN root, not whichever tab happens to be on screen.
+  const line = makeToolLine(info.name || 'tool', info.input || {}, undefined, undefined, rootPathOf(rtab));
   // The tool_use id, so this line can be found again when its result lands. An
   // older core sends no id — the line then just keeps the inferred green dot.
   if (info.id) line.dataset.tuid = info.id;

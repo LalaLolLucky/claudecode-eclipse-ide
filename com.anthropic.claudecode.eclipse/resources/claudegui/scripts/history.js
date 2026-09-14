@@ -94,11 +94,22 @@ function updateSearchScopeButton() {
   btn.innerHTML = ICONS[SEARCH_SCOPE_ICON[searchScope]];
 }
 
+// Below this, a content scan is skipped — title-only filtering still applies (it's
+// instant, from the already-cached list) but grepping every session's transcript for
+// 1-2 characters is expensive for a query too short to be selective, matching the same
+// gate on Find in Conversation (find.js's FIND_MIN_QUERY_LEN).
+const CONTENT_SEARCH_MIN_QUERY_LEN = 3;
+
 function runContentSearch(query) {
   const myId = ++searchRequestId;
   contentMatches = {};
-  if (!query || searchScope === 'title' || !window._searchSessionContentAsync) {
-    searchInFlight = false; updateSearchBusy(); return;
+  // Every early return here must re-render: the caller (onHistorySearchInput) already
+  // rendered once with the OLD contentMatches before calling this, so skipping the
+  // render below would leave phantom rows on screen (sessions that matched the
+  // previous, longer query's content but neither the new query's title nor anything
+  // else) until the user's next keystroke happened to trigger a real scan.
+  if (!query || query.length < CONTENT_SEARCH_MIN_QUERY_LEN || searchScope === 'title' || !window._searchSessionContentAsync) {
+    searchInFlight = false; updateSearchBusy(); renderHistoryList(); return;
   }
   // Only the sessions the title filter didn't already catch — a title match is
   // shown regardless, so there's no reason to also grep that session's body.
@@ -106,7 +117,7 @@ function runContentSearch(query) {
   const idsToScan = histSessions
     .filter(s => !(s.display || '').toLowerCase().includes(q))
     .map(s => s.sessionId);
-  if (!idsToScan.length) { searchInFlight = false; updateSearchBusy(); return; }
+  if (!idsToScan.length) { searchInFlight = false; updateSearchBusy(); renderHistoryList(); return; }
   searchInFlight = true;
   updateSearchBusy();
   window._searchSessionContentAsync(JSON.stringify(idsToScan), query, String(myId), searchScope === 'own');
@@ -194,7 +205,13 @@ function closeHistoryPanel() {
   const panel = document.getElementById('history-panel');
   if (panel) panel.classList.remove('open');
   if (openMenuEl === panel) { openMenuEl = null; openAnchor = null; }
-  unregisterOverlayCancel();
+  // By identity, not bare: cancelActiveCard (carddock.js) already pops this entry off
+  // the stack itself before calling closeHistoryPanel as entry.fn() — a bare unregister
+  // here would then pop whatever's now on TOP instead (e.g. the find bar, if it was
+  // opened before History and is still up), silently stranding ITS own registration.
+  // Confirmed by repro: Ctrl+F, then History, then two Ctrl+G presses closed History
+  // then did nothing — the find bar's entry had already been eaten by this line.
+  unregisterOverlayCancel(closeHistoryPanel);
 }
 
 /* Called from the native Eclipse view toolbar's "Session history" Action

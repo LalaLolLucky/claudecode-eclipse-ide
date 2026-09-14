@@ -50,7 +50,11 @@ const ICONS = {
      substitution below matches __[A-Z]+__ only, so CHEV_DOWN would never expand. */
   FOLDER: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   CHEVDOWN: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 5l6 6 6-6M6 12l6 6 6-6"/></svg>',
-  CHEVUP: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 19l6-6 6 6M6 12l6-6 6 6"/></svg>'
+  CHEVUP: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 19l6-6 6 6M6 12l6-6 6 6"/></svg>',
+  /* Single-chevron prev/next, for the find bar (CHEVUP/CHEVDOWN above are double-chevron,
+     used by the supertabs row). */
+  CHEVRONUP: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 15l6-6 6 6"/></svg>',
+  CHEVRONDOWN: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>'
 };
 /* substitute __NAME__ placeholders */
 document.body.innerHTML = document.body.innerHTML.replace(/__([A-Z]+)__/g, (m, k) => ICONS[k] || m);

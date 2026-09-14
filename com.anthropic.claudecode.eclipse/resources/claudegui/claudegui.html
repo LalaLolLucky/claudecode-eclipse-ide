@@ -64,6 +64,18 @@
     <div id="teleport-progress"></div>
   </div>
 
+  <!-- Find-in-conversation bar. One shared DOM instance (only the active tab's pane is
+       ever visible) but its state — query, matches, current index, open/closed — is
+       per-tab; see find.js. Toggled by Ctrl+F (ClaudeGuiView#toggleFindInConversation)
+       and dismissed by Escape via the usual registerOverlayCancel/cardOpen key context. -->
+  <div id="find-bar">
+    <input id="find-input" type="text" placeholder="Find in conversation…" oninput="onFindInput()" onkeydown="onFindKeydown(event)">
+    <span id="find-count"></span>
+    <span class="find-action" id="find-prev" title="Previous match" onclick="findStep(-1)">__CHEVRONUP__</span>
+    <span class="find-action" id="find-next" title="Next match" onclick="findStep(1)">__CHEVRONDOWN__</span>
+    <span class="find-action" id="find-close" title="Close" onclick="closeFindBar()">__X__</span>
+  </div>
+
   <!-- Composer -->
   <div id="composer">
     <!-- Shown when new content streams in below while the user has scrolled up to read
@@ -196,6 +208,7 @@
 <script src="scripts/tabs.js"></script>
 <script src="scripts/supertabs.js"></script>
 <script src="scripts/chat.js"></script>
+<script src="scripts/find.js"></script>
 <script src="scripts/stream.js"></script>
 <script src="scripts/carddock.js"></script>
 <script src="scripts/contextmenu.js"></script>

@@ -37,6 +37,54 @@
   background: var(--menu-bg); color: var(--fg-soft); border: 1px solid var(--border);
   box-shadow: 0 2px 6px rgba(0,0,0,.3); }
 #jump-to-latest.show { display: flex; }
+
+/* Find-in-conversation bar. Floats over the top-LEFT corner of the transcript, same
+   reasoning as #jump-to-latest above: a child of #messages (the scroll container)
+   would scroll away with the content, so this is a sibling positioned against
+   #zoom-root instead (layout.css — any non-static position establishes a containing
+   block, absolute included, so #zoom-root itself doesn't need position:relative).
+   Deliberately on the LEFT, not the right: History (and every other .menu) hangs off
+   an Eclipse view-toolbar button, and Eclipse right-aligns view-toolbar actions — so
+   the right corner is always contested ground and the left corner never is. An
+   earlier version lived top-right and needed a z-index dance (an .above-menu class,
+   toggled on whichever of find/History opened more recently) just to stay visible
+   when the two happened to be open at once; moving the corner removed the conflict
+   at the source instead of arbitrating it.
+   `top` below is only a pre-JS fallback (never actually visible while display:none) —
+   openFindBar (find.js) overrides it with messagesEl.offsetTop + 8 every time the bar
+   opens. #zoom-root's top edge is the page's own top, ABOVE #supertab-row/#cwd-row/
+   #toolbar/#update-banner, so a fixed value here floated the bar over whichever of
+   those chrome rows was visible instead of over the transcript — confirmed by a
+   screenshot showing it sitting on top of the tab strip. */
+#find-bar { display: none; position: absolute; top: 8px; left: 22px; z-index: 6;
+  align-items: center; gap: 2px; padding: 4px 6px; border-radius: 8px;
+  background: var(--menu-bg); border: 1px solid var(--border); box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+#find-bar.open { display: flex; }
+#find-bar input { width: 180px; background: var(--bg-code); border: 1px solid var(--border);
+  border-radius: 5px; padding: 4px 7px; color: var(--fg); font-size: 12px; outline: none; }
+#find-bar input:focus { border-color: var(--accent); }
+#find-count { color: var(--fg-faint); font-size: 11px; min-width: 52px; text-align: center; flex-shrink: 0; }
+#find-bar .find-action { display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 5px; color: var(--fg-faint); cursor: pointer; flex-shrink: 0; }
+#find-bar .find-action:hover { color: var(--fg); background: var(--bg-hover); }
+
+/* CSS Custom Highlight API — find.js paints Range objects into these without touching
+   the DOM (no wrapping <mark> elements to insert/remove on every keystroke). The active
+   match is never also a member of cc-find-match (find.js's paintHighlights explicitly
+   excludes it) — the two sets never overlap the same Range, by design: WebKitGTK does
+   not reliably let a later/higher-priority ::highlight() rule win over an earlier one on
+   overlapping Ranges, so the plain match color was painting over the active one, making
+   every match look identical and Enter/Shift+Enter's effect invisible. */
+/* ::highlight() only accepts a restricted property set (color, background-color,
+   text-decoration/shadow, -webkit-text-stroke/fill) — the `background` SHORTHAND also
+   sets background-image/position/repeat, which aren't in that set, so the whole
+   declaration would be dropped silently (matches found and navigable, nothing visibly
+   painted). Longhand only. */
+::highlight(cc-find-match) { background-color: var(--find-match-bg); }
+/* Also changes `color`, not just a stronger background alpha: against a dense field of
+   plain matches (e.g. a JSON blob where "descr" hits dozens of times), a same-hue
+   background step alone was too subtle to pick the active one out at a glance. */
+::highlight(cc-find-active) { background-color: var(--find-active-bg); color: var(--on-accent); }
 #jump-to-latest:hover { color: var(--fg); border-color: var(--accent-dim); }
 
 .turn { position: relative; margin: 10px 0; }

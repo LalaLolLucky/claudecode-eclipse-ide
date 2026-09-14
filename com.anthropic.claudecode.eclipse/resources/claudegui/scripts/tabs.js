@@ -139,6 +139,9 @@ function switchTab(id) {
     prev.followTail = followTail;
     prev.scrollTop = messagesEl.scrollTop;
   }
+  // Find bar: park the outgoing tab's query/matches/open-state, restore the incoming
+  // tab's — same per-tab-state shape as the draft/scroll position above.
+  if (typeof onFindTabSwitch === 'function') onFindTabSwitch(prev, tabById(id));
   activeId = id;
   tabs.forEach(t => { t.pane.style.display = (t.id === id) ? '' : 'none'; });
   const t = activeTab();

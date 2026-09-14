@@ -145,6 +145,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction decideFn;
     @SuppressWarnings("unused") private BrowserFunction answerQuestionFn;
     @SuppressWarnings("unused") private BrowserFunction overlayOpenFn;
+    @SuppressWarnings("unused") private BrowserFunction debugLogFn;
     @SuppressWarnings("unused") private BrowserFunction modelConfigFn;
     @SuppressWarnings("unused") private BrowserFunction accountInfoFn;
     @SuppressWarnings("unused") private BrowserFunction defaultRootFn;
@@ -168,6 +169,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction advisorGetFn;
     @SuppressWarnings("unused") private BrowserFunction advisorSetFn;
     @SuppressWarnings("unused") private BrowserFunction openExternalFn;
+    @SuppressWarnings("unused") private BrowserFunction openFileInEditorFn;
     @SuppressWarnings("unused") private BrowserFunction clipGetFn;
     @SuppressWarnings("unused") private BrowserFunction clipSetFn;
     @SuppressWarnings("unused") private BrowserFunction clipImagesFn;
@@ -176,7 +178,6 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private final java.util.concurrent.ConcurrentLinkedQueue<Map<String, String>> fetchedImages =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
     @SuppressWarnings("unused") private BrowserFunction editOpsReadyFn;
-    @SuppressWarnings("unused") private BrowserFunction debugLogFn;
     /** Set by the page once the __cc* editing entry points exist — see registerEditHandlers. */
     private volatile boolean editOpsReady = false;
 
@@ -278,6 +279,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
 
         browser = new Browser(parent, SWT.NONE);
         browser.setLayoutData(new org.eclipse.swt.layout.GridData(SWT.FILL, SWT.FILL, true, true));
+        hookViewFocusContext();
 
         // Extract HWND so WebView2 keyboard input can be activated.
         try {
@@ -788,6 +790,15 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // the session reloaded from history (issue #96). JS hands links here instead.
         openExternalFn = new SimpleFunction(browser, "_openExternal", a -> {
             if (a.length > 0 && a[0] instanceof String url) openExternal(url);
+            return null;
+        });
+        // A tool line's file path (Read/Edit/Write/…) — root is the OWNING tab's working
+        // directory, sent by the page since a relative path resolves against whichever
+        // conversation the line belongs to, not necessarily the one on screen right now.
+        openFileInEditorFn = new SimpleFunction(browser, "_openFileInEditor", a -> {
+            String path = a.length > 0 && a[0] instanceof String s ? s : null;
+            String root = a.length > 1 && a[1] instanceof String s ? s : null;
+            if (path != null) openFileInEditor(path, root);
             return null;
         });
 
@@ -2244,6 +2255,43 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         }
     }
 
+    /**
+     * Opens a tool line's file path (Read/Edit/Write/…) in an Eclipse editor. {@code path}
+     * is resolved against {@code root} (the OWNING tab's working directory) only when it
+     * isn't already absolute — the CLI's tool inputs are normally absolute already, so this
+     * is a fallback rather than the common case. Silently does nothing for a path that
+     * doesn't resolve to an existing file: a stale reference (later deleted/renamed) is a
+     * routine, expected outcome of clicking something from earlier in a conversation, not
+     * an error worth surfacing.
+     */
+    private static void openFileInEditor(String path, String root) {
+        // This callback runs synchronously inside SimpleFunction, i.e. inside WebKitGTK's
+        // JS execution — which runs inside this process's single GTK main loop (SWT's
+        // Browser on Linux is in-process, not a separate process like Windows' WebView2).
+        // openEditorOnFileStore pumps its own nested event processing (workspace
+        // notifications, SWT widget creation, editor-registry lookups), and doing that
+        // while already inside a browser callback stalled the entire IDE for up to a
+        // minute — confirmed by instrumentation, fixed by deferring the actual open to a
+        // fresh UI-thread dispatch cycle instead of running it inline.
+        Display.getDefault().asyncExec(() -> {
+            try {
+                Path p = Path.of(path);
+                if (!p.isAbsolute() && root != null && !root.isBlank()) {
+                    p = Path.of(root).resolve(path);
+                }
+                if (!Files.isRegularFile(p)) return;
+                org.eclipse.ui.IWorkbenchPage page = com.anthropic.claudecode.eclipse.editor.UiHelper.getActivePage();
+                if (page == null) return;
+                org.eclipse.core.filesystem.IFileStore fileStore =
+                        org.eclipse.core.filesystem.EFS.getLocalFileSystem().getStore(p.toUri());
+                org.eclipse.ui.ide.IDE.openEditorOnFileStore(page, fileStore);
+            } catch (Exception ignored) {
+                // Malformed path, no active page, or the open itself failed — the click
+                // just does nothing rather than popping an error over the conversation.
+            }
+        });
+    }
+
     /** Make sure the Rust MCP server (used by chat for editor tools) is up. */
     private void ensureServerAsync() {
         Thread t = new Thread(() -> {
@@ -2986,12 +3034,22 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         return "";
     }
 
+    private static int lastDismissEventTime = -1;
+
     /**
      * Invoked by {@link com.anthropic.claudecode.eclipse.ui.handlers.DismissCardHandler}
      * when the bound key is pressed. Routes to the page's own cancel path so the keyboard
      * and in-page routes stay identical.
      */
-    public static void dismissActiveCard() {
+    public static void dismissActiveCard(int eventTime) {
+        // Eclipse was confirmed (via logging, since removed) to dispatch this command
+        // multiple times for one physical keypress — a single Ctrl+G was observed popping
+        // TWO entries off the JS-side cancel stack (find AND history). Dedup on the OS-level
+        // event timestamp (Event.time — identical across redeliveries of one keypress,
+        // distinct across separate presses) rather than a wall-clock time window, which
+        // would need guessing at how many redeliveries can occur.
+        if (eventTime != -1 && eventTime == lastDismissEventTime) return;
+        lastDismissEventTime = eventTime;
         ClaudeGuiView view = active;
         if (view == null || view.browser == null || view.browser.isDisposed()
                 || !view.pageLoaded) {
@@ -3013,6 +3071,62 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             return;
         }
         view.browser.execute("window.micToggle && window.micToggle()");
+    }
+
+    // ── Find-in-conversation key binding (Ctrl+F by default, rebindable) ────────────
+
+    private static final String VIEW_FOCUS_CONTEXT_ID =
+            "com.anthropic.claudecode.eclipse.contexts.guiViewFocus";
+
+    private org.eclipse.ui.contexts.IContextActivation viewFocusActivation;
+
+    /**
+     * Activates {@link #VIEW_FOCUS_CONTEXT_ID} while this view's browser has keyboard
+     * focus, and deactivates it on {@code focusLost} — the same activate/deactivate shape
+     * as {@link #cardOpened()}/{@link #cardClosed()}, just keyed to widget focus instead of
+     * card state. Unlike cardOpen (deliberately global — a card blocks the whole workflow
+     * regardless of which part has focus), Ctrl+F must NOT be global: without this scoping
+     * it would shadow Ctrl+F in every editor and view in the IDE.
+     */
+    private void hookViewFocusContext() {
+        browser.addFocusListener(new org.eclipse.swt.events.FocusAdapter() {
+            @Override
+            public void focusGained(org.eclipse.swt.events.FocusEvent e) {
+                if (viewFocusActivation != null) return;
+                org.eclipse.ui.contexts.IContextService svc = contextService();
+                if (svc != null) viewFocusActivation = svc.activateContext(VIEW_FOCUS_CONTEXT_ID);
+            }
+            @Override
+            public void focusLost(org.eclipse.swt.events.FocusEvent e) {
+                if (viewFocusActivation == null) return;
+                org.eclipse.ui.contexts.IContextService svc = contextService();
+                if (svc != null) {
+                    try { svc.deactivateContext(viewFocusActivation); } catch (Exception ignored) {}
+                }
+                viewFocusActivation = null;
+            }
+        });
+    }
+
+    private static int lastToggleFindEventTime = -1;
+
+    /**
+     * Invoked by {@link com.anthropic.claudecode.eclipse.ui.handlers.FindInConversationHandler}
+     * when the bound key is pressed. Routes to the page's own toggle so the keyboard and any
+     * future in-page trigger stay identical.
+     */
+    public static void toggleFindInConversation(int eventTime) {
+        // See dismissActiveCard's matching comment — a single Ctrl+F press was confirmed
+        // (via logging, since removed) to produce THREE Java-side invocations from Eclipse
+        // itself. Same Event.time dedup.
+        if (eventTime != -1 && eventTime == lastToggleFindEventTime) return;
+        lastToggleFindEventTime = eventTime;
+        ClaudeGuiView view = active;
+        if (view == null || view.browser == null || view.browser.isDisposed()
+                || !view.pageLoaded) {
+            return;
+        }
+        view.browser.execute("window.toggleFindBar && window.toggleFindBar()");
     }
 
     /** Pushes the current cancel-key label to the page. UI thread; call before raising a card. */

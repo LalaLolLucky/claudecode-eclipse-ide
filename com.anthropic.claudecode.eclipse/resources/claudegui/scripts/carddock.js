@@ -80,7 +80,72 @@ function clearBottomCard(owner) {
    advertise the truth instead of hardcoding "Esc". Empty means nothing is bound — the
    card then shows no hint at all rather than naming a key that does nothing. */
 let cancelHint = 'Esc';
+/* A STACK, not a single slot: opening the find bar over an already-open history panel
+   (or any overlay-over-overlay combination — nine call sites register here) used to
+   clobber whichever registration was already live, with no way back to it. Dismissing
+   the newer one then left the dismiss key dead for the older one still visibly open,
+   since its registration had been overwritten rather than preserved underneath. Each
+   entry is {fn, isBottom, owner, notifiesJava} — see registerCardCancel for what owner
+   means, and registerOverlayCancel for notifiesJava (whether popping this entry down to
+   an empty stack should call _overlayOpen(false); Java-raised cards never should, since
+   Java already toggled its own context around them and was never told they opened via
+   _overlayOpen in the first place).
+   activeCardCancel/activeCancelIsBottom/activeCancelOwner are kept as mirrors of the TOP
+   entry (see syncTop) so every existing external read (find.js, ui.js) keeps working
+   unchanged: an empty stack mirrors to null/false/null, exactly like the old "nothing
+   registered" state. */
+const overlayStack = [];
 let activeCardCancel = null, activeCancelIsBottom = false, activeCancelOwner = null;
+// How many entries currently on the stack were registered via registerOverlayCancel
+// (notifiesJava: true) rather than registerCardCancel (false) — see registerOverlayCancel
+// for why _overlayOpen must fire on THIS count's 0↔1 transitions, not the stack's own
+// emptiness: a Java-raised card can push/pop while an overlay entry sits underneath it,
+// and none of that may touch _overlayOpen at all. Recomputed by a full reduce() inside
+// pushOverlay/popOverlay (the only two mutators) after every push/pop — the stack is
+// only ever 1-3 entries deep, so this is not worth doing incrementally — so every
+// register/unregister call site, including cancelActiveCard's own pop, gets the correct
+// notify for free.
+let notifyingCount = 0;
+function syncTop() {
+  const top = overlayStack.length ? overlayStack[overlayStack.length - 1] : null;
+  activeCardCancel = top ? top.fn : null;
+  activeCancelIsBottom = top ? top.isBottom : false;
+  activeCancelOwner = top ? top.owner : null;
+}
+/* Pushes fn, or moves it to the top if already present (re-registering the SAME overlay
+   that's already on the stack must not create a second entry for it; if it re-registers
+   with a DIFFERENT notifiesJava than before, the recount below still ends up correct
+   either way). */
+function pushOverlay(fn, isBottom, owner, notifiesJava) {
+  const i = overlayStack.findIndex(e => e.fn === fn);
+  if (i !== -1) overlayStack.splice(i, 1);
+  overlayStack.push({ fn, isBottom: !!isBottom, owner: owner || null, notifiesJava: !!notifiesJava });
+  syncTop();
+  const before = notifyingCount;
+  notifyingCount = overlayStack.reduce((n, e) => n + (e.notifiesJava ? 1 : 0), 0);
+  if (before === 0 && notifyingCount > 0 && window._overlayOpen) window._overlayOpen(true);
+}
+/* Removes fn wherever it sits in the stack, or the top entry if fn is omitted (every
+   bare unregister*() call site — see their own comments for why popping the top is
+   correct there: each only ever runs as a REGISTERED cancel actually firing, so it can
+   only be at the top by the time it runs, or as its owning overlay's own close path with
+   nothing else having registered since). Explicit-fn removal exists for the one case
+   that isn't top-only: ui.js's closeMenus() can close the history panel out from under a
+   LATER overlay (find opened on top of history, then the user clicked outside) — the
+   panel is gone but its entry would otherwise be stranded underneath find's, and the
+   next dismiss-key press would pop find correctly only to land on history's now-dead
+   entry next, consuming a second press on nothing. */
+function popOverlay(fn) {
+  if (!overlayStack.length) return null;
+  const i = fn ? overlayStack.findIndex(e => e.fn === fn) : overlayStack.length - 1;
+  if (i === -1) return null;   // fn wasn't on the stack — e.g. it already removed itself
+  const [entry] = overlayStack.splice(i, 1);
+  syncTop();
+  const before = notifyingCount;
+  notifyingCount = overlayStack.reduce((n, e) => n + (e.notifiesJava ? 1 : 0), 0);
+  if (before > 0 && notifyingCount === 0 && window._overlayOpen) window._overlayOpen(false);
+  return entry;
+}
 
 /* Every hint on screen repaints itself when the binding changes, rather than waiting to be
    rebuilt. Java pushes a new label the moment Eclipse's BindingManager fires — switching
@@ -112,30 +177,43 @@ function cancelKeyName() { return cancelHint; }
 function cancelHintText() { return cancelHint ? cancelHint + ' to cancel' : ''; }
 
 /* Java-raised blocking cards: Java already activated the key context around its own
-   future.get(), so these must NOT notify it again. owner is the tab this card belongs
-   to (the same owner showBottomCard was given) — activeCardCancel is still ONE global
-   slot, so without it a card raised on a background tab would leave its cancel() as
-   the one that fires when the dismiss key is pressed over a DIFFERENT tab's own card. */
-function registerCardCancel(fn, owner) { activeCardCancel = fn; activeCancelIsBottom = true; activeCancelOwner = owner; }
-function unregisterCardCancel() { activeCardCancel = null; activeCancelIsBottom = false; activeCancelOwner = null; }
+   future.get(), so these must NOT notify it again (see registerOverlayCancel for the
+   ones that must — pushOverlay/popOverlay's own notifyingCount bookkeeping is what keeps
+   these two silent while that's still true no matter what else is on the stack). owner
+   is the tab this card belongs to (the same owner showBottomCard was given) — needed
+   even with a stack, since a card raised on a background tab must never be the one that
+   fires when the dismiss key is pressed over a DIFFERENT tab's own card
+   (cancelActiveCard's owner check is what actually enforces that; owner is only carried
+   here for it to read off the top entry). */
+function registerCardCancel(fn, owner) { pushOverlay(fn, true, owner, false); }
+function unregisterCardCancel() { popOverlay(); }
 
-/* Page-local overlays (advisor card, rewind picker, lightbox). Java cannot know these are
-   open — nothing on its side raised them — so the page has to say so, or the key context
-   never activates and the key stays dead however honest the hint is. _overlayOpen is
-   edge-triggered on the Java side, so a missed unregister can only ever be one deep and the
-   next register/unregister corrects it. owner: see registerCardCancel — only meaningful
-   when isBottomCard, since a non-bottom overlay isn't tab-owned. */
-function registerOverlayCancel(fn, isBottomCard, owner) {
-  activeCardCancel = fn; activeCancelIsBottom = !!isBottomCard; activeCancelOwner = owner || null;
-  if (window._overlayOpen) window._overlayOpen(true);
-}
-function unregisterOverlayCancel() {
-  activeCardCancel = null; activeCancelIsBottom = false; activeCancelOwner = null;
-  if (window._overlayOpen) window._overlayOpen(false);
-}
+/* Page-local overlays (advisor card, rewind picker, lightbox, find bar, history panel).
+   Java cannot know these are open — nothing on its side raised them — so the page has to
+   say so, or the key context never activates and the key stays dead however honest the
+   hint is. owner: see registerCardCancel — only meaningful when isBottomCard, since a
+   non-bottom overlay isn't tab-owned. fn on unregister: see popOverlay's own comment —
+   omit it to pop the top (the common case, valid whenever this call IS a registered
+   cancel actually firing), pass it to remove a specific entry that may no longer be on
+   top (e.g. ui.js's closeMenus() closing the history panel while a later overlay sits
+   above it). */
+function registerOverlayCancel(fn, isBottomCard, owner) { pushOverlay(fn, isBottomCard, owner, true); }
+function unregisterOverlayCancel(fn) { popOverlay(fn); }
 
+// One dismiss GESTURE (one Ctrl+G / Esc press) must cancel at most one overlay. The old
+// single-slot design got this for free by accident: a double-fire of the Eclipse command
+// (see DismissCardHandler's own comment — tolerated as a known, harmless quirk) found
+// activeCardCancel already null on its second call and no-opped. The stack has no such
+// accidental protection — a second call within the same gesture finds a NEW top entry
+// (whatever was underneath the first) and cancels that too, observed as one Ctrl+G
+// closing both the find bar AND the history panel underneath it. lastCancelAt makes the
+// one-gesture-one-cancel invariant explicit instead of relying on a side effect that no
+// longer holds. 50ms comfortably covers the ~24ms gap measured between the two calls in
+// /tmp/find-debug.log while staying far below a human's fastest deliberate double-press.
+let lastCancelAt = 0;
 window.cancelActiveCard = function() {
   if (!activeCardCancel) return;
+  if (Date.now() - lastCancelAt < 50) return;
   // Bottom cards only: one parked on a background tab must not vanish because a key was
   // pressed over another conversation. Mirrors renderBottomCard's own visibility test,
   // now split into two checks since each tab tracks its own pendingCard instead of one
@@ -143,13 +221,20 @@ window.cancelActiveCard = function() {
   // showing, AND it must be the same tab that registered this cancel — two different
   // background tabs can each have their own card pending, so "some card is showing" is
   // not enough on its own; it has to be THIS card's owner specifically, or switching to
-  // tab A while activeCardCancel is still tab B's would fire B's cancel from A's screen.
+  // tab A while the top entry is still tab B's would fire B's cancel from A's screen.
   // Overlays (rewind, lightbox) are not tab-owned, so the test does not apply to them.
+  // Reads the TOP entry's own isBottom/owner (the mirrors), so this guard is always
+  // evaluated against whichever overlay would actually be cancelled below, not some
+  // other entry buried in the stack.
   const t = activeTab();
   if (activeCancelIsBottom && (!t || !t.pendingCard || activeCancelOwner !== t)) return;
-  const fn = activeCardCancel;
-  activeCardCancel = null; activeCancelIsBottom = false; activeCancelOwner = null;
-  fn();
+  const entry = popOverlay();   // notifyingCount bookkeeping (and _overlayOpen) handled inside
+  if (!entry) return;
+  // Written here, not at function entry: an early return above (nothing registered, the
+  // bottom-card visibility guard, popOverlay finding nothing) must not arm the guard for
+  // a call that didn't actually cancel anything.
+  lastCancelAt = Date.now();
+  entry.fn();
 };
 
 /* ---- server-side card teardown ----

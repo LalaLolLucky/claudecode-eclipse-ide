@@ -9,11 +9,14 @@ function closeMenus() {
   // through here (click-outside, opening a different menu, …), so this is the one
   // place that can defer to closeHistoryPanel's own unregister when it was open.
   //
-  // Guarded by identity, not just "was it open": activeCardCancel is ONE global slot,
-  // and a later overlay (e.g. an in-transcript image's lightbox, registered during the
-  // click's target phase) can install ITS OWN cancel before this listener runs in the
-  // bubble phase — unregistering unconditionally here would wipe that newer
-  // registration and tell Java the wrong overlay just closed.
+  // Removes closeHistoryPanel's entry BY IDENTITY rather than unregistering the top of
+  // carddock.js's cancel stack: a later overlay (e.g. an in-transcript image's lightbox,
+  // registered during the click's target phase) can already be on top by the time this
+  // listener runs in the bubble phase, with history's own entry stranded underneath it —
+  // a bare unregister here would pop that NEWER overlay instead and tell Java the wrong
+  // thing closed, while leaving history's dead entry buried in the stack to consume a
+  // future dismiss-key press for nothing. Passing the fn explicitly finds and removes
+  // history's entry specifically, wherever it currently sits.
   const hist = document.getElementById('history-panel');
   const histWasOpen = hist && hist.classList.contains('open');
   document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
@@ -21,7 +24,7 @@ function closeMenus() {
   // per-message badges are pinned visible while their menu is up — unpin them
   document.querySelectorAll('.msg-actions.open').forEach(w => w.classList.remove('open'));
   openMenuEl = null; openAnchor = null;
-  if (histWasOpen && activeCardCancel === closeHistoryPanel) unregisterOverlayCancel();
+  if (histWasOpen) unregisterOverlayCancel(closeHistoryPanel);
 }
 
 /* Position a menu relative to its trigger button, so it stays glued to that element

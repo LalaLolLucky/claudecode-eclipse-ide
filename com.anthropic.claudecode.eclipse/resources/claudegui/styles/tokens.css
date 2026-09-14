@@ -66,6 +66,8 @@
   --track: #444;              /* slider track */
   --knob: #ddd;               /* slider knob */
   --hover-veil: rgba(255,255,255,.08);  /* subtle hover on dark surfaces */
+  --find-match-bg: rgba(255,213,0,.35);   /* find-in-conversation: all matches */
+  --find-active-bg: rgba(255,140,0,.65);  /* find-in-conversation: current match */
   /* syntax */
   --kw: #569cd6; --type: #4ec9b0; --str: #ce9178; --com: #6a9955; --fn: #dcdcaa; --num: #b5cea8;
 }
@@ -140,6 +142,8 @@
   --track: #cfcfcf;
   --knob: #555;
   --hover-veil: rgba(0,0,0,.06);
+  --find-match-bg: rgba(255,196,0,.45);   /* find-in-conversation: all matches */
+  --find-active-bg: rgba(255,140,0,.55);  /* find-in-conversation: current match */
   /* syntax — light editor palette (VSCode Light+) */
   --kw: #0000ff; --type: #267f99; --str: #a31515; --com: #008000; --fn: #795e26; --num: #098658;
 }
