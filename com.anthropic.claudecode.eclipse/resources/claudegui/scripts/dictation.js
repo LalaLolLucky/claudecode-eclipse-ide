@@ -9,6 +9,17 @@ const micDock = document.getElementById('mic-dock');
 const micLevel = document.getElementById('mic-level');
 const micBars = micLevel ? Array.from(micLevel.querySelectorAll('i')) : [];
 
+/* Not offered on macOS. Capture runs inside Eclipse's own process, and macOS
+   attributes the microphone to Eclipse.app, which declares no microphone use --
+   so access is denied silently, without ever prompting. The host sets
+   __ccMacOS once the page loads (ClaudeGuiView#pushMacOS); the native side is
+   untouched. */
+function micUnavailable() { return !!window.__ccMacOS; }
+
+window.applyDictationPlatform = () => {
+  if (micUnavailable() && micDock) micDock.style.display = 'none';
+};
+
 /* Measured off the reference: 6px at rest, ~16px at peak, and the middle bar
    runs tallest with the outer two trailing it. */
 const MIC_BAR_MIN = 6;
@@ -49,6 +60,7 @@ function micRender(spoken) {
 }
 
 function micStart() {
+  if (micUnavailable()) return;
   if (micRecording || micBtn.classList.contains('busy')) return;
   const value = input.value;
   const from = typeof input.selectionStart === 'number' ? input.selectionStart : value.length;
@@ -81,6 +93,7 @@ function micStop() {
 
 /** Keyboard/command entry point: always a latching toggle, never a hold. */
 function micToggle() {
+  if (micUnavailable()) return;   // also what makes the key binding inert on macOS
   if (micRecording) { micLatched = false; micStop(); }
   else { micLatched = true; micStart(); }
 }

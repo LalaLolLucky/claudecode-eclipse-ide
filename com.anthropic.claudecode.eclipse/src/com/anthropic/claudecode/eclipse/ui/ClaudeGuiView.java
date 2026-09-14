@@ -863,6 +863,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             pushCliModels();         // ditto for the installed binary's model support
             pushEditKeyHints();      // label the right-click menu with the user's real keys
             pushDebugMode();         // let the page report its keys while Debug mode is on
+            pushMacOS();             // dictation is not offered on macOS
             pushHistoryShowTimestamps(); // whether to show a timestamp above your own messages
             pushHideRootDirectoriesRow(); // whether the root directories row is hidden entirely
             pushSpinnerVerbs();      // which gerund categories the working indicator cycles
@@ -1814,6 +1815,18 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private void pushDebugMode() {
         if (browser == null || browser.isDisposed() || !pageLoaded) return;
         browser.execute("window.__ccDebug = " + DebugModeUi.isDebugEnabled() + ";");
+    }
+
+    /**
+     * Tells the page it is running on macOS, where dictation is not offered: the
+     * microphone is attributed to Eclipse.app, which declares no microphone use, so
+     * capture is denied without a prompt. Page-side only; the native core is unchanged.
+     * Pushed once per page load, since the platform cannot change under a view.
+     */
+    private void pushMacOS() {
+        if (browser == null || browser.isDisposed() || !pageLoaded) return;
+        browser.execute("window.__ccMacOS = " + Activator.isMacOS()
+                + "; window.applyDictationPlatform && window.applyDictationPlatform();");
     }
 
     /**
