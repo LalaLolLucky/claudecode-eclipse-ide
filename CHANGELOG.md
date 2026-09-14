@@ -4,7 +4,20 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.1] — 2026-09-09 *(current)*
+## [3.2.2] — 2026-09-14 *(current)*
+
+### Added
+- **Dictate into the composer (experimental)** with the microphone button or Ctrl+D — hold to talk, or tap to keep recording. Only available on macOS with debug mode; on Linux and FreeBSD it needs ALSA (plus `alsa-plugins` on FreeBSD).
+- **Find in Conversation**: Ctrl+F searches the open conversation ([@jmoraleda](https://github.com/jmoraleda), PR #119).
+- **A tool line's file path opens that file in an editor** when clicked ([@jmoraleda](https://github.com/jmoraleda), PR #120).
+
+### Fixed
+- **The Claude Terminal no longer goes blank after Clear & Refresh** ([@xgsa](https://github.com/xgsa), PR #121).
+- **Escape no longer sometimes takes two presses to close something** ([@jmoraleda](https://github.com/jmoraleda), PR #119).
+
+---
+
+## [3.2.1] — 2026-09-09
 
 ### Fixed
 - **A decision card answered on your phone or on claude.ai now closes here too**, instead of staying open and holding up every later prompt in the run.
