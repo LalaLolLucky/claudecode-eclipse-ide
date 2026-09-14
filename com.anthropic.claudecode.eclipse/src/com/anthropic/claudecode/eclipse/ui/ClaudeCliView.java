@@ -54,8 +54,10 @@ import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
+import org.eclipse.swt.widgets.Event;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Listener;
+import org.eclipse.swt.widgets.ScrollBar;
 import org.eclipse.swt.widgets.Scrollable;
 import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.Text;
@@ -1345,6 +1347,34 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         }
 
         /**
+         * Scrolls the terminal canvas back to the first line.
+         *
+         * <p>Callers want this for its side effect on the embedded widget's bookkeeping, not
+         * for the movement. The renderer holds only a window of the buffer
+         * ({@code TerminalTextDataWindow}); lines outside it read back as NULs and their
+         * change marks are discarded. That window is repositioned only when the canvas
+         * publishes a new view rectangle, so parking it at line 0 is the way to guarantee it
+         * cannot be left pointing past the end of a buffer that is about to shrink.
+         *
+         * <p>The synthetic event is required: {@code ScrollBar.setSelection} does not notify,
+         * and it is {@code VirtualCanvas}'s own {@code SWT.Selection} listener that recomputes
+         * the window. This is the same sequence a mouse-wheel notch produces.
+         */
+        void scrollToTop() {
+            if (termControl == null || termControl.isDisposed()) return;
+            if (termControl.getControl() instanceof Scrollable canvas && !canvas.isDisposed()) {
+                ScrollBar vBar = canvas.getVerticalBar();
+                if (vBar == null || vBar.isDisposed()) return;
+                vBar.setSelection(0);
+                // Fired unconditionally: the bar's selection and the canvas's scroll origin can
+                // disagree (updating the bar's maximum clamps its selection without moving the
+                // origin), so a selection of 0 is not proof the canvas is at the top. The
+                // canvas no-ops when the delta really is zero.
+                vBar.notifyListeners(SWT.Selection, new Event());
+            }
+        }
+
+        /**
          * Adds a right-click Copy/Paste menu and cross-platform copy/paste key
          * handling to the terminal canvas. The embedded control doesn't inherit
          * the stock Terminal view's edit actions, so we wire them ourselves via
@@ -1504,6 +1534,12 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             Action clearRefreshAction = new Action("Clear && &Refresh",
                     Activator.getImageDescriptor(Constants.IMG_CLEAR_REFRESH)) {
                 @Override public void run() {
+                    // Must precede the clear. clearTerminal() truncates the buffer to a single
+                    // screen; if the viewport is sitting in scrollback at that moment, the
+                    // renderer's line window is left addressing lines that no longer exist and
+                    // it silently stops copying and repainting — the view goes blank until the
+                    // user happens to scroll. Parking at line 0 first keeps the window valid.
+                    scrollToTop();
                     control.clearTerminal();
                     control.pasteString("\f"); // Ctrl+L → claude clears and redraws its UI
                 }
