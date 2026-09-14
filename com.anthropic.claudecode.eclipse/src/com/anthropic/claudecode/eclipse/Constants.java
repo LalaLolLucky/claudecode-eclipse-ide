@@ -29,6 +29,16 @@ public final class Constants {
     /** Start every Claude Code conversation with Remote Control already on. */
     public static final String PREF_REMOTE_CONTROL_STARTUP = "remoteControlOnStartup";
 
+    /** Dictation in the Claude Code view's composer: the mic button and its key binding.
+     *  On by default; off removes both. */
+    public static final String PREF_DICTATION_ENABLED = "dictationEnabled";
+
+    /** Debug-only, macOS-only: offer dictation on macOS, where it is otherwise withheld
+     *  because macOS silently denies the microphone to Eclipse.app. Counts only while Debug
+     *  mode and {@link #PREF_DICTATION_ENABLED} are also on, and is unticked whenever either
+     *  is turned off. */
+    public static final String PREF_DICTATION_MACOS = "dictationMacOS";
+
     /** Initial state of the Scroll Lock toolbar toggle for a newly created view instance —
      *  a configured default, not a remembered last state. Shared by both the Claude Code
      *  (GUI) view (ClaudeGuiView#createToolBar, one view-wide toggle) and the Claude

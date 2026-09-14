@@ -15,7 +15,9 @@ import org.eclipse.swt.SWT;
 import org.eclipse.swt.events.FocusAdapter;
 import org.eclipse.swt.events.FocusEvent;
 import org.eclipse.swt.layout.GridData;
+import org.eclipse.swt.widgets.Button;
 import org.eclipse.swt.widgets.Composite;
+import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Text;
 import org.eclipse.ui.IViewPart;
@@ -32,6 +34,9 @@ import com.anthropic.claudecode.eclipse.editor.UiHelper;
 public class ClaudePreferencePage extends FieldEditorPreferencePage implements IWorkbenchPreferencePage {
 
     private BooleanFieldEditor statuslineEnabled;
+    private BooleanFieldEditor dictationEnabled;
+    private BooleanFieldEditor dictationMacOS;
+    private BooleanFieldEditor debugMode;
     private IntegerFieldEditor portMinEditor;
     private IntegerFieldEditor portMaxEditor;
 
@@ -151,6 +156,22 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                 Constants.PREF_REMOTE_CONTROL_STARTUP,
                 "Enable remote control on startup, in the Claude Code view",
                 getFieldEditorParent()));
+
+        dictationEnabled = new BooleanFieldEditor(
+                Constants.PREF_DICTATION_ENABLED,
+                "Enable Speech-to-text (STT) [Experimental]",
+                getFieldEditorParent());
+        addField(dictationEnabled);
+
+        // macOS only. Shown while Debug mode is ticked, tickable while the option above
+        // is; see updateDictationMacOSState().
+        if (Activator.isMacOS()) {
+            dictationMacOS = new BooleanFieldEditor(
+                    Constants.PREF_DICTATION_MACOS,
+                    "Enable Speech-to-text (STT) for Mac [Experimental]",
+                    getFieldEditorParent());
+            addField(dictationMacOS);
+        }
 
         addField(new BooleanFieldEditor(
                 Constants.PREF_SCROLL_LOCK_DEFAULT,
@@ -322,10 +343,11 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                 "Use custom spinner verbs",
                 getFieldEditorParent()));
 
-        addField(new BooleanFieldEditor(
+        debugMode = new BooleanFieldEditor(
                 Constants.PREF_DEBUG_MODE,
                 "Debug mode",
-                getFieldEditorParent()));
+                getFieldEditorParent());
+        addField(debugMode);
     }
 
     /**
@@ -400,6 +422,35 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         }
     }
 
+    /**
+     * The macOS dictation option (created on macOS only) exists for someone debugging it:
+     * shown while Debug mode is ticked and taken off the page while it is not; tickable
+     * only while dictation itself is ticked, greyed otherwise. Whenever EITHER of those is
+     * unticked, the option is unticked too, so it can never be left on behind a box that
+     * no longer allows it — {@link #performOk()} enforces the same in the store. Read from
+     * the editors rather than the store, so it follows unsaved clicks.
+     */
+    private void updateDictationMacOSState() {
+        if (dictationMacOS == null || dictationEnabled == null || debugMode == null) {
+            return;
+        }
+        boolean debug = debugMode.getBooleanValue();
+        boolean dictation = dictationEnabled.getBooleanValue();
+        Composite parent = getFieldEditorParent();
+        Control box = dictationMacOS.getDescriptionControl(parent);
+        // BooleanFieldEditor stores whatever the checkbox shows, so unticking the
+        // checkbox is what the page saves.
+        if (!(debug && dictation) && box instanceof Button check) {
+            check.setSelection(false);
+        }
+        dictationMacOS.setEnabled(dictation, parent);
+        if (box.getLayoutData() instanceof GridData gd) {
+            gd.exclude = !debug;
+        }
+        box.setVisible(debug);
+        parent.layout(true, true);
+    }
+
     private void updateTimeoutSecondsEnabled(TimeoutFieldPair pair) {
         boolean custom = Constants.TIMEOUT_MODE_CUSTOM.equals(pair.mode().getSelectionValue());
         pair.seconds().setEnabled(custom, getFieldEditorParent());
@@ -416,6 +467,7 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         super.initialize();
         updateStatuslineDependentsEnabled();
         updateAllTimeoutSecondsEnabled();
+        updateDictationMacOSState();
         // Loading values into the editors fires neither IS_VALID nor VALUE, so a
         // range already persisted as inverted (from a build before this check
         // existed) would otherwise open as valid with Apply enabled.
@@ -427,6 +479,7 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         super.performDefaults();
         updateStatuslineDependentsEnabled();
         updateAllTimeoutSecondsEnabled();
+        updateDictationMacOSState();
     }
 
     @Override
@@ -442,6 +495,10 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         if (event.getSource() == statuslineEnabled
                 && FieldEditor.VALUE.equals(event.getProperty())) {
             updateStatuslineDependentsEnabled();
+        }
+        if ((event.getSource() == debugMode || event.getSource() == dictationEnabled)
+                && FieldEditor.VALUE.equals(event.getProperty())) {
+            updateDictationMacOSState();
         }
         if (FieldEditor.VALUE.equals(event.getProperty())) {
             for (TimeoutFieldPair pair : timeoutFields) {
@@ -555,6 +612,14 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         boolean result = super.performOk();
         if (!result) {
             return result;
+        }
+
+        // Backs up the page's own unticking: the macOS dictation option is never stored
+        // as on unless both Debug mode and dictation are. This page is the only writer of
+        // either, so enforcing it here covers every way they can be turned off.
+        if (!(store.getBoolean(Constants.PREF_DEBUG_MODE)
+                && store.getBoolean(Constants.PREF_DICTATION_ENABLED))) {
+            store.setValue(Constants.PREF_DICTATION_MACOS, false);
         }
 
         NativeCore.setProxyOverrides(

@@ -245,6 +245,7 @@ dependencies = [
  "cpal",
  "futures-util",
  "jni",
+ "libloading",
  "portable-pty",
  "qrcode",
  "rubato",

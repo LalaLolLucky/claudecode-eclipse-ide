@@ -12,9 +12,10 @@
 //!    per-engine implementations. OS-level microphone consent still applies and
 //!    is attached to the host Eclipse process, not to us.
 //!
-//! Nothing here compiles C++. cpal does link libasound on the five Unix targets,
-//! so those build images need `libasound2-dev` and the FreeBSD sysroot needs
-//! alsa-lib.
+//! Nothing here compiles C++. Windows and macOS capture through cpal. Linux and
+//! FreeBSD open ALSA at runtime instead (`alsa_capture.rs`), so libasound is not
+//! a load-time dependency there: without it this library still loads, and
+//! [`unavailable_reason`] says why dictation cannot run.
 //!
 //! The wire protocol is the CLI's own `/api/ws/speech_to_text/voice_stream`:
 //! binary `linear16` frames up, JSON transcript frames down, `KeepAlive` every
@@ -24,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{SinkExt, StreamExt};
 use rubato::{FftFixedIn, Resampler};
@@ -151,8 +153,52 @@ impl Dictation {
     }
 }
 
+/// Why dictation cannot capture on this machine, or `None` when it can.
+/// Windows and macOS capture through cpal, whose audio frameworks ship with the OS.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub fn unavailable_reason() -> Option<String> {
+    None
+}
+
+/// Linux and FreeBSD load ALSA at runtime, so this is where its absence shows.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub fn unavailable_reason() -> Option<String> {
+    crate::alsa_capture::unavailable_reason()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "freebsd")))]
+pub fn unavailable_reason() -> Option<String> {
+    Some("dictation has no capture backend on this platform".into())
+}
+
+/// FreeBSD only: whether alsa-plugins is missing. ALSA still loads without it,
+/// but its default device reaches OSS through a module only that package
+/// provides, so every take would fail to open.
+#[cfg(target_os = "freebsd")]
+pub fn needs_alsa_plugins() -> bool {
+    crate::alsa_capture::oss_module_missing()
+}
+
+#[cfg(not(target_os = "freebsd"))]
+pub fn needs_alsa_plugins() -> bool {
+    false
+}
+
+/// Linux only: whether there is nothing to capture from -- no sound card, and
+/// no default capture device that opens without one.
+#[cfg(target_os = "linux")]
+pub fn no_capture_device() -> bool {
+    crate::alsa_capture::no_capture_device()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn no_capture_device() -> bool {
+    false
+}
+
 /// Opens the microphone. The returned stream must be kept alive to keep
 /// capturing; samples land in `sink` as mono f32 at the returned rate.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn open_microphone(
     sink: Arc<Mutex<Vec<f32>>>,
     recording: Arc<AtomicBool>,
@@ -195,6 +241,28 @@ fn open_microphone(
         .play()
         .map_err(|e| format!("cannot start capture: {e}"))?;
     Ok((stream, rate))
+}
+
+/// Linux and FreeBSD: ALSA converts to the wire format itself, so the returned
+/// rate is the wire rate and the resampler passes straight through. Dropping
+/// the returned capture stops it.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn open_microphone(
+    sink: Arc<Mutex<Vec<f32>>>,
+    recording: Arc<AtomicBool>,
+) -> Result<(crate::alsa_capture::Capture, u32), String> {
+    let rate = crate::alsa_capture::RATE;
+    let cap = rate as usize * MAX_TAKE.as_secs() as usize;
+    let capture = crate::alsa_capture::open(sink, recording, cap)?;
+    Ok((capture, rate))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "freebsd")))]
+fn open_microphone(
+    _sink: Arc<Mutex<Vec<f32>>>,
+    _recording: Arc<AtomicBool>,
+) -> Result<((), u32), String> {
+    Err("dictation has no capture backend on this platform".into())
 }
 
 /// Builds the authenticated upgrade request. The credential is dropped — and so

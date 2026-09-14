@@ -9,15 +9,28 @@ const micDock = document.getElementById('mic-dock');
 const micLevel = document.getElementById('mic-level');
 const micBars = micLevel ? Array.from(micLevel.querySelectorAll('i')) : [];
 
-/* Not offered on macOS. Capture runs inside Eclipse's own process, and macOS
-   attributes the microphone to Eclipse.app, which declares no microphone use --
-   so access is denied silently, without ever prompting. The host sets
-   __ccMacOS once the page loads (ClaudeGuiView#pushMacOS); the native side is
-   untouched. */
-function micUnavailable() { return !!window.__ccMacOS; }
+/* Not offered while switched off in Preferences; nor on macOS unless its
+   debug-only option is on; nor on Linux or FreeBSD without ALSA. On macOS
+   capture runs inside Eclipse's own process, and macOS attributes the
+   microphone to Eclipse.app, which declares no microphone use -- so access is
+   denied silently, without ever prompting. On Linux and FreeBSD capture goes
+   through ALSA, and without it there is nothing to capture with. The host sets
+   __ccNoDictation on page load and again whenever those preferences change
+   (ClaudeGuiView#pushDictationAvailability). */
+function micUnavailable() { return !!window.__ccNoDictation; }
 
+/* Re-run on every push, so the mic comes back when dictation is switched on
+   again without reloading the page. Switched off mid-take, the take ends the
+   way the button would end it, so what was said still lands. */
 window.applyDictationPlatform = () => {
-  if (micUnavailable() && micDock) micDock.style.display = 'none';
+  if (!micDock) return;
+  const off = micUnavailable();
+  micDock.style.display = off ? 'none' : '';
+  if (off && micRecording) {
+    micLatched = false;
+    micPressActive = false;
+    micStop();
+  }
 };
 
 /* Measured off the reference: 6px at rest, ~16px at peak, and the middle bar
@@ -76,7 +89,11 @@ function micStart() {
   micDock.classList.add('recording');
   micLevel.hidden = false;
   micSetLevel(0);
-  try { window._sttStart && window._sttStart(); } catch (e) { micFail('' + e); }
+  /* false = the host refused before starting and has already said why (FreeBSD
+     without alsa-plugins gets a dialog), so the mic just goes back to rest. */
+  try {
+    if (window._sttStart && window._sttStart() === false) micAbort();
+  } catch (e) { micFail('' + e); }
 }
 
 function micStop() {
@@ -93,12 +110,13 @@ function micStop() {
 
 /** Keyboard/command entry point: always a latching toggle, never a hold. */
 function micToggle() {
-  if (micUnavailable()) return;   // also what makes the key binding inert on macOS
+  if (micUnavailable()) return;   // also what makes the key binding inert there
   if (micRecording) { micLatched = false; micStop(); }
   else { micLatched = true; micStart(); }
 }
 
-function micFail(msg) {
+/** Puts the mic back at rest, saying nothing. */
+function micAbort() {
   micRecording = false;
   micLatched = false;
   micPressActive = false;
@@ -107,6 +125,10 @@ function micFail(msg) {
   micDock.classList.remove('recording');
   micLevel.hidden = true;
   input.classList.remove('dictating');
+}
+
+function micFail(msg) {
+  micAbort();
   if (typeof addSystem === 'function') addSystem('⚠ Dictation: ' + msg);
 }
 

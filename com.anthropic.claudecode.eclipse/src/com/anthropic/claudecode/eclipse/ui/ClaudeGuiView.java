@@ -201,6 +201,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private org.eclipse.jface.util.IPropertyChangeListener hideRootRowPrefListener;
     // Live-applies PREF_SMART_SCROLL_LOCK changes without a restart or page reload.
     private org.eclipse.jface.util.IPropertyChangeListener smartScrollLockPrefListener;
+    private org.eclipse.jface.util.IPropertyChangeListener dictationPrefListener;
+    /** The dictation key context's activation, held so a Preferences change can undo it. */
+    private org.eclipse.ui.contexts.IContextActivation dictationKeyActivation;
     // Re-pushes light/dark to the webview when the Eclipse workbench theme changes.
     private org.eclipse.jface.util.IPropertyChangeListener themeChangeListener;
     // Re-pushes the right-click menu's key hints when the user's bindings change.
@@ -261,21 +264,12 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         parent.setLayout(gl);
         root = parent;
 
-        // Makes the Ctrl+D dictation binding live only while this view has focus.
-        // Taken from the SITE's context service rather than the workbench's: a
-        // site-scoped activation is tied to part activation automatically, so
-        // there is no listener to add and nothing to deactivate by hand. Scoped
-        // because an unscoped Ctrl+D would shadow delete-line in every editor.
-        try {
-            org.eclipse.ui.contexts.IContextService ctx =
-                    getSite().getService(org.eclipse.ui.contexts.IContextService.class);
-            if (ctx != null) {
-                ctx.activateContext("com.anthropic.claudecode.eclipse.contexts.guiFocused");
-            }
-        } catch (Exception e) {
-            // No context service (non-workbench harness): the mic button still works.
-            Activator.logError("Could not activate the Claude composer key context", e);
-        }
+        // Makes the Ctrl+D dictation binding live only while this view has focus, and
+        // only while dictation is enabled in Preferences. Taken from the SITE's context
+        // service rather than the workbench's: a site-scoped activation is tied to part
+        // activation automatically, so focus needs no listener. Scoped because an
+        // unscoped Ctrl+D would shadow delete-line in every editor.
+        applyDictationKeyContext();
 
         browser = new Browser(parent, SWT.NONE);
         browser.setLayoutData(new org.eclipse.swt.layout.GridData(SWT.FILL, SWT.FILL, true, true));
@@ -309,6 +303,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         registerHistoryShowTimestampsPrefListener();
         registerHideRootRowPrefListener();
         registerSmartScrollLockPrefListener();
+        registerDictationPrefListener();
         registerThemeListener();
         registerBindingListener();
         registerEditHandlers();
@@ -386,8 +381,19 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         });
         newSessionFn   = new SimpleFunction(browser, "_newSession", a -> null);   // new tab = new manager (JS creates the tab)
         // Dictation. Capture and transcription are both native; this only starts
-        // the take and hands over the recognition hints.
+        // the take and hands over the recognition hints. Returns false when the take
+        // is refused before it starts, so the page puts the mic back at rest.
         sttStartFn     = new SimpleFunction(browser, "_sttStart", a -> {
+            if (alsaPluginsMissing()) {
+                ClaudeCodeView.debug("[voice] alsa-plugins is not installed; take refused");
+                Display.getDefault().asyncExec(() -> showDictationUnavailable(ALSA_PLUGINS_MISSING));
+                return Boolean.FALSE;
+            }
+            if (noCaptureDevice()) {
+                ClaudeCodeView.debug("[voice] no sound card or capture device found; take refused");
+                Display.getDefault().asyncExec(() -> showDictationUnavailable(NO_CAPTURE_DEVICE));
+                return Boolean.FALSE;
+            }
             String terms = sttKeyterms();
             ClaudeCodeView.debug("[voice] start requested (keyterms: "
                     + (terms.isEmpty() ? "none" : terms) + ")");
@@ -863,7 +869,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             pushCliModels();         // ditto for the installed binary's model support
             pushEditKeyHints();      // label the right-click menu with the user's real keys
             pushDebugMode();         // let the page report its keys while Debug mode is on
-            pushMacOS();             // dictation is not offered on macOS
+            pushDictationAvailability(); // no dictation on macOS, or without ALSA on Linux/FreeBSD
             pushHistoryShowTimestamps(); // whether to show a timestamp above your own messages
             pushHideRootDirectoriesRow(); // whether the root directories row is hidden entirely
             pushSpinnerVerbs();      // which gerund categories the working indicator cycles
@@ -1476,6 +1482,24 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         Activator.getDefault().getPreferenceStore().addPropertyChangeListener(smartScrollLockPrefListener);
     }
 
+    /** Live-applies the dictation preferences — dictation itself, the debug-only macOS
+     *  option, and Debug mode, which that option depends on — so the mic and its key
+     *  binding follow without a page reload. Mirrors {@link #registerStatusPrefListener()}. */
+    private void registerDictationPrefListener() {
+        dictationPrefListener = event -> {
+            String p = event.getProperty();
+            if (!com.anthropic.claudecode.eclipse.Constants.PREF_DICTATION_ENABLED.equals(p)
+                    && !com.anthropic.claudecode.eclipse.Constants.PREF_DICTATION_MACOS.equals(p)
+                    && !com.anthropic.claudecode.eclipse.Constants.PREF_DEBUG_MODE.equals(p)) return;
+            Display.getDefault().asyncExec(() -> {
+                if (browser == null || browser.isDisposed()) return;
+                applyDictationKeyContext();
+                pushDictationAvailability();
+            });
+        };
+        Activator.getDefault().getPreferenceStore().addPropertyChangeListener(dictationPrefListener);
+    }
+
     /**
      * Live theme refresh driven by the JFace {@link org.eclipse.jface.resource.ColorRegistry},
      * the SAME signal that recolors the shared status bar the instant the Eclipse theme changes
@@ -1818,15 +1842,105 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     }
 
     /**
-     * Tells the page it is running on macOS, where dictation is not offered: the
-     * microphone is attributed to Eclipse.app, which declares no microphone use, so
-     * capture is denied without a prompt. Page-side only; the native core is unchanged.
-     * Pushed once per page load, since the platform cannot change under a view.
+     * Activates the dictation key context while dictation is enabled in Preferences, and
+     * deactivates it while it is not. Only the dictation bindings live in that context, so
+     * this is what takes the key binding away with the feature.
      */
-    private void pushMacOS() {
+    private void applyDictationKeyContext() {
+        boolean wanted = Activator.getDefault().getPreferenceStore()
+                .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_DICTATION_ENABLED);
+        try {
+            org.eclipse.ui.contexts.IContextService ctx =
+                    getSite().getService(org.eclipse.ui.contexts.IContextService.class);
+            if (ctx == null) return;
+            if (wanted && dictationKeyActivation == null) {
+                dictationKeyActivation =
+                        ctx.activateContext("com.anthropic.claudecode.eclipse.contexts.guiFocused");
+            } else if (!wanted && dictationKeyActivation != null) {
+                ctx.deactivateContext(dictationKeyActivation);
+                dictationKeyActivation = null;
+            }
+        } catch (Exception e) {
+            // No context service (non-workbench harness): the mic button still works.
+            Activator.logError("Could not update the Claude composer key context", e);
+        }
+    }
+
+    /**
+     * Tells the page whether to offer dictation. Not while it is switched off in
+     * Preferences. Not on macOS, where the microphone is attributed to Eclipse.app, which
+     * declares no microphone use, so capture is denied without a prompt — unless the
+     * debug-only macOS option is ticked, which counts only while Debug mode and dictation
+     * are on too. Not on Linux or FreeBSD without ALSA,
+     * which capture there goes through. Pushed on every page load and on every change to
+     * those preferences.
+     */
+    private void pushDictationAvailability() {
         if (browser == null || browser.isDisposed() || !pageLoaded) return;
-        browser.execute("window.__ccMacOS = " + Activator.isMacOS()
+        org.eclipse.jface.preference.IPreferenceStore prefs = Activator.getDefault().getPreferenceStore();
+        boolean enabled = prefs.getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_DICTATION_ENABLED);
+        boolean macOSAllowed = enabled && DebugModeUi.isDebugEnabled()
+                && prefs.getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_DICTATION_MACOS);
+        boolean off = !enabled || (Activator.isMacOS() && !macOSAllowed) || alsaMissing();
+        browser.execute("window.__ccNoDictation = " + off
                 + "; window.applyDictationPlatform && window.applyDictationPlatform();");
+    }
+
+    /** FreeBSD only: true when alsa-plugins, ALSA's bridge to OSS, is not installed. */
+    private static boolean alsaPluginsMissing() {
+        if (!Activator.isFreeBSD()) return false;
+        try {
+            return NativeCore.sttNeedsAlsaPlugins();
+        } catch (UnsatisfiedLinkError e) {
+            return false; // a native library older than this check: start as before
+        }
+    }
+
+    /** Linux only: true when ALSA finds no sound card and no default capture device opens. */
+    private static boolean noCaptureDevice() {
+        if (!Activator.isLinux()) return false;
+        try {
+            return NativeCore.sttNoCaptureDevice();
+        } catch (UnsatisfiedLinkError e) {
+            return false; // a native library older than this check: start as before
+        }
+    }
+
+    private static final String ALSA_PLUGINS_MISSING =
+            "Dictation on FreeBSD requires the alsa-plugins package, which connects ALSA "
+            + "to the system's OSS audio devices. It does not appear to be installed.\n\n"
+            + "To enable dictation, install it as root:\n\n"
+            + "    pkg install alsa-plugins\n\n"
+            + "Then try again.";
+
+    private static final String NO_CAPTURE_DEVICE =
+            "No audio input device was found. Dictation needs a microphone, and this system "
+            + "has no sound card that ALSA can record from.\n\n"
+            + "Connect a microphone or other audio input device, then try again.";
+
+    /**
+     * Says why a take cannot start, in a real dialog rather than in the conversation.
+     * Callers defer this: a modal opened inside a browser callback would run its event
+     * loop inside that callback.
+     */
+    private void showDictationUnavailable(String message) {
+        if (browser == null || browser.isDisposed()) return;
+        MessageDialog.openWarning(browser.getShell(), "Dictation Unavailable", message);
+    }
+
+    /** Linux and FreeBSD only: true when the native side cannot load ALSA. */
+    private static boolean alsaMissing() {
+        if (!Activator.isLinux() && !Activator.isFreeBSD()) return false;
+        try {
+            String reason = NativeCore.sttUnavailableReason();
+            if (reason == null || reason.isEmpty()) return false;
+            ClaudeCodeView.debug("[voice] dictation hidden: " + reason);
+            return true;
+        } catch (UnsatisfiedLinkError e) {
+            // A native library older than this probe links libasound outright, so if
+            // it loaded at all, ALSA is present.
+            return false;
+        }
     }
 
     /**
@@ -3355,6 +3469,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(smartScrollLockPrefListener); }
             catch (Throwable ignored) {}
             smartScrollLockPrefListener = null;
+        }
+        if (dictationPrefListener != null) {
+            try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(dictationPrefListener); }
+            catch (Throwable ignored) {}
+            dictationPrefListener = null;
         }
         if (themeChangeListener != null) {
             try {

@@ -29,9 +29,17 @@ qrcode = { version = "0.14.1", default-features = false }
 # native capture sidesteps WebView2/WebKitGTK getUserMedia permission plumbing
 # entirely.
 #
-# All pure Rust: the nine-target build has no C++ cross-toolchain. cpal does link
-# libasound on the five Unix targets, so those images need libasound2-dev and the
-# FreeBSD sysroot needs alsa-lib.
-cpal            = "0.15"
+# All pure Rust: the nine-target build has no C++ cross-toolchain.
 rubato          = "0.15"
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+
+# Capture. Windows and macOS go through cpal, whose audio frameworks ship with the
+# OS. Linux and FreeBSD do NOT: cpal links libasound, which makes libasound.so.2 a
+# hard load-time dependency of this whole library, so a machine without ALSA could
+# not load the plugin at all. There, ALSA is opened at runtime instead (see
+# src/alsa_capture.rs) and dictation reports itself unavailable when it is missing.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+cpal            = "0.15"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+libloading      = "0.8"

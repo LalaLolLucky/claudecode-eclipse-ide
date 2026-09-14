@@ -8,6 +8,8 @@ mod server;
 mod session;
 mod shell_env;
 mod stt;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod alsa_capture;
 mod teleport;
 mod web_history;
 
@@ -1301,4 +1303,36 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttIsRec
     _class: JClass,
 ) -> jboolean {
     u8::from(dictation().is_recording())
+}
+
+/// Empty when dictation can capture on this machine, otherwise why it cannot.
+/// Linux and FreeBSD load ALSA at runtime, so a machine without it still loads
+/// this library and is told here instead.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttUnavailableReason(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let reason = stt::unavailable_reason().unwrap_or_default();
+    env.new_string(reason).unwrap_or_else(|_| env.new_string("").unwrap()).into_raw()
+}
+
+/// FreeBSD only: true when alsa-plugins -- ALSA's bridge to OSS -- is not
+/// installed. Always false elsewhere.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttNeedsAlsaPlugins(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    u8::from(stt::needs_alsa_plugins())
+}
+
+/// Linux only: true when ALSA finds no sound card and no default capture device
+/// opens. Always false elsewhere.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttNoCaptureDevice(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    u8::from(stt::no_capture_device())
 }

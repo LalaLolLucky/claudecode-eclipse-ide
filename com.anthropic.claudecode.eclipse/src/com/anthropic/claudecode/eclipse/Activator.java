@@ -464,6 +464,14 @@ public class Activator extends AbstractUIPlugin {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
     }
 
+    public static boolean isLinux() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux");
+    }
+
+    public static boolean isFreeBSD() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("freebsd");
+    }
+
     @Override
     protected void initializeImageRegistry(ImageRegistry registry) {
         putImage(registry, getBundle(), Constants.IMG_CLEAR_REFRESH, "clear_co.svg");

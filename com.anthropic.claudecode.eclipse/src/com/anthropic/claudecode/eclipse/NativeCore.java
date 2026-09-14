@@ -761,4 +761,25 @@ public final class NativeCore {
     public static native void sttStop();
 
     public static native boolean sttIsRecording();
+
+    /**
+     * Why dictation cannot capture on this machine, or an empty string when it can.
+     * Linux and FreeBSD open ALSA at runtime, so the library loads without it and this
+     * names what is missing; Windows and macOS always return empty.
+     */
+    public static native String sttUnavailableReason();
+
+    /**
+     * FreeBSD only: true when alsa-plugins, ALSA's bridge to OSS, is not installed.
+     * ALSA itself loads without it, but no take can open the microphone. Always false
+     * on other platforms.
+     */
+    public static native boolean sttNeedsAlsaPlugins();
+
+    /**
+     * Linux only: true when there is nothing to record from — ALSA finds no sound card,
+     * and no default capture device (a sound server's, say) opens without one. Always
+     * false on other platforms.
+     */
+    public static native boolean sttNoCaptureDevice();
 }
