@@ -4,8 +4,6 @@
    WebView2 microphone permission to grant. This file only starts/stops the
    native side and paints what comes back. */
 
-const micField = document.getElementById('input-field');
-const micMirror = document.getElementById('input-mirror');
 const micBtn = document.getElementById('mic-btn');
 const micDock = document.getElementById('mic-dock');
 const micLevel = document.getElementById('mic-level');
@@ -39,51 +37,6 @@ let micDetached = false;
    dispatched by hand. Deliberately NOT 'beforeinput': that one is the signal
    that the USER is editing, and firing it here would look like typing and
    abandon the take. */
-/* Text -> markup. MUST escape: both the transcript and whatever the user typed
-   around it end up in innerHTML, and neither is trusted input. */
-function micEsc(t) {
-  return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-/* Redraws the decorative layer: the same text as the textarea, with only the
-   current take's words italic. Called from micRender, so the two can never show
-   different text. */
-function micPaintMirror(spoken, tail) {
-  /* Guarded on the class rather than trusting call order: onSttDone drops the
-     mirror and THEN renders the final text, so an unguarded painter would put
-     the italics straight back after the take had ended. */
-  if (!micMirror || !micField || !micField.classList.contains('mirroring')) return;
-  const full = micPrefix + spoken + tail;
-  let html = micEsc(micPrefix)
-           + (spoken ? '<i>' + micEsc(spoken) + '</i>' : '')
-           + micEsc(tail);
-  /* A textarea shows a trailing newline as an empty last line; pre-wrap in a div
-     collapses it. The zero-width space keeps the two the same height. */
-  if (full.endsWith('\n')) html += '&#8203;';
-  micMirror.innerHTML = html;
-  micMirror.scrollTop = input.scrollTop;
-}
-
-function micMirrorOn() {
-  if (!micField) return;
-  micField.classList.add('mirroring');
-}
-
-/* Ends the italic session: the layer goes away and the textarea's own glyphs
-   come back, so previously dictated text reads as ordinary text from here on. */
-function micMirrorOff() {
-  if (!micField) return;
-  micField.classList.remove('mirroring');
-  if (micMirror) micMirror.innerHTML = '';
-}
-
-/* The field scrolls once it passes its max height; the copy has to follow. */
-input.addEventListener('scroll', () => {
-  if (micMirror && micField && micField.classList.contains('mirroring')) {
-    micMirror.scrollTop = input.scrollTop;
-  }
-});
-
 function micRender(spoken) {
   if (micDetached) return;
   let tail = micSuffix;
@@ -93,7 +46,6 @@ function micRender(spoken) {
   try { input.setSelectionRange(caret, caret); } catch (e) { /* detached node */ }
   input.dispatchEvent(new Event('input'));
   input.scrollTop = input.scrollHeight;
-  micPaintMirror(spoken, tail);
 }
 
 function micStart() {
@@ -106,8 +58,7 @@ function micStart() {
   if (micPrefix && !/\s$/.test(micPrefix)) micPrefix += ' ';
   micFinal = '';
   micDetached = false;
-  micMirrorOn();
-  micPaintMirror('', micSuffix);
+  input.classList.add('dictating');
   micRecording = true;
   micBtn.classList.add('recording');
   micDock.classList.add('recording');
@@ -142,7 +93,7 @@ function micFail(msg) {
   micBtn.classList.remove('busy');
   micDock.classList.remove('recording');
   micLevel.hidden = true;
-  micMirrorOff();
+  input.classList.remove('dictating');
   if (typeof addSystem === 'function') addSystem('⚠ Dictation: ' + msg);
 }
 
@@ -219,7 +170,7 @@ input.addEventListener('beforeinput', () => {
   micDetached = true;
   micLatched = false;
   micPressActive = false;
-  micMirrorOff();          // their text is theirs; nothing stays italic
+  input.classList.remove('dictating');   // their text is theirs, and upright
   micStop();
 });
 
@@ -260,7 +211,7 @@ window.onSttFinal = (text) => {
 /** Tail flushed — the transcript is settled and the composer is plain text again. */
 window.onSttDone = () => {
   micBtn.classList.remove('busy');
-  micMirrorOff();
+  input.classList.remove('dictating');
   micRender(micFinal);
   input.focus();
 };

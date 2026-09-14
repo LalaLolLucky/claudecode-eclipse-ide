@@ -76,16 +76,7 @@
       <!-- Thumbnails of pasted images awaiting send (per active tab). -->
       <div id="pending-images"></div>
       <div class="input-row">
-        <!-- The textarea stays the one real input: it keeps focus, selection,
-             undo, IME, paste and every existing handler. #input-mirror is a
-             decorative copy stacked exactly on top of it, shown ONLY while
-             dictating, so partial italics can be drawn (a textarea renders
-             uniformly styled text and cannot do that itself). Outside a take
-             the mirror is display:none and this box behaves exactly as before. -->
-        <div id="input-field">
-          <div id="input-mirror" aria-hidden="true"></div>
-          <textarea id="input" rows="1" placeholder="Message Claude…"></textarea>
-        </div>
+        <textarea id="input" rows="1" placeholder="Message Claude…"></textarea>
         <!-- Dictation. Sits in .input-row (not #composer-bar) so it stays pinned to the
              top-right as the textarea grows to two lines, matching the reference.
              While recording the dock gains a panel behind BOTH the meter and the
