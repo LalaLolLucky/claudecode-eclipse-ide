@@ -291,6 +291,52 @@ public final class NativeCore {
      */
     public static native boolean chatSetPermissionMode(long handle, String mode);
 
+    /**
+     * Writes one uploaded document out of a transcript to a file and returns its path,
+     * or {@code ""} when it isn't there — what a reloaded conversation's attachment chip
+     * opens. {@code index} counts the document blocks of message {@code messageUuid}, as
+     * {@link #sessionLoad} numbered them. Blocking, and the file can be large: call it
+     * off the UI thread.
+     *
+     * <p>The contents deliberately do not travel with the loaded conversation: a
+     * transcript keeps every uploaded file in full, and carrying them into the webview
+     * would freeze the view on a conversation holding a big one.
+     */
+    public static native String sessionDocumentFile(String workspaceRoot, String sessionId,
+                                                    String messageUuid, int index);
+
+    /**
+     * The composer's {@code @} list for {@code query} under {@code root}: a JSON array of
+     * {@code {path,name,type}} rows, {@code type} being {@code file}, {@code directory} or
+     * {@code browser}. An empty query lists everything. The files come first and the
+     * browser tabs (only when {@code withBrowser}) after them, except while the typed word
+     * could still become {@code browser:}, when the tabs lead. The tabs come from the last
+     * lookup, so this never waits on Chrome, except for a word starting {@code browser:},
+     * which asks it (the first time, that starts the CLI's Chrome MCP server). Blocking
+     * (a folder walk): call off the UI thread.
+     */
+    public static native String listMentions(String root, String claudeCmd, String query, boolean withBrowser);
+
+    /**
+     * Takes the browser back out of this manager's conversation, telling the model it is
+     * gone; {@link ChatCallbacks#onBrowserState} reports it disconnected. Returns whether it
+     * was on.
+     */
+    public static native boolean chatDisableChrome(long handle);
+
+    /**
+     * Whether the CLI is signed in with a claude.ai account, which Claude in Chrome needs.
+     * Cached for a minute in the core; on macOS an uncached read queries the keychain.
+     */
+    public static native boolean hasClaudeAiLogin();
+
+    /**
+     * The browser text blocks (a JSON array; {@code []} when there are none) for a message
+     * about to be sent on this manager, switching the browser on for its live process when
+     * it isn't yet. Blocking — may open a Chrome tab. Call once the process is ensured.
+     */
+    public static native String chatBrowserBlocks(long handle, String claudeCmd, String message);
+
 
     /**
      * Starts this tab's CLI process if it has none, sending nothing.
@@ -325,6 +371,30 @@ public final class NativeCore {
      * @return false only when the tab has no live process to ask.
      */
     public static native boolean chatRemoteControl(long handle, boolean enabled);
+
+    /**
+     * Whether switching this tab back to the default model would restart its
+     * process. Every other launch setting is applied to the running process; this
+     * one can be too, but only when the CLI has no model setting of its own — its
+     * reset returns to the model it would pick with no setting, which is a different
+     * model from the one a fresh process would launch on when a setting exists.
+     *
+     * <p>The view asks before restarting, since the restart archives the
+     * conversation's Remote Control session on the user's other devices.
+     */
+    public static native boolean chatDefaultModelRestarts(long handle);
+
+    /**
+     * Applies a tab's launch settings to its live process at once, rather than
+     * leaving them for the next message: what the view shows and what the process is
+     * running stay the same thing, and under Remote Control the CLI tells the phone
+     * and claude.ai about the change as it happens.
+     *
+     * @return false when the tab has no live process, or when the change needs a new
+     *         one (the next message makes it, as before).
+     */
+    public static native boolean chatApplySettings(long handle, String permMode, String effort,
+                                                   String model, String thinking);
 
     /**
      * Renders a Remote Control session url as a scannable QR code, as SVG.
@@ -403,6 +473,15 @@ public final class NativeCore {
          */
         default void onStatus(String statusJson) {}
         /**
+         * A launch setting now in effect on the live process, as JSON with any of
+         * {@code permMode}, {@code model}, {@code effort}. Fired only when one
+         * actually changed — including when it was changed on another device over
+         * Remote Control, which is what this exists for. The process is already in
+         * this state, so the view follows it rather than pushing anything back.
+         * Non-blocking.
+         */
+        default void onSettingsChanged(String json) {}
+        /**
          * Compaction lifecycle (persistent mode; /compact or auto-compact). JSON
          * phases in order: {@code {"phase":"compacting"}}, then either
          * {@code {"phase":"failed","error":…}} or
@@ -443,6 +522,13 @@ public final class NativeCore {
          * directly without doubling a bubble it already drew. Non-blocking.
          */
         default void onRemoteMessage(String text) {}
+        /**
+         * Claude in Chrome changed state for this conversation:
+         * {@code {"status":"connecting"|"connected"|"disconnected"}}, or
+         * {@code {"status":"error","error":…}} when the CLI could not add the server.
+         * Non-blocking.
+         */
+        default void onBrowserState(String json) {}
     }
 
     // ── Embedded console (replaces PTY + xterm.js for the CLI view) ─────────
@@ -716,6 +802,14 @@ public final class NativeCore {
      * Enables or disables debug logging in native code.
      */
     public static native void setDebugMode(boolean enabled);
+
+    /**
+     * Whether chat processes are launched able to enter Auto mode
+     * ({@code bypassPermissions}) without being restarted — the
+     * {@link Constants#PREF_LIVE_AUTO_MODE} preference. Applies to conversations
+     * started after the call; the ones already running keep what they launched with.
+     */
+    public static native void setLiveAutoMode(boolean enabled);
 
     // ---- Dictation -------------------------------------------------------
 

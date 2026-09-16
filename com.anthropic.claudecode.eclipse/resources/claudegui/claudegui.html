@@ -84,6 +84,11 @@
          away with the transcript it's meant to be seen over. -->
     <div id="jump-to-latest" onclick="scrollBottom(true)" title="Jump to latest">__DOWN__</div>
     <div id="usage-warn"></div>
+    <!-- The @ list (mentions.js): files and folders, or browser tabs, above the input box. -->
+    <div id="mention-menu" role="listbox" aria-label="Suggestions"></div>
+    <!-- Claude in Chrome, for the active conversation (mentions.js): a tab on top of the
+         input box while the browser is connected; its × disconnects it. -->
+    <div id="browser-banner" hidden><span class="bb-txt"></span><span class="bb-x" role="button" title="Disconnect browser" aria-label="Disconnect browser" onclick="disconnectBrowser()">__X__</span></div>
     <div id="input-wrap">
       <!-- Thumbnails of pasted images awaiting send (per active tab). -->
       <div id="pending-images"></div>
@@ -101,7 +106,7 @@
       </div>
       <div id="composer-bar">
         <div class="cb-left">
-          <span class="pill" id="plus-btn" title="Add context" onclick="toggleMenu('plus-menu', this)" style="display:none">__PLUS__</span>
+          <span class="pill" id="plus-btn" title="Add" onclick="openPlusMenu(this)">__PLUS__</span>
           <span class="pill" id="slash-btn" title="Commands" onclick="toggleMenu('actions-menu', this)">__SLASH__</span>
           <span class="file-chip empty" id="ctx-chip" title="Toggle file context" onclick="toggleContext()"><span id="ctx-ic">__FILEICON__</span> <span id="ctx-label">No file open</span></span>
         </div>
@@ -121,25 +126,26 @@
 
   <!-- + menu -->
   <div class="menu" id="plus-menu">
-    <div class="item"><span class="ic">__UPLOAD__</span><div class="txt"><span class="lbl">Upload from computer</span></div></div>
-    <div class="item"><span class="ic">__FILEICON__</span><div class="txt"><span class="lbl">Add context</span></div></div>
-    <div class="item"><span class="ic">__GLOBE__</span><div class="txt"><span class="lbl">Browse the web</span></div></div>
+    <div class="item" title="Attach files from your computer" onclick="pickFilesFromComputer()"><span class="ic">__UPLOAD__</span><div class="txt"><span class="lbl">Upload from computer</span></div></div>
+    <div class="item" title="Add files or folders to the conversation" onclick="insertMentionTrigger('@')"><span class="ic">__FILEICON__</span><div class="txt"><span class="lbl">Add context</span></div></div>
+    <div class="item" id="plus-browse" title="Add browser tabs to the conversation" onclick="insertMentionTrigger('@browser:')" hidden><span class="ic">__GLOBE__</span><div class="txt"><span class="lbl">Browse the web</span></div></div>
   </div>
 
   <!-- modes menu -->
-  <div class="menu" id="modes-menu" style="min-width:280px">
+  <div class="menu" id="modes-menu" style="min-width:264px">
     <div class="head"><span class="h">Modes</span></div>
     <div class="item" data-mode="default" data-icon="HAND" onclick="selectMode(this)"><span class="ic">__HAND__</span><div class="txt"><span class="lbl">Manual</span><span class="desc">Claude shows each edit in a diff to accept or reject</span></div><span class="check">__CHECK__</span></div>
     <div class="item" data-mode="acceptEdits" data-icon="PENCIL" onclick="selectMode(this)"><span class="ic">__PENCIL__</span><div class="txt"><span class="lbl">Edit automatically</span><span class="desc">Claude applies edits without asking</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
     <div class="item" data-mode="plan" data-icon="MAP" onclick="selectMode(this)"><span class="ic">__MAP__</span><div class="txt"><span class="lbl">Plan</span><span class="desc">Claude explores and presents a plan before editing</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
-    <div class="item" data-mode="bypassPermissions" data-icon="BOLT" onclick="selectMode(this)"><span class="ic">__BOLT__</span><div class="txt"><span class="lbl">Auto</span><span class="desc">Claude runs everything without asking (use with care)</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
+    <div class="item" data-mode="auto" data-icon="BOLT" onclick="selectMode(this)"><span class="ic">__BOLT__</span><div class="txt"><span class="lbl">Auto</span><span class="desc">Claude will approve actions that pass a safety check and pause for anything risky</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
+    <div class="item" id="mode-bypass" data-mode="bypassPermissions" data-icon="EYEOFF" onclick="selectMode(this)"><span class="ic">__EYEOFF__</span><div class="txt"><span class="lbl">Bypass permissions</span><span class="desc">Claude will not ask for approval before running potentially dangerous commands</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
     <div class="sep"></div>
     <div class="effort"><span class="lbl">__GAUGE__ Effort <span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span>
       <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
   </div>
 
   <!-- actions menu (the / button): Context + Model sections + Slash Commands -->
-  <div class="menu" id="actions-menu" style="min-width:300px">
+  <div class="menu" id="actions-menu" style="min-width:284px">
     <div class="head"><span class="h">Context</span></div>
     <div class="item" onclick="openRewindDialog()"><span class="ic">__REWIND__</span><div class="txt"><span class="lbl">Rewind</span></div></div>
     <div class="sep"></div>
@@ -159,7 +165,7 @@
   </div>
 
   <!-- model chooser -->
-  <div class="menu" id="model-menu" style="min-width:340px"><div class="head"><span class="h">Select a model</span></div><div id="model-list"></div></div>
+  <div class="menu" id="model-menu" style="min-width:320px"><div class="head"><span class="h">Select a model</span></div><div id="model-list"></div></div>
 
   <!-- account & usage window -->
   <div id="account-overlay"><div id="account-win"></div></div>
@@ -225,6 +231,7 @@
 <script src="scripts/remotecontrol.js"></script>
 <script src="scripts/msgactions.js"></script>
 <script src="scripts/slash.js"></script>
+<script src="scripts/mentions.js"></script>
 <script src="scripts/advisor.js"></script>
 <script src="scripts/markdown.js"></script>
 <script src="scripts/viewstate.js"></script>

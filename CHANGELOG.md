@@ -4,7 +4,27 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.2] — 2026-09-14 *(current)*
+## [3.2.3] — 2026-09-17 *(current)*
+
+### Added
+- **Connect Claude to Chrome.** `@browser` in the composer hands Claude the browser; a banner shows while it is connected, and its × ends it and tells Claude you meant to.
+- **Auto permission mode**, which approves what passes a safety check and pauses for anything risky. The mode previously called Auto is now named Bypass permissions, and is listed only when the new preference allows it.
+- **Preference: "Enable Thinking by default"** — new conversations start with thinking on.
+
+### Changed
+- **Switching model, effort, thinking or permission mode no longer restarts the conversation.** It applies to the one already running, and reaches claude.ai and your phone straight away.
+- **A model, effort or mode picked on another device now shows up here**, within a second.
+- **Thinking stays on while Remote Control is active.**
+- **The menus are more compact.**
+
+### Fixed
+- **Remote Control no longer goes one-way**, dropping silently on the first message after you turn it on.
+- **Restarting a conversation no longer leaves its Claude process running** on Windows.
+- **Squeezed narrow, the view stays readable** — banners wrap onto their own rows, "Claude Code" no longer splits mid-word, and a horizontal scrollbar appears below the minimum width.
+
+---
+
+## [3.2.2] — 2026-09-14
 
 ### Added
 - **Dictate into the composer (experimental)** with the microphone button or Ctrl+D — hold to talk, or tap to keep recording. Only available on macOS with debug mode; on Linux and FreeBSD it needs ALSA (plus `alsa-plugins` on FreeBSD).

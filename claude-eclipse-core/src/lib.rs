@@ -1,9 +1,11 @@
 mod bridge;
 mod chat;
+mod chrome;
 mod console;
 mod launch;
 mod lock_file;
 mod mcp;
+mod mentions;
 mod server;
 mod session;
 mod shell_env;
@@ -35,6 +37,17 @@ static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn is_debug() -> bool {
     DEBUG_MODE.load(Ordering::Relaxed)
+}
+
+// ---------------------------------------------------------------------------
+// Whether a chat process may be launched able to enter Auto mode — set from Java
+// via setLiveAutoMode(). Defaults to on, as the preference does.
+// ---------------------------------------------------------------------------
+
+static LIVE_AUTO_MODE: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn live_auto_mode() -> bool {
+    LIVE_AUTO_MODE.load(Ordering::Relaxed)
 }
 
 pub(crate) fn java_vm() -> Arc<jni::JavaVM> {
@@ -829,6 +842,95 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionL
     env.new_string(json).unwrap_or_else(|_| env.new_string("[]").unwrap()).into_raw()
 }
 
+/// Writes one uploaded document out of a transcript to a file and returns its
+/// path (`""` when it isn't there) — what a reloaded conversation's attachment
+/// chip opens. **Blocking**, and the file can be large: off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionDocumentFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    workspace_root: JString,
+    session_id: JString,
+    message_uuid: JString,
+    index: jint,
+) -> jstring {
+    let mut arg = |s: JString| -> String {
+        if s.is_null() {
+            String::new()
+        } else {
+            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
+        }
+    };
+    let root = arg(workspace_root);
+    let id = arg(session_id);
+    let uuid = arg(message_uuid);
+    let path = session::session_document_file(&root, &id, &uuid, index.max(0) as usize);
+    env.new_string(path).unwrap_or_else(|_| env.new_string("").unwrap()).into_raw()
+}
+
+/// The composer's `@` list for `query`: the files and folders under `root`, with
+/// the browser tabs after them when `with_browser` (see
+/// `mentions::with_browser_rows` for the order). Those tabs come from the last
+/// lookup so a keystroke never waits on Chrome; a word starting `browser:` asks
+/// Chrome itself. **Blocking** (a folder walk, or Chrome): off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_listMentions(
+    mut env: JNIEnv,
+    _class: JClass,
+    root: JString,
+    claude_cmd: JString,
+    query: JString,
+    with_browser: jboolean,
+) -> jstring {
+    let mut arg = |s: JString| -> String {
+        if s.is_null() {
+            String::new()
+        } else {
+            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
+        }
+    };
+    let root = arg(root);
+    let cmd = arg(claude_cmd);
+    let query = arg(query);
+    let with_browser = with_browser != 0;
+    let json = if with_browser && query.to_lowercase().starts_with("browser:") {
+        chrome::browser_tabs_json(&cmd, &query)
+    } else {
+        let files = mentions::list_files_json(&root, &query);
+        if with_browser {
+            mentions::with_browser_rows(&files, &chrome::cached_browser_tabs_json(&cmd, &query), &query)
+        } else {
+            files
+        }
+    };
+    env.new_string(json).unwrap_or_else(|_| env.new_string("[]").unwrap()).into_raw()
+}
+
+/// Takes the browser back out of this tab's conversation — the banner's ×.
+/// Returns whether it was on.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatDisableChrome(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let manager = unsafe { &*(handle as *const ChatManager) };
+    manager.disable_chrome() as jboolean
+}
+
+/// Whether the CLI is signed in with a claude.ai account — what Browse the web and
+/// the browser tabs in the `@` list need. Cached for a minute in the core.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_hasClaudeAiLogin(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    web_history::has_claude_ai_login() as jboolean
+}
+
 /// Deletes one local session jsonl. Rejects ids that could escape the
 /// projects directory; returns whether the file was actually removed.
 #[no_mangle]
@@ -977,6 +1079,42 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatSetP
     manager.set_permission_mode(&mode) as jboolean
 }
 
+/// The browser text blocks for a message about to be sent on this tab, as a JSON
+/// array — `[]` when it mentions no browser. Switches the browser on for the
+/// tab's live process first when it isn't yet. **Blocking** — may open a Chrome
+/// tab. Off the UI thread, after the tab's process has been ensured.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatBrowserBlocks(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    claude_cmd: JString,
+    message: JString,
+) -> jstring {
+    if handle == 0 {
+        return env.new_string("[]").unwrap().into_raw();
+    }
+    let manager = unsafe { &*(handle as *const ChatManager) };
+    let cmd: String = if claude_cmd.is_null() {
+        String::new()
+    } else {
+        env.get_string(&claude_cmd).ok().map(|s| s.into()).unwrap_or_default()
+    };
+    let message: String = if message.is_null() {
+        String::new()
+    } else {
+        env.get_string(&message).ok().map(|s| s.into()).unwrap_or_default()
+    };
+    let blocks = chrome::browser_blocks(
+        &cmd,
+        &message,
+        |cfg| manager.enable_chrome(cfg),
+        || chrome::cli_instruction(&cmd),
+    );
+    let json = serde_json::to_string(&blocks).unwrap_or_else(|_| "[]".to_string());
+    env.new_string(json).unwrap().into_raw()
+}
+
 
 /// Starts this tab's CLI process if it has none, sending nothing.
 ///
@@ -1040,6 +1178,57 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatRemo
     manager.remote_control(enabled != 0) as jboolean
 }
 
+/// Applies a tab's launch settings (permission mode, effort, model, thinking) to its
+/// live process at once, rather than leaving them for the next message. What the view
+/// shows and what the process is running are then the same thing — and under Remote
+/// Control, so is what the phone and claude.ai show.
+///
+/// Returns false when the tab has no live process, or when the change needs a new one.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatApplySettings(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    perm_mode: JString,
+    effort: JString,
+    model: JString,
+    thinking: JString,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let manager = unsafe { &*(handle as *const ChatManager) };
+    let mut text = |s: JString| -> String {
+        if s.is_null() {
+            String::new()
+        } else {
+            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
+        }
+    };
+    let (perm_mode, effort, model, thinking) =
+        (text(perm_mode), text(effort), text(model), text(thinking));
+    manager.apply_settings_now(&perm_mode, &effort, &model, &thinking) as jboolean
+}
+
+/// Whether switching this tab back to a Default model would restart its process.
+///
+/// Every other launch setting is applied to the running process; this one can be too,
+/// but only when the CLI has no model setting of its own to fall back to. The view
+/// warns before the restart, because it archives the conversation's Remote Control
+/// session on the other devices.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatDefaultModelRestarts(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let manager = unsafe { &*(handle as *const ChatManager) };
+    manager.default_model_restarts() as jboolean
+}
+
 // ===========================================================================
 // Debug mode JNI entry point
 // ===========================================================================
@@ -1051,6 +1240,16 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_setDebug
     enabled: jboolean,
 ) {
     DEBUG_MODE.store(enabled != 0, Ordering::Relaxed);
+}
+
+/// Whether chat processes are launched able to enter Auto mode without a restart.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_setLiveAutoMode(
+    _env: JNIEnv,
+    _class: JClass,
+    enabled: jboolean,
+) {
+    LIVE_AUTO_MODE.store(enabled != 0, Ordering::Relaxed);
 }
 
 // ===========================================================================

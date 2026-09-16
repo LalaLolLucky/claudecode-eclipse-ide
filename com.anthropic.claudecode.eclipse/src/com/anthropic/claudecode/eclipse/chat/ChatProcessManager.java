@@ -40,6 +40,8 @@ public class ChatProcessManager {
     private Consumer<String> onCompact;
     private Consumer<String> onRemoteControl;
     private Consumer<String> onRemoteMessage;
+    private Consumer<String> onBrowserState;
+    private Consumer<String> onSettingsChanged;
 
     /** (requestId, toolName, inputJson, rememberLabel) → decision string. See {@link NativeCore.ChatCallbacks#onPermissionRequest}. */
     public interface PermissionHandler {
@@ -83,6 +85,8 @@ public class ChatProcessManager {
             @Override public void onToolEnd(String json) { emit(ChatProcessManager.this.onToolEnd, json); }
             @Override public void onRemoteControl(String json) { emit(ChatProcessManager.this.onRemoteControl, json); }
             @Override public void onRemoteMessage(String text) { emit(ChatProcessManager.this.onRemoteMessage, text); }
+            @Override public void onBrowserState(String json) { emit(ChatProcessManager.this.onBrowserState, json); }
+            @Override public void onSettingsChanged(String json) { emit(ChatProcessManager.this.onSettingsChanged, json); }
         });
     }
 
@@ -103,6 +107,17 @@ public class ChatProcessManager {
     public void setOnRemoteControl(Consumer<String> cb) { this.onRemoteControl = cb; }
     /** A message typed on another device, arriving over the bridge. */
     public void setOnRemoteMessage(Consumer<String> cb) { this.onRemoteMessage = cb; }
+    /** Claude in Chrome's state for this conversation (the browser banner). */
+    public void setOnBrowserState(Consumer<String> cb) { this.onBrowserState = cb; }
+    /** A launch setting that changed on the live process — including from another
+     *  device over Remote Control. See {@link NativeCore.ChatCallbacks#onSettingsChanged}. */
+    public void setOnSettingsChanged(Consumer<String> cb) { this.onSettingsChanged = cb; }
+
+    /** Takes the browser back out of this conversation — the banner's ×. Blocking only
+     *  as long as a stdin write; returns whether it was on. */
+    public boolean disableBrowser() {
+        return NativeCore.chatDisableChrome(handle);
+    }
 
     /** Turns Remote Control on or off, starting this tab's process first if it
      *  has none.
@@ -255,6 +270,33 @@ public class ChatProcessManager {
      */
     public boolean setPermissionMode(String mode) {
         return NativeCore.chatSetPermissionMode(handle, mode);
+    }
+
+    /**
+     * The browser text blocks for {@code message}, as a JSON array — {@code []} when it
+     * mentions no browser. Call after {@link #ensureProcess}, with the same launch
+     * settings the send will carry. Blocking.
+     */
+    public String browserBlocks(String message) {
+        IPreferenceStore prefs = Activator.getDefault().getPreferenceStore();
+        String claudeCmd = prefs.getString(Constants.PREF_CLAUDE_CMD);
+        if (claudeCmd == null || claudeCmd.isBlank()) claudeCmd = Constants.DEFAULT_CLAUDE_CMD;
+        String json = NativeCore.chatBrowserBlocks(handle, claudeCmd, message);
+        return json == null ? "[]" : json;
+    }
+
+    /** Pushes the tab's launch settings to its live process now — see
+     *  {@link NativeCore#chatApplySettings}. Non-blocking beyond a stdin write. */
+    public boolean applySettings(String permMode, String effort, String model, String thinking) {
+        return NativeCore.chatApplySettings(handle,
+                permMode == null ? "" : permMode, effort == null ? "" : effort,
+                model == null ? "" : model, thinking == null ? "" : thinking);
+    }
+
+    /** Whether switching this conversation back to the default model would restart
+     *  its process. See {@link NativeCore#chatDefaultModelRestarts}. */
+    public boolean defaultModelRestarts() {
+        return NativeCore.chatDefaultModelRestarts(handle);
     }
 
     public void resetSession() {

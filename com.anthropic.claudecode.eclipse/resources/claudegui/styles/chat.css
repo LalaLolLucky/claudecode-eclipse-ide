@@ -96,7 +96,9 @@
   font-size: 12px; margin: 4px 0; }
 .switch-divider .sw-line { flex: 1; height: 8px; opacity: .6;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='8'%3E%3Cpath d='M0 4 Q4 0 8 4 T16 4' fill='none' stroke='%236e6e6e' stroke-width='1'/%3E%3C/svg%3E") repeat-x center; }
-.switch-divider .sw-text { white-space: nowrap; }
+/* One line, and on a view too narrow for the model name it ellipsizes rather than
+   pushing past the pane. */
+.switch-divider .sw-text { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* Opt-in timestamp line above a user bubble (PREF_HISTORY_SHOW_TIMESTAMPS). Its own
    line in the turn, not part of .user-msg, so it never shifts the bubble's own padding
@@ -155,6 +157,13 @@
 #pending-images::-webkit-scrollbar-track { background: transparent; }
 #pending-images::-webkit-scrollbar-thumb { background: var(--scrollbar-track); border-radius: 3px; }
 .user-msg .msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+/* A sent chip never leaves its bubble: it may shrink to the bubble's width, where the
+   name ellipsizes. (min-width:0 is what lets a flex item go below its text's width;
+   overflow:hidden holds the line where container queries aren't supported.) */
+.user-msg .msg-images { container-type: inline-size; }
+.user-msg .msg-images .img-chip { min-width: 0; max-width: 100%; overflow: hidden; }
+/* A narrow bubble has no room for an image's dimensions; the name keeps what there is. */
+@container (max-width: 200px) { .user-msg .msg-images .img-chip .ic-dim { display: none; } }
 .img-chip { position: relative; display: inline-flex; align-items: center; gap: 7px;
   background: var(--bg-chip); border: 1px solid var(--border); border-radius: 6px;
   padding: 4px 8px 4px 5px; font-size: 12px; color: var(--fg); max-width: 240px; cursor: default; }
@@ -190,6 +199,15 @@
    filename tooltip) — VSCode behavior, joebiden5. */
 .img-chip .ic-open { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
   min-width: 0; flex: 1; }
+/* An uploaded non-image file: the file icon stands where an image's thumbnail would. */
+.img-chip .ic-file { display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex-shrink: 0; color: var(--fg-dim); }
+
+/* An @-mention in a sent message; a file mention opens the file. */
+.mention-chip { display: inline; background: var(--mention-chip-bg); color: var(--mention-chip-fg);
+  -webkit-box-decoration-break: clone; box-decoration-break: clone; border-radius: 3px; padding: 1px 4px; }
+.mention-chip[role=button] { cursor: pointer; }
+.mention-chip[role=button]:hover { filter: brightness(1.15); }
 
 /* ---- image lightbox (click a chip) ----
    Centered image over a dimmed backdrop; the transcript stays faintly readable
@@ -279,11 +297,25 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
 
 
 /* welcome / empty state */
+/* Opted OUT of the overflow-wrap:anywhere inherited from #messages: on a narrow view
+   that broke the product name itself across lines ("Clau/de Code"). Words wrap between
+   themselves here, never inside one. */
 .welcome { display: flex; flex-direction: column; align-items: center; justify-content: center;
-  min-height: 62vh; text-align: center; color: var(--fg-dim); gap: 8px; padding: 30px; }
+  min-height: 62vh; text-align: center; color: var(--fg-dim); gap: 8px; padding: 30px 14px;
+  overflow-wrap: normal; word-break: keep-all; hyphens: none; }
+.welcome .wc-h, .welcome .wc-p { max-width: 100%; }
 .welcome .wc-logo { color: var(--accent); transform: scale(2.2); margin-bottom: 14px; }
 .welcome .wc-h { font-size: 17px; color: var(--fg); font-weight: 600; }
 .welcome .wc-p { font-size: 12.5px; }
+/* Below this width the empty state is mostly padding, around a logo wider than the
+   panel. It shrinks rather than overflowing: the view keeps a horizontal scrollbar for
+   what genuinely cannot fit (layout.css), and an empty state should never be that. */
+@media (max-width: 240px) {
+  .welcome { min-height: 40vh; padding: 16px 8px; gap: 6px; }
+  .welcome .wc-logo { transform: scale(1.4); margin-bottom: 6px; }
+  .welcome .wc-h { font-size: 14px; }
+  .welcome .wc-p { font-size: 12px; }
+}
 
 /* assistant message body */
 .a-item .a-body { display: inline; }
@@ -387,7 +419,7 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
 .teleport-divider .tpd-line { flex: 1; height: 1px; background: var(--border); opacity: .8; }
 .teleport-divider .tpd-text { white-space: nowrap; color: var(--fg-dim); font-size: 11.5px;
   background: var(--bg-chip); border: 1px solid var(--border); border-radius: 999px;
-  padding: 3px 12px; }
+  padding: 3px 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* Remote Control QR. Collapsed behind the chevron on the "is active" line. */
 .a-item .sys .rc-chev { display: inline-flex; align-items: center; margin-left: 6px;

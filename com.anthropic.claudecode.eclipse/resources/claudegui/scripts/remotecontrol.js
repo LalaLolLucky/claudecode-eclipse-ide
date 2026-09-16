@@ -82,6 +82,9 @@ const RC_TEARDOWN_GRACE_MS = 2000;
 /* Shuts the composer and starts the "Establishing connection…" indicator. */
 function beginConnecting(t) {
   t.rcConnecting = true;
+  // The other devices have no thinking toggle of their own, so a conversation they can
+  // reach keeps thinking on. After the flag above: the lock reads it.
+  if (typeof forceThinkingOn === "function") forceThinkingOn(t);
   t.rcDisconnecting = false;
   t.rcPendingUrl = null;
   t.rcBridgeConnected = false;
@@ -174,8 +177,10 @@ function settleConnected(t) {
   if (t.rcDisconnecting) return;
   if (!t.rcPendingUrl || !t.rcBridgeConnected) return;
   const url = t.rcPendingUrl;
+  const epoch = t.rcPendingEpoch;
   endConnecting(t);
   t.remoteControlUrl = url;
+  t.rcEpoch = epoch;
   t.rcOnAt = Date.now();
   addRemoteControlLine(t, url);
 }
@@ -201,6 +206,7 @@ window.onRemoteControl = function (tabId, json) {
       // the line once bridge_state says it genuinely is.
       if (t.rcDisconnecting) return;   // asked to go down since; do not resurrect
       t.rcPendingUrl = d.url;
+      t.rcPendingEpoch = d.bridgeEpoch;
       settleConnected(t);
       return;
     }
@@ -231,16 +237,22 @@ window.onRemoteControl = function (tabId, json) {
     // already in flight.
     if (t.rcDisconnecting) return;
     t.rcBridgeConnected = true;
+    // A bridge taken back over by a replacement process reports its own epoch;
+    // a failure is matched against the newest one.
+    if (t.remoteControlUrl && d.bridgeEpoch != null) t.rcEpoch = d.bridgeEpoch;
     settleConnected(t);
     return;
   }
   // "ready" means the bridge exists but is not carrying anything yet — keep
   // waiting rather than claiming either outcome.
   if (d.bridgeState === 'ready') return;
-  // Anything else is a bridge going away. Which bridge is the question: a
-  // teardown is unsolicited and carries no id, so it is matched against what this
-  // tab is doing rather than taken at face value.
+  // A switch-off in flight settles on any teardown: it is the answer being waited for.
   if (t.rcDisconnecting) { t.rcBridgeConnected = false; finishDisconnect(t); return; }
+  // Otherwise only "failed" ends a bridge — the VS Code extension's rule. The CLI
+  // passes through other states on its way back up (reconnecting and the like), and
+  // reading those as the bridge going away switched the tab off over a link that was
+  // still carrying.
+  if (d.bridgeState !== 'failed') return;
   if (t.rcConnecting) {
     t.rcBridgeConnected = false;
     endConnecting(t);
@@ -248,7 +260,11 @@ window.onRemoteControl = function (tabId, json) {
     return;
   }
   if (t.remoteControlUrl) {
-    if (t.rcOnAt && Date.now() - t.rcOnAt < RC_TEARDOWN_GRACE_MS) return;
+    // The failure of an older bridge than the one this tab shows is not this one's.
+    if (d.bridgeEpoch != null && t.rcEpoch != null && d.bridgeEpoch !== t.rcEpoch) return;
+    // The grace is for failures the bridge reports. One with no epoch comes from the
+    // plugin itself (the process holding the bridge is gone) and is never a straggler.
+    if (d.bridgeEpoch != null && t.rcOnAt && Date.now() - t.rcOnAt < RC_TEARDOWN_GRACE_MS) return;
     t.rcBridgeConnected = false;
     t.remoteControlUrl = null;
     t.rcOnAt = 0;
@@ -396,6 +412,29 @@ function autoEnableRemoteControl(t) {
   if (!remoteControlOnStartupEnabled()) return;
   beginConnecting(t);
   rcSend(t, true);
+}
+
+/* /clear starts a new conversation in the same tab, and its process — which held
+   the bridge — is gone with the old one. So the new conversation starts the way the
+   VS Code extension starts one: Remote Control off, or connecting again when
+   Remote Control on startup is set. Leaving the old state in place had the tab
+   saying Remote Control was active over a bridge nothing held. */
+function resetRemoteControlForNewConversation(t) {
+  if (!t) return;
+  if (t.rcTimer) { clearTimeout(t.rcTimer); t.rcTimer = null; }
+  t.rcConnecting = false;
+  t.rcDisconnecting = false;
+  t.rcAckPending = false;
+  t.rcPendingUrl = null;
+  t.rcPendingEpoch = null;
+  t.rcBridgeConnected = false;
+  t.remoteControlUrl = null;
+  t.rcEpoch = null;
+  t.rcOnAt = 0;
+  t.rcDeadline = 0;
+  stopWorkingFor(t);
+  syncComposer();
+  autoEnableRemoteControl(t);
 }
 
 /* Every conversation already open — used once the page is ready. */

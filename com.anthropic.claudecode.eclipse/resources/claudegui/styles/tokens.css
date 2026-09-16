@@ -27,6 +27,8 @@
   --red-bg: rgba(220,90,90,.14);
   --red: #dc5a5a;             /* del rail / red dots / delete actions */
   --link: #6fb3ff;
+  --mention-chip-bg: rgba(111, 179, 255, .16);   /* an @-mention in a sent message */
+  --mention-chip-fg: #9ecbff;
   --hunk: #9a86d6;
   /* menus / overlays / misc surfaces (were hardcoded before light-theme support) */
   --menu-bg: #252526;         /* popup + ctx menu + overlay panels */
@@ -98,6 +100,8 @@
   --red-bg: rgba(200,60,60,.12);
   --red: #c83c3c;
   --link: #0a6ebd;
+  --mention-chip-bg: rgba(10, 110, 189, .12);
+  --mention-chip-fg: #0a5a9c;
   --hunk: #6f4fbf;
   --menu-bg: #ffffff;
   --menu-hover: #e4ecf7;

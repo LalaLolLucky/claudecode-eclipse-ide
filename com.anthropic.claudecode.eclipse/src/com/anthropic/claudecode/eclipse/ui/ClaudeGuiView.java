@@ -133,6 +133,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction listWebSessionsFn;
     @SuppressWarnings("unused") private BrowserFunction remoteControlFn;
     @SuppressWarnings("unused") private BrowserFunction remoteControlQrFn;
+    @SuppressWarnings("unused") private BrowserFunction confirmDefaultModelFn;
+    @SuppressWarnings("unused") private BrowserFunction applySettingsFn;
+    @SuppressWarnings("unused") private BrowserFunction thinkingDefaultFn;
+    @SuppressWarnings("unused") private BrowserFunction bypassModeAllowedFn;
     @SuppressWarnings("unused") private BrowserFunction remoteControlStartupFn;
     @SuppressWarnings("unused") private BrowserFunction teleportRepoCheckFn;
     @SuppressWarnings("unused") private BrowserFunction teleportRunFn;
@@ -174,6 +178,22 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction clipSetFn;
     @SuppressWarnings("unused") private BrowserFunction clipImagesFn;
     @SuppressWarnings("unused") private BrowserFunction drainImagesFn;
+    @SuppressWarnings("unused") private BrowserFunction listFilesFn;
+    @SuppressWarnings("unused") private BrowserFunction takeFilesListedFn;
+    @SuppressWarnings("unused") private BrowserFunction browserSupportedFn;
+    @SuppressWarnings("unused") private BrowserFunction disconnectBrowserFn;
+    @SuppressWarnings("unused") private BrowserFunction pickFilesFn;
+    @SuppressWarnings("unused") private BrowserFunction drainPickedFilesFn;
+    @SuppressWarnings("unused") private BrowserFunction openAttachmentFn;
+    @SuppressWarnings("unused") private BrowserFunction openStoredAttachmentFn;
+    /** The latest {@code @}-list answer as (request id, rows), held for the page to collect:
+     *  a bare {@code @} lists a whole folder, too much to inline into a script. */
+    private volatile String[] filesListed = { "", "[]" };
+    /** Largest file Upload from computer takes: the CLI's own request limit (32MB). */
+    private static final long MAX_UPLOAD_BYTES = 32L * 1024 * 1024;
+    /** Files picked with Upload from computer, waiting for the webview to collect them. */
+    private final java.util.concurrent.ConcurrentLinkedQueue<Map<String, String>> pickedFiles =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
     /** Images fetched for a pasted fragment, waiting for the webview to collect them. */
     private final java.util.concurrent.ConcurrentLinkedQueue<Map<String, String>> fetchedImages =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
@@ -322,18 +342,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 String permMode = (a.length > 3 && a[3] instanceof String m) ? m : "";
                 String effort   = (a.length > 4 && a[4] instanceof String e) ? e : "";
                 String model    = (a.length > 5 && a[5] instanceof String md) ? md : "";
-                // "Default" (empty) → honor the user's configured --model from prefs,
-                // like the Claude Terminal does. Without this, an empty model lets the
-                // CLI pick the account default (e.g. Opus 4.8) instead of the user's.
-                if (model.isEmpty()) model = prefClaudeModel();
-                String thinking = (a.length > 6 && a[6] instanceof String th) ? th : "";
-                // Upgrade "on" to "2" when the installed CLI advertises
-                // --thinking-display, which makes the core request readable reasoning
-                // summaries. Without the flag the CLI defaults to "omitted" and the
-                // thinking text streams empty (the dead "Thought for Ns" chevron).
-                // Kept behind the scan because the option is undocumented: passing it
-                // to a CLI that lacks it aborts the process with "unknown option".
-                if ("1".equals(thinking) && cliSupportsThinkingDisplay()) thinking = "2";
+                model = launchModel(model);
+                String thinking = launchThinking((a.length > 6 && a[6] instanceof String th) ? th : "");
                 String tabId    = (a.length > 7 && a[7] instanceof String ti) ? ti : "default";
                 // Pasted images: JSON array of {media_type,data} (base64), built by the
                 // webview from clipboard-image paste. "" when none.
@@ -347,7 +357,34 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 this.lastThinking = !"0".equals(thinking);
                 ChatProcessManager mgr = managerFor(tabId);
                 mgr.setRoot(root);
-                mgr.sendMessage(withCtx ? buildContextPreamble() + s : s, resumeId, permMode, effort, model, thinking, imagesJson);
+                String outgoing = withCtx ? buildContextPreamble() + s : s;
+                if (s.contains("@browser")) {
+                    // A browser mention switches the browser on for the tab's process (so
+                    // the process has to be up first) and may open a Chrome tab — both
+                    // block, so this send finishes off the UI thread.
+                    final String fModel = model, fThinking = thinking;
+                    new Thread(() -> {
+                        String blocks = "[]";
+                        try {
+                            if (mgr.ensureProcess(resumeId, permMode, effort, fModel, fThinking)) {
+                                blocks = mgr.browserBlocks(s);
+                            }
+                        } catch (Throwable t) {
+                            ClaudeCodeView.debug("[BROWSER] browser blocks failed: " + t);
+                        }
+                        ClaudeCodeView.debug("[BROWSER] send carries browser blocks: " + blocks);
+                        if (!blocks.contains("<browser_instruction>")) {
+                            // The instruction is read out of the installed CLI when this send
+                            // switches the browser on; its absence is expected otherwise.
+                            ClaudeCodeView.debug("[BROWSER] no browser instruction in this send: the browser was "
+                                    + "already on for this conversation, or the instruction was not found in the CLI");
+                        }
+                        mgr.sendMessage(outgoing, resumeId, permMode, effort, fModel, fThinking,
+                                concatJsonArrays(imagesJson, blocks));
+                    }, "claude-browser-send").start();
+                } else {
+                    mgr.sendMessage(outgoing, resumeId, permMode, effort, model, thinking, imagesJson);
+                }
             }
             return null;
         });
@@ -367,6 +404,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 remoteControlUrlByTab.remove(ti);
                 pendingRemoteControlUrlByTab.remove(ti);
                 remoteControlOnAtByTab.remove(ti);
+                remoteControlEpochByTab.remove(ti);
+                pendingRemoteControlEpochByTab.remove(ti);
                 if (m != null) m.stop();
             }
             return null;
@@ -606,6 +645,47 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             });
             return null;
         });
+        // The default model is the one setting that can still cost a tab its process,
+        // and only when the CLI carries a model setting of its own (its reset returns
+        // to a different model than a fresh process would launch on). The page asks
+        // here before applying it and waits to be told to go ahead, so the answer
+        // reaches it the same way whether or not a dialog was needed.
+        //
+        // asyncExec for the same reason as _confirmCloseView above: a modal opened
+        // inside a call this Browser is still executing deadlocks WebView2.
+        confirmDefaultModelFn = new SimpleFunction(browser, "_confirmDefaultModel", a -> {
+            if (!(a.length > 0 && a[0] instanceof String ti)) return null;
+            Display.getDefault().asyncExec(() -> {
+                try {
+                    if (browser == null || browser.isDisposed()) return;
+                    ChatProcessManager m = managers.get(ti);
+                    boolean restarts = false;
+                    // An older DLL has no chatDefaultModelRestarts symbol; treat a tab
+                    // it can't answer for as one with nothing to warn about.
+                    if (m != null) try { restarts = m.defaultModelRestarts(); } catch (Throwable ignored) {}
+                    // Only a conversation reachable from elsewhere loses anything to a
+                    // restart; on any other the switch is invisible.
+                    boolean remote = remoteControlUrlByTab.get(ti) != null
+                            || pendingRemoteControlUrlByTab.get(ti) != null;
+                    if (restarts && remote) {
+                        MessageDialog dlg = new MessageDialog(browser.getShell(),
+                                "Switch to the default model?", null,
+                                "Switching to the default model restarts Claude for this "
+                                        + "conversation. Remote Control takes the same session back "
+                                        + "over, so the conversation continues here uninterrupted.\n\n"
+                                        + "On claude.ai and on your other devices, that session is "
+                                        + "left archived. Unarchive it there to carry on from them.",
+                                MessageDialog.CONFIRM, new String[] { "Switch model", "Cancel" }, 1);
+                        if (dlg.open() != 0) return;
+                    }
+                    executeJS("window.onDefaultModelConfirmed && window.onDefaultModelConfirmed('"
+                              + esc(ti) + "')");
+                } catch (Exception e) {
+                    Activator.logError("Failed to confirm the switch to the default model", e);
+                }
+            });
+            return null;
+        });
         currentContextFn = new SimpleFunction(browser, "_currentContext", a -> currentContextJson());
         modelConfigFn  = new SimpleFunction(browser, "_modelConfig", a -> modelConfigJson());
         accountInfoFn  = new SimpleFunction(browser, "_accountInfo", a -> accountInfoJson());
@@ -635,6 +715,36 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             }
             return null;
         });
+        // Model, effort and thinking pushed to the live process the moment they are
+        // picked, exactly as the permission mode above already is. Without this they
+        // waited for the next message — and under Remote Control that meant the phone
+        // and claude.ai kept showing the old ones, since the CLI reports what its
+        // process is actually running.
+        applySettingsFn = new SimpleFunction(browser, "_applySettings", a -> {
+            if (a.length < 5 || !(a[0] instanceof String ti)) return null;
+            final String permMode = a[1] instanceof String s1 ? s1 : "";
+            final String effort   = a[2] instanceof String s2 ? s2 : "";
+            final String model    = launchModel(a[3] instanceof String s3 ? s3 : "");
+            final String thinking = launchThinking(a[4] instanceof String s4 ? s4 : "");
+            final ChatProcessManager m = managers.get(ti);   // only a live process needs telling
+            if (m == null) return null;
+            // Off the UI thread: a stdin write to a process that has stopped reading
+            // must not hold the view.
+            new Thread(() -> {
+                try { m.applySettings(permMode, effort, model, thinking); }
+                catch (Throwable ignored) {}
+            }, "claude-apply-settings").start();
+            return null;
+        });
+        // Whether a new conversation starts with thinking on (a preference).
+        thinkingDefaultFn = new SimpleFunction(browser, "_thinkingOnStartup", a ->
+                Boolean.valueOf(Activator.getDefault().getPreferenceStore()
+                        .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_THINKING_DEFAULT)));
+        // Whether the bypass-permissions mode may be offered at all (a preference, and
+        // the same one that lets a running process be switched into it).
+        bypassModeAllowedFn = new SimpleFunction(browser, "_bypassModeAllowed", a ->
+                Boolean.valueOf(Activator.getDefault().getPreferenceStore()
+                        .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_LIVE_AUTO_MODE)));
         loadSessionPrefsFn = new SimpleFunction(browser, "_loadSessionPrefs", a ->
             (a.length > 0 && a[0] instanceof String id) ? SessionPrefsStore.load(id) : "{}");
         // Runs `claude update` — the CLI's own updater, so it works whichever way
@@ -719,8 +829,12 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             final String resumeId = a.length > 2 && a[2] instanceof String s ? s : "";
             final String permMode = a.length > 3 && a[3] instanceof String s ? s : "";
             final String effort   = a.length > 4 && a[4] instanceof String s ? s : "";
-            final String model    = a.length > 5 && a[5] instanceof String s ? s : "";
-            final String thinking = a.length > 6 && a[6] instanceof String s ? s : "";
+            // Resolved exactly as a send resolves them. The core compares these to
+            // decide whether the tab's process can be reused, so a toggle that
+            // passed them raw started a process the very next send replaced —
+            // taking the bridge down with it.
+            final String model    = launchModel(a.length > 5 && a[5] instanceof String s ? s : "");
+            final String thinking = launchThinking(a.length > 6 && a[6] instanceof String s ? s : "");
             final boolean enabled = on.booleanValue();
             final Browser b = browser;
             // managerFor, not managers.get: a tab nothing has been typed into yet has
@@ -805,6 +919,138 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             String path = a.length > 0 && a[0] instanceof String s ? s : null;
             String root = a.length > 1 && a[1] instanceof String s ? s : null;
             if (path != null) openFileInEditor(path, root);
+            return null;
+        });
+
+        // The composer's @ list: files and folders under the conversation's working folder,
+        // or Chrome tabs for "@browser:". Answered through window.onFilesListed, which
+        // collects the rows with _takeFilesListed.
+        listFilesFn = new SimpleFunction(browser, "_listFilesAsync", a -> {
+            if (a.length < 3 || !(a[0] instanceof String reqId) || !(a[1] instanceof String root)
+                    || !(a[2] instanceof String query)) return null;
+            final Browser b = browser;
+            new Thread(() -> {
+                long started = System.nanoTime();
+                String json;
+                try {
+                    json = NativeCore.listMentions(root.isBlank() ? workspaceRoot() : root,
+                            claudeCmdPref(), query, browserSupported());
+                } catch (Throwable t) {
+                    ClaudeCodeView.debug("[MENTION] lookup failed for '" + query + "': " + t);
+                    json = "[]";
+                }
+                ClaudeCodeView.debug("[MENTION] '" + query + "' answered in "
+                        + (System.nanoTime() - started) / 1_000_000 + " ms, " + json.length() + " chars");
+                filesListed = new String[] { reqId, json == null ? "[]" : json };
+                Display.getDefault().asyncExec(() -> {
+                    if (b != null && !b.isDisposed() && pageLoaded) {
+                        b.execute("window.onFilesListed && window.onFilesListed('" + esc(reqId) + "')");
+                    }
+                });
+            }, "claude-mention-list").start();
+            return null;
+        });
+        takeFilesListedFn = new SimpleFunction(browser, "_takeFilesListed", a -> {
+            String[] held = filesListed;
+            return a.length > 0 && held[0].equals(a[0]) ? held[1] : "[]";
+        });
+        // Browse the web needs a claude.ai sign-in, as in the extension.
+        browserSupportedFn = new SimpleFunction(browser, "_browserSupported",
+                a -> Boolean.valueOf(browserSupported()));
+        // The browser banner's ×: takes Chrome back out of that tab's conversation. The
+        // banner itself goes when the core reports the tab disconnected.
+        disconnectBrowserFn = new SimpleFunction(browser, "_disconnectBrowser", a -> {
+            if (a.length > 0 && a[0] instanceof String tabId) {
+                ChatProcessManager m = managers.get(tabId);
+                if (m != null) new Thread(m::disableBrowser, "claude-browser-disconnect").start();
+            }
+            return null;
+        });
+        // Upload from computer. The dialog is opened from a fresh dispatch cycle for the same
+        // reason _pickDirectory's is; the files are read off the UI thread, then the page is
+        // told to collect them with _drainPickedFiles.
+        pickFilesFn = new SimpleFunction(browser, "_pickFiles", a -> {
+            Display.getDefault().asyncExec(() -> {
+                if (browser == null || browser.isDisposed()) return;
+                org.eclipse.swt.widgets.FileDialog dlg = new org.eclipse.swt.widgets.FileDialog(
+                        browser.getShell(), org.eclipse.swt.SWT.OPEN | org.eclipse.swt.SWT.MULTI);
+                if (dlg.open() == null) return;
+                final String dir = dlg.getFilterPath();
+                final String[] names = dlg.getFileNames();
+                final Browser b = browser;
+                new Thread(() -> {
+                    for (String n : names) {
+                        Path p = Path.of(dir, n);
+                        try {
+                            Map<String, String> f = new java.util.HashMap<>();
+                            f.put("name", n);
+                            f.put("path", p.toString());
+                            f.put("type", mediaTypeOf(p));
+                            long size = Files.size(p);
+                            if (size > MAX_UPLOAD_BYTES) {
+                                // Never read: the CLI refuses a request over this anyway, and
+                                // the base64 copy alone would be a third bigger again.
+                                f.put("tooLarge", Long.toString(size));
+                                ClaudeCodeView.debug("[UPLOAD] " + p + " is " + size + " bytes, over the cap");
+                            } else {
+                                f.put("data", java.util.Base64.getEncoder().encodeToString(Files.readAllBytes(p)));
+                            }
+                            pickedFiles.add(f);
+                        } catch (Exception e) {
+                            ClaudeCodeView.debug("[UPLOAD] could not read " + p + ": " + e);
+                        }
+                    }
+                    Display.getDefault().asyncExec(() -> {
+                        if (b != null && !b.isDisposed() && pageLoaded) {
+                            b.execute("window.onFilesPicked && window.onFilesPicked()");
+                        }
+                    });
+                }, "claude-upload-read").start();
+            });
+            return null;
+        });
+        drainPickedFilesFn = new SimpleFunction(browser, "_drainPickedFiles", a -> {
+            java.util.List<Map<String, String>> batch = new java.util.ArrayList<>();
+            for (Map<String, String> item; (item = pickedFiles.poll()) != null; ) batch.add(item);
+            return new Gson().toJson(batch);
+        });
+        // A reloaded conversation's attachment chip: (root, sessionId, messageUuid, index).
+        // The file itself is written by the core and only opened here — its contents never
+        // enter the page, which is the point of leaving them out of the loaded history.
+        openStoredAttachmentFn = new SimpleFunction(browser, "_openStoredAttachment", a -> {
+            String root = a.length > 0 && a[0] instanceof String s ? s : "";
+            String session = a.length > 1 && a[1] instanceof String s ? s : "";
+            String uuid = a.length > 2 && a[2] instanceof String s ? s : "";
+            int index = a.length > 3 && a[3] instanceof Number n ? n.intValue() : 0;
+            if (session.isEmpty() || uuid.isEmpty()) return null;
+            String r = root.isBlank() ? workspaceRoot() : root;
+            new Thread(() -> {
+                String file;
+                try {
+                    file = NativeCore.sessionDocumentFile(r, session, uuid, index);
+                } catch (Throwable t) {
+                    ClaudeCodeView.debug("[UPLOAD] could not rebuild attachment " + uuid + "#" + index + ": " + t);
+                    return;
+                }
+                if (file == null || file.isEmpty()) {
+                    ClaudeCodeView.debug("[UPLOAD] no stored attachment for " + uuid + "#" + index);
+                    return;
+                }
+                Display.getDefault().asyncExec(() -> {
+                    if (!org.eclipse.swt.program.Program.launch(file)) {
+                        ClaudeCodeView.debug("[UPLOAD] nothing is set to open " + file);
+                    }
+                });
+            }, "claude-open-stored-attachment").start();
+            return null;
+        });
+        // A non-image attachment chip: (path, name, data, base64?).
+        openAttachmentFn = new SimpleFunction(browser, "_openAttachment", a -> {
+            String path = a.length > 0 && a[0] instanceof String s ? s : "";
+            String name = a.length > 1 && a[1] instanceof String s ? s : "";
+            String data = a.length > 2 && a[2] instanceof String s ? s : "";
+            boolean base64 = a.length > 3 && a[3] instanceof Boolean on && on;
+            new Thread(() -> openAttachment(path, name, data, base64), "claude-open-attachment").start();
             return null;
         });
 
@@ -920,6 +1166,30 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private volatile boolean cliThinkingDisplay;
 
     private boolean cliSupportsThinkingDisplay() { return cliThinkingDisplay; }
+
+    /** The model a tab's process is launched with. Every caller that can start or
+     *  reuse the process must go through this and {@link #launchThinking}: the core
+     *  replaces a process whose launch settings differ, and whatever was attached
+     *  to it (Remote Control, the browser) goes with it.
+     *
+     *  <p>"Default" (empty) → honor the user's configured --model from prefs,
+     *  like the Claude Terminal does. Without this, an empty model lets the
+     *  CLI pick the account default (e.g. Opus 4.8) instead of the user's. */
+    private static String launchModel(String model) {
+        return model == null || model.isEmpty() ? prefClaudeModel() : model;
+    }
+
+    /** The thinking setting a tab's process is launched with (see {@link #launchModel}).
+     *
+     *  <p>Upgrade "on" to "2" when the installed CLI advertises
+     *  --thinking-display, which makes the core request readable reasoning
+     *  summaries. Without the flag the CLI defaults to "omitted" and the
+     *  thinking text streams empty (the dead "Thought for Ns" chevron).
+     *  Kept behind the scan because the option is undocumented: passing it
+     *  to a CLI that lacks it aborts the process with "unknown option". */
+    private String launchThinking(String thinking) {
+        return "1".equals(thinking) && cliSupportsThinkingDisplay() ? "2" : thinking;
+    }
 
     /** Looks for {@code flag} in the scan JSON's "flags" array. */
     private static boolean jsonFlagsContain(String json, String flag) {
@@ -2166,6 +2436,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         m.setOnSessionId(id -> display.asyncExec(() -> executeJS("window.onSessionId && window.onSessionId('" + tj + "','" + esc(id) + "')")));
         m.setOnError(msg -> display.asyncExec(() -> executeJS("window.onError && window.onError('" + tj + "','" + esc(msg) + "')")));
         m.setOnCompact(j -> display.asyncExec(() -> executeJS("window.onCompact && window.onCompact('" + tj + "','" + esc(j) + "')")));
+        m.setOnBrowserState(j -> display.asyncExec(() -> executeJS("window.onBrowserState && window.onBrowserState('" + tj + "','" + esc(j) + "')")));
+        // Model, effort or permission mode as the live process now has them — the
+        // conversation is the same one on the phone and on claude.ai, so a change
+        // made there belongs on the buttons here too.
+        m.setOnSettingsChanged(j -> display.asyncExec(() -> executeJS("window.onSettingsChanged && window.onSettingsChanged('" + tj + "','" + esc(j) + "')")));
         // Remote Control goes to two places: the page, which writes the transcript
         // line and remembers the session url, and the status bar, which shows the
         // indicator. Only the ACTIVE tab may drive the bar — it shows one
@@ -2199,6 +2474,17 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private final Map<String, Long> remoteControlOnAtByTab = new java.util.concurrent.ConcurrentHashMap<>();
     private static final long RC_TEARDOWN_GRACE_MS = 2000L;
 
+    /** The bridge epoch of each tab's shown bridge, and of the one still coming up.
+     *  A {@code failed} for another epoch belongs to a bridge this tab no longer
+     *  shows — the VS Code extension's rule, mirrored by the page. */
+    private final Map<String, Long> remoteControlEpochByTab = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Long> pendingRemoteControlEpochByTab = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static Long bridgeEpochOf(com.google.gson.JsonObject o) {
+        return o.has("bridgeEpoch") && o.get("bridgeEpoch").isJsonPrimitive()
+                ? o.get("bridgeEpoch").getAsLong() : null;
+    }
+
     /** Folds one Remote Control event into the per-tab state and repaints the bar.
      *
      *  <p>Two shapes arrive here (see {@link NativeCore.ChatCallbacks#onRemoteControl}):
@@ -2215,30 +2501,50 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 // HELD, not shown. The reply arrives before the bridge is up, so
                 // lighting the indicator here would claim a reach the
                 // conversation does not have yet.
-                if (on && url != null && !url.isEmpty()) pendingRemoteControlUrlByTab.put(tabId, url);
-                else {
+                if (on && url != null && !url.isEmpty()) {
+                    pendingRemoteControlUrlByTab.put(tabId, url);
+                    Long epoch = bridgeEpochOf(o);
+                    if (epoch != null) pendingRemoteControlEpochByTab.put(tabId, epoch);
+                    else pendingRemoteControlEpochByTab.remove(tabId);
+                } else {
                     pendingRemoteControlUrlByTab.remove(tabId);
                     remoteControlUrlByTab.remove(tabId);
                     remoteControlOnAtByTab.remove(tabId);
+                    pendingRemoteControlEpochByTab.remove(tabId);
+                    remoteControlEpochByTab.remove(tabId);
                 }
             } else if (o.has("bridgeState")) {
                 String st = o.get("bridgeState").getAsString();
+                Long epoch = bridgeEpochOf(o);
                 if ("connected".equals(st)) {
                     // Now it is true, so now it is shown.
                     String held = pendingRemoteControlUrlByTab.remove(tabId);
+                    Long heldEpoch = pendingRemoteControlEpochByTab.remove(tabId);
                     if (held != null) {
                         remoteControlUrlByTab.put(tabId, held);
                         remoteControlOnAtByTab.put(tabId, System.currentTimeMillis());
+                        if (heldEpoch != null) remoteControlEpochByTab.put(tabId, heldEpoch);
+                    } else if (epoch != null && remoteControlUrlByTab.containsKey(tabId)) {
+                        // A bridge taken back over by a replacement process.
+                        remoteControlEpochByTab.put(tabId, epoch);
                     }
-                } else if (!"ready".equals(st)) {
-                    // "ready" is still coming up; anything else is it going away —
-                    // unless it has only just arrived, in which case the signal
-                    // belongs to the bridge before this one.
+                } else if ("failed".equals(st)) {
+                    // Only "failed" ends a bridge (the VS Code extension's rule); the
+                    // CLI passes through other states on its way back up. A failure
+                    // of another epoch, or one that arrives just after this bridge
+                    // connected, belongs to the bridge before this one.
+                    Long shown = remoteControlEpochByTab.get(tabId);
+                    if (epoch != null && shown != null && !epoch.equals(shown)) return;
+                    // The grace is for failures the bridge reports; one with no epoch
+                    // comes from the plugin itself and is never a straggler.
                     Long onAt = remoteControlOnAtByTab.get(tabId);
-                    if (onAt != null && System.currentTimeMillis() - onAt < RC_TEARDOWN_GRACE_MS) return;
+                    if (epoch != null && onAt != null
+                            && System.currentTimeMillis() - onAt < RC_TEARDOWN_GRACE_MS) return;
                     pendingRemoteControlUrlByTab.remove(tabId);
                     remoteControlUrlByTab.remove(tabId);
                     remoteControlOnAtByTab.remove(tabId);
+                    pendingRemoteControlEpochByTab.remove(tabId);
+                    remoteControlEpochByTab.remove(tabId);
                 }
             }
         } catch (Exception e) { return; }
@@ -2419,6 +2725,73 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         });
     }
 
+    /**
+     * Opens an attachment the way the OS opens that kind of file. A file picked from disk
+     * opens where it is; one rebuilt from a past conversation, of which only the contents
+     * survive in the transcript, is written to a temporary folder first.
+     */
+    private static void openAttachment(String path, String name, String data, boolean base64) {
+        try {
+            Path target = null;
+            if (!path.isBlank() && Files.isRegularFile(Path.of(path))) {
+                target = Path.of(path);
+            } else if (!data.isEmpty()) {
+                String safe = name.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+                Path dir = Files.createTempDirectory("claude-attachment");
+                dir.toFile().deleteOnExit();
+                target = dir.resolve(safe.isEmpty() ? "attachment" : safe);
+                Files.write(target, base64 ? java.util.Base64.getDecoder().decode(data)
+                        : data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                target.toFile().deleteOnExit();
+            }
+            if (target == null) return;
+            final String file = target.toString();
+            Display.getDefault().asyncExec(() -> {
+                if (!org.eclipse.swt.program.Program.launch(file)) {
+                    ClaudeCodeView.debug("[UPLOAD] nothing is set to open " + file);
+                }
+            });
+        } catch (Exception e) {
+            ClaudeCodeView.debug("[UPLOAD] could not open attachment " + name + ": " + e);
+        }
+    }
+
+    /** The type a browser would give the file — enough to sort an upload into image, PDF
+     *  or text, the rest of which the page decides by extension. */
+    private static String mediaTypeOf(Path p) {
+        String n = p.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        String ext = n.contains(".") ? n.substring(n.lastIndexOf('.') + 1) : "";
+        switch (ext) {
+            case "png": return "image/png";
+            case "jpg": case "jpeg": return "image/jpeg";
+            case "gif": return "image/gif";
+            case "webp": return "image/webp";
+            case "pdf": return "application/pdf";
+            default:
+                try {
+                    String t = Files.probeContentType(p);
+                    return t == null ? "" : t;
+                } catch (Exception e) {
+                    return "";
+                }
+        }
+    }
+
+    /** Two JSON arrays as one, {@code first}'s entries first. Blank or malformed input
+     *  counts as empty; "" when both are, the send path's "nothing attached". */
+    private static String concatJsonArrays(String first, String more) {
+        com.google.gson.JsonArray out = new com.google.gson.JsonArray();
+        for (String s : new String[] { first, more }) {
+            if (s == null || s.isBlank()) continue;
+            try {
+                out.addAll(com.google.gson.JsonParser.parseString(s).getAsJsonArray());
+            } catch (RuntimeException ignored) {
+                // not an array — nothing to add
+            }
+        }
+        return out.size() == 0 ? "" : out.toString();
+    }
+
     /** Make sure the Rust MCP server (used by chat for editor tools) is up. */
     private void ensureServerAsync() {
         Thread t = new Thread(() -> {
@@ -2553,6 +2926,15 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     /** The configured {@code claude} command, falling back to the default when the
      *  preference is blank. Read on the UI thread by the Web-tab fetch, which needs
      *  it only to let the CLI refresh its own OAuth token. */
+    /** Whether Claude in Chrome can work here: a claude.ai sign-in, checked by the core. */
+    private static boolean browserSupported() {
+        try {
+            return NativeCore.hasClaudeAiLogin();
+        } catch (Throwable t) {
+            return false;   // an older native library without the check
+        }
+    }
+
     private static String claudeCmdPref() {
         String cmd = Activator.getDefault().getPreferenceStore()
                 .getString(com.anthropic.claudecode.eclipse.Constants.PREF_CLAUDE_CMD);

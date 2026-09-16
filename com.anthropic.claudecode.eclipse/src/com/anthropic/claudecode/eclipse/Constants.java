@@ -29,6 +29,16 @@ public final class Constants {
     /** Start every Claude Code conversation with Remote Control already on. */
     public static final String PREF_REMOTE_CONTROL_STARTUP = "remoteControlOnStartup";
 
+    /** Launch conversations able to enter Auto mode, so switching to it applies to the
+     *  running Claude instead of restarting it. On by default. It also lets a phone or
+     *  claude.ai put a Remote Control conversation into Auto, where tools run without
+     *  asking here; turning it off means Auto is a launch-time choice again, so
+     *  switching to or from it restarts the conversation's Claude. */
+    public static final String PREF_LIVE_AUTO_MODE = "liveAutoMode";
+
+    /** Whether a new conversation starts with extended thinking on. */
+    public static final String PREF_THINKING_DEFAULT = "thinkingOnByDefault";
+
     /** Dictation in the Claude Code view's composer: the mic button and its key binding.
      *  On by default; off removes both. */
     public static final String PREF_DICTATION_ENABLED = "dictationEnabled";

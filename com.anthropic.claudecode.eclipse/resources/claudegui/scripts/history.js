@@ -527,7 +527,8 @@ function loadHistory(id, title, targetTab) {
       // A line that paints nothing (e.g. the <local-command-caveat> the CLI
       // inserts between the summary and the "/compact" echo) can't be the
       // bubble the pending compact marker is waiting to render after.
-      const imgs = (it.images || []).map(imageFromBlock).filter(Boolean);
+      const imgs = (it.images || []).map(imageFromBlock)
+        .concat((it.documents || []).map(d => documentFromBlock(d, it.id, id))).filter(Boolean);
       const invisible = !p.text && !p.chip && !imgs.length;
       if (!isCompactCmd && !invisible) flushCompact();
       // Bracketed markers the CLI writes as user lines are not messages anyone

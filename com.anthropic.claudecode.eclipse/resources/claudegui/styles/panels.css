@@ -12,20 +12,20 @@
 #ctx-menu .ci.off { color: var(--fg-faint); pointer-events: none; }
 #ctx-menu .ci.off .ck { color: var(--fg-faint); }
 .menu { position: absolute; z-index: 40; background: var(--menu-bg); border: 1px solid var(--border);
-  border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); padding: 6px; min-width: 230px; display: none; }
+  border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); padding: 4px; min-width: 210px; display: none; }
 .menu.open { display: block; }
-.menu .item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+.menu .item { display: flex; align-items: flex-start; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
 .menu .item:hover { background: var(--menu-hover); }
 .menu .item .ic { margin-top: 1px; color: var(--fg-dim); flex-shrink: 0; }
-.menu .item .txt { display: flex; flex-direction: column; gap: 2px; }
+.menu .item .txt { display: flex; flex-direction: column; gap: 1px; }
 .menu .item .txt .lbl { color: var(--fg); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
-.menu .item .txt .desc { color: var(--fg-dim); font-size: 11px; line-height: 1.35; }
+.menu .item .txt .desc { color: var(--fg-dim); font-size: 10.5px; line-height: 1.3; }
 .menu .item .check { margin-left: auto; color: var(--accent); }
-.menu .head { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px 6px; }
+.menu .head { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px 3px; }
 .menu .head .h { color: var(--fg-dim); font-size: 11px; text-transform: none; }
 .menu .head .hint { color: var(--fg-faint); font-size: 10.5px; }
-.menu .sep { height: 1px; background: var(--border-soft); margin: 5px 4px; }
-.menu .effort { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; }
+.menu .sep { height: 1px; background: var(--border-soft); margin: 4px 4px; }
+.menu .effort { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; }
 .menu .effort .lbl { color: var(--fg); font-size: 12.5px; display:flex; align-items:center; gap:6px;}
 .slider { width: 84px; height: 16px; position: relative; cursor: pointer; }
 .slider .track { position: absolute; top: 7px; left: 0; right: 0; height: 3px; background: var(--track); border-radius: 2px; }
@@ -45,10 +45,31 @@
 
 
 /* slash command menu */
-#slash-menu { min-width: 280px; max-height: 260px; overflow-y: auto; }
+#slash-menu { min-width: 260px; max-height: 260px; overflow-y: auto; }
 #slash-menu .item .cmd { font-family: 'Cascadia Code','Consolas',monospace; color: var(--fg); font-size: 12.5px; }
 #slash-menu .item .d { color: var(--fg-dim); font-size: 11px; margin-left: auto; }
 #slash-menu .item.sel { background: var(--menu-hover); }
+.menu .item[hidden] { display: none; }
+
+/* ---- the @ list (mentions.js) ----
+   Spans the input box and sits just above it (joebiden2): file or folder icon, the
+   name, then the folder it is in, right-aligned and cut from the left when long. */
+#mention-menu { display: none; position: absolute; left: 14px; right: 14px; bottom: 100%; z-index: 45;
+  background: var(--menu-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+#mention-menu.open { display: flex; flex-direction: column; }
+#mention-menu .mention-list { overflow-y: auto; max-height: 300px; padding: 2px; }
+#mention-menu .mention-empty { text-align: center; color: var(--fg-dim); padding: 8px; }
+#mention-menu .mention-item { display: flex; align-items: center; min-width: 0; padding: 4px 8px;
+  border-radius: 5px; cursor: pointer; color: var(--fg); }
+#mention-menu .mention-item.sel { background: var(--menu-hover); }
+#mention-menu .mention-ic { display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 20px; height: 20px; margin-right: 6px; opacity: .6; }
+#mention-menu .mention-name { white-space: nowrap; flex-shrink: 0; margin-right: 16px; }
+#mention-menu .mention-dir, #mention-menu .mention-dirpath { white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; direction: rtl; text-align: right; }
+#mention-menu .mention-dir { flex-grow: 1; opacity: .4; }
+#mention-menu .mention-dirpath { flex-shrink: 1; text-align: left; }
+#mention-menu .ltr { direction: ltr; unicode-bidi: plaintext; }
 
 /* history panel */
 /* fixed width so the loading state and the loaded list are the same size — otherwise

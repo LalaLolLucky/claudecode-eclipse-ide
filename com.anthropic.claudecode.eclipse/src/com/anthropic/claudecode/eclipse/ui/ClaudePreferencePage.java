@@ -157,6 +157,18 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                 "Enable remote control on startup, in the Claude Code view",
                 getFieldEditorParent()));
 
+        addField(new BooleanFieldEditor(
+                Constants.PREF_THINKING_DEFAULT,
+                "Enable Thinking by default",
+                getFieldEditorParent()));
+
+        addField(new BooleanFieldEditor(
+                Constants.PREF_LIVE_AUTO_MODE,
+                // The VS Code extension's own wording for this setting
+                // (claudeCode.allowDangerouslySkipPermissions), verbatim.
+                "Allow bypass permissions mode. Recommended only for sandboxes with no internet access.",
+                getFieldEditorParent()));
+
         dictationEnabled = new BooleanFieldEditor(
                 Constants.PREF_DICTATION_ENABLED,
                 "Enable Speech-to-text (STT) [Experimental]",
@@ -631,6 +643,13 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
             NativeCore.setDebugMode(store.getBoolean(Constants.PREF_DEBUG_MODE));
         } catch (UnsatisfiedLinkError ignored) {
             // Native library doesn't have setDebugMode — older build, skip silently.
+        }
+        try {
+            // Conversations already running keep what they launched with; this takes
+            // effect on the next one each tab starts.
+            NativeCore.setLiveAutoMode(store.getBoolean(Constants.PREF_LIVE_AUTO_MODE));
+        } catch (UnsatisfiedLinkError ignored) {
+            // Older build without setLiveAutoMode — skip silently.
         }
         // The debug-only UI (Claude IDE Server view + its menu item) reacts to
         // this preference change via DebugModeSourceProvider — no call needed here.

@@ -178,7 +178,8 @@ function addUserMessage(text, ctx, images, id, ts, pane) {
     const body = document.createElement('div');
     // Bare slash commands ("/compact") render mono inside the bubble (VSCode look).
     body.className = 'body' + (/^\/\S+$/.test(text.trim()) ? ' mono-cmd' : '');
-    body.textContent = text;
+    if (typeof appendMentionText === 'function') appendMentionText(body, text);
+    else body.textContent = text;
     box.appendChild(body);
   }
   turn.appendChild(box); pane.appendChild(turn);
@@ -557,6 +558,7 @@ function doSend() {
   addUserMessage(text, withCtx ? ctxChipLabel() : null, imgs, null, nowIso());
   if (!t.titled && text) setTabTitle(t, text);   // title from text; an image-only first turn stays untitled
   input.value = ''; input.style.height = 'auto'; t.draft = ''; closeSlash();
+  if (typeof closeMention === 'function') closeMention();
   if (typeof clearPendingImages === 'function') clearPendingImages(t);   // consumed → clear the strip
   if (!queueing) { setStreaming(true); showWorking(); }
   else if (!workingEl) showWorking();

@@ -220,6 +220,7 @@ input.addEventListener('input', () => {
   const hasImgs = typeof hasPendingImages === 'function' && hasPendingImages();
   send.classList.toggle('disabled', input.value.trim() === '' && !hasImgs && !activeStreaming());
   updateSlashMenu();
+  if (typeof updateMentionMenu === 'function') updateMentionMenu();
 });
 /* macOS: an arrow key the caret can't act on inserts U+1D (ASCII GROUP SEPARATOR)
    into the composer, which renders as a box. On the Mac the SWT Browser is WebKit
@@ -323,6 +324,7 @@ input.addEventListener('keydown', (e) => {
   // horizontal arrows, so a guard set here is always the one this keypress needs.
   arrowGuard = (e.key === 'ArrowLeft' || e.key === 'ArrowRight'
              || e.key === 'ArrowUp'   || e.key === 'ArrowDown');
+  if (typeof mentionState !== 'undefined' && mentionState.open && handleMentionKey(e)) return;
   if (slashState.open && handleSlashKey(e)) return;
   // Enter always sends: mid-stream it QUEUES the message (VSCode behavior —
   // claude answers queued messages in succession over the persistent process).

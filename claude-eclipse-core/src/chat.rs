@@ -52,6 +52,12 @@ struct ChatState {
     /// (deprecated Claude Chat view — keep that path byte-for-byte unchanged).
     persistent: bool,
     proc: Option<Arc<ProcHandle>>,
+    /// The conversation of a process retired with the browser on, until the next spawn:
+    /// a process for that same conversation switches it back on (see [`retire_proc`]).
+    chrome_carry: Option<String>,
+    /// Remote Control a retired process had on, owed to the process replacing it
+    /// (see [`restore_remote_control`]). Taken by the next spawn.
+    rc_carry: Option<RcCarry>,
     /// The bridge session this conversation is published as, once Remote Control
     /// is on. Needed to look up the text of a message that arrived from another
     /// device: stdout announces those as `command_lifecycle` and carries only a
@@ -80,28 +86,74 @@ struct ChatState {
 /// mutex (user messages, control_responses and interrupts come from different
 /// threads); the reader thread owns stdout for the process lifetime.
 struct ProcHandle {
-    stdin: Mutex<std::process::ChildStdin>,
+    /// `None` once the process is killed: dropping it closes the pipe, and a
+    /// stream-json CLI ends when its input does.
+    stdin: Mutex<Option<std::process::ChildStdin>>,
     child: Mutex<std::process::Child>,
     /// Session id from the latest init event. Compared against the resume id the
     /// GUI sends with each message to detect tab switches (respawn with --resume).
     session_id: Mutex<Option<String>>,
-    /// Settings the process was spawned with (model/effort/mode/…). A mismatch on
-    /// the next send forces a respawn so mid-chat dropdown changes keep their
-    /// legacy per-message semantics.
+    /// What the process cannot change about itself once running ([`spawn_signature`]).
+    /// A mismatch on the next send replaces it; every other setting is sent to it live.
     spawn_sig: String,
     alive: AtomicBool,
+    /// Whether `claude-in-chrome` has been added to this process over
+    /// `mcp_set_servers`. Per process, but a process replacing it on the same
+    /// conversation gets it back (see [`retire_proc`]).
+    chrome_enabled: AtomicBool,
+    /// The session this process was spawned to resume, `""` for a new one. What it
+    /// is judged by until the CLI's init event supplies `session_id`.
+    spawn_resume: String,
+    /// The bridge session while this process has Remote Control on (`""` when the
+    /// CLI's reply left the id out), `None` while it is off.
+    rc_session: Mutex<Option<String>>,
+    /// The launch settings in effect on the process now — its spawn values, then
+    /// whatever [`apply_live_settings`] has sent it since.
+    live: Mutex<LiveSettings>,
+    /// Whether [`start_settings_poll`] is already running for this process.
+    settings_poll: AtomicBool,
+    /// The model and effort the CLI last reported, so a change made somewhere else
+    /// — the phone, claude.ai — can be told from the settings already known here.
+    last_applied: Mutex<Option<(String, String)>>,
+    /// Whether going back to a Default model can be done on this process.
+    ///
+    /// The CLI's model reset returns to the model it would pick with no setting at
+    /// all, which is the same thing a fresh Default process launches on ONLY when
+    /// there is no model in the CLI's own settings (verified both ways: with
+    /// `model: opus` set, a bare launch ran opus-5 while the reset gave sonnet-5;
+    /// with none set, both gave sonnet-5). So it is allowed exactly when the CLI
+    /// reports no model setting, and a respawn covers the other case rather than
+    /// leaving the tab saying Default over a different model.
+    default_model_live: AtomicBool,
 }
 
 impl ProcHandle {
     fn write_line(&self, line: &str) -> std::io::Result<()> {
-        let mut stdin = self.stdin.lock().unwrap();
+        let mut guard = self.stdin.lock().unwrap();
+        let stdin = guard
+            .as_mut()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "claude's input is closed"))?;
         stdin.write_all(line.as_bytes())?;
         stdin.write_all(b"\n")?;
         stdin.flush()
     }
 
+    /// Ends the process for good. Its input is closed first, since nothing else
+    /// would close it: the reader thread keeps this handle, and with it the pipe,
+    /// alive until the process exits. Then the whole tree is ended, so a process
+    /// started through a wrapper is not left running without a parent.
     fn kill(&self) {
-        let _ = self.child.lock().unwrap().kill();
+        drop(self.stdin.lock().unwrap().take());
+        crate::launch::kill_process_tree(&mut self.child.lock().unwrap());
+    }
+
+    fn serves(&self, resume_id: &str) -> bool {
+        serves_conversation(self.session_id.lock().unwrap().as_deref(), &self.spawn_resume, resume_id)
+    }
+
+    /// The conversation this process is on: its session, or before init the one it resumes.
+    fn conversation(&self) -> String {
+        self.session_id.lock().unwrap().clone().unwrap_or_else(|| self.spawn_resume.clone())
     }
 
     fn is_dead(&self) -> bool {
@@ -113,9 +165,401 @@ impl ProcHandle {
     }
 }
 
+/// Launch settings the CLI can change on a running process — so a change to one is
+/// sent to the process instead of replacing it, the VS Code extension's way.
+/// Replacing the process took everything it held down with it: the Remote Control
+/// bridge above all. Each control was verified live against CLI 2.1.266:
+/// `set_model` (the next turn runs on the new model), `apply_flag_settings`
+/// `effortLevel` (low through max all apply), `set_max_thinking_tokens` (0 = no
+/// thinking; null = back to the effort-driven default, with `thinking_display`),
+/// and `set_permission_mode`.
+#[derive(Clone, Debug, PartialEq)]
+struct LiveSettings {
+    perm_mode: String,
+    effort: String,
+    model: String,
+    thinking: String,
+}
+
+impl LiveSettings {
+    fn new(perm_mode: &str, effort: &str, model: &str, thinking: &str) -> Self {
+        LiveSettings {
+            perm_mode: perm_mode.to_string(),
+            effort: effort.to_string(),
+            model: model.to_string(),
+            thinking: thinking.to_string(),
+        }
+    }
+
+    /// Whether a process now running with `live` can be brought to these settings
+    /// without replacing it. Going back to an empty ("Default") model is allowed only
+    /// when the CLI has no model setting of its own (`model_reset_live` — see
+    /// [`ProcHandle::default_model_live`]); back to a Default effort never is, since
+    /// the CLI's reset returns to its settings value rather than to having none
+    /// (verified). Taking a concrete model or effort is always fine, and routine — a
+    /// Default tab adopts the id of the model its first turn ran on.
+    fn reachable_from(&self, live: &LiveSettings, model_reset_live: bool) -> bool {
+        !(self.model.is_empty() && !live.model.is_empty() && !model_reset_live)
+            && !(self.effort.is_empty() && !live.effort.is_empty())
+    }
+}
+
+/// The flag that lets the permission mode be switched to `bypassPermissions` ("Auto")
+/// on a running process. See where it is passed, in `spawn_persistent`.
+const ALLOW_SKIP_FLAG: &str = "--allow-dangerously-skip-permissions";
+
+/// Whether a process for `claude_cmd` is launched able to enter Auto mode: the user's
+/// preference, and a CLI new enough to take the flag.
+fn allow_skip_flag(claude_cmd: &str) -> bool {
+    crate::live_auto_mode() && crate::launch::cli_supports_flag(claude_cmd, ALLOW_SKIP_FLAG)
+}
+
+/// What a running process cannot change about itself, so what replaces it when it
+/// differs: where it runs and what it talks to. Every launch setting is sent to the
+/// running process instead ([`apply_live_settings`]) — Auto included, since the
+/// process is launched able to take it. On a CLI too old for [`ALLOW_SKIP_FLAG`],
+/// Auto stays a launch-time choice and going into or out of it replaces the process.
+/// The one other exception, going back to a Default model or effort, is one-way, so
+/// it is [`LiveSettings::reachable_from`]'s to decide.
+/// `auto_live` is [`allow_skip_flag`] for this command, passed in rather than looked
+/// up here so the rule is a function of its inputs — and so a test does not depend
+/// on what happens to be installed on the machine running it.
+fn spawn_signature(
+    claude_cmd: &str,
+    workspace_root: &str,
+    mcp_port: u16,
+    mcp_auth_token: &str,
+    perm_mode: &str,
+    auto_live: bool,
+) -> String {
+    let auto_at_launch = perm_mode == "bypassPermissions" && !auto_live;
+    format!("{}|{}|{}|{}|auto_at_launch={}",
+            claude_cmd, workspace_root, mcp_port, mcp_auth_token, auto_at_launch)
+}
+
+/// The `set_max_thinking_tokens` request for a GUI thinking value: "0" turns thinking
+/// off; on returns it to the session default, which leaves thinking to effort (as a
+/// spawn without a budget does), with readable summaries when the CLI has them ("2").
+fn thinking_request(thinking: &str) -> serde_json::Value {
+    match thinking {
+        "0" => serde_json::json!({ "subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0 }),
+        "2" => serde_json::json!({
+            "subtype": "set_max_thinking_tokens",
+            "max_thinking_tokens": serde_json::Value::Null,
+            "thinking_display": "summarized"
+        }),
+        _ => serde_json::json!({ "subtype": "set_max_thinking_tokens", "max_thinking_tokens": serde_json::Value::Null }),
+    }
+}
+
+/// Wraps a live-settings request as a control-request line.
+fn live_request_line(request: serde_json::Value) -> String {
+    static LIVE_SEQ: AtomicU64 = AtomicU64::new(1);
+    if crate::is_debug() {
+        eprintln!("[live-settings] {}", request);
+    }
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": format!("eclipse-live-{}", LIVE_SEQ.fetch_add(1, Ordering::Relaxed)),
+        "request": request
+    })
+    .to_string()
+}
+
+/// Brings a running process's settings to `want` by sending it the control requests
+/// for whatever differs, and records them. Called straight ahead of the message the
+/// settings are for: the CLI takes its input in order, so that turn already runs
+/// with them (verified). Err, with nothing sent, when the settings cannot be reached
+/// on this process ([`LiveSettings::reachable_from`]); Err when it no longer takes
+/// input. Either way the caller replaces the process.
+fn apply_live_settings(p: &ProcHandle, want: &LiveSettings) -> std::io::Result<()> {
+    let mut live = p.live.lock().unwrap();
+    if *live == *want {
+        return Ok(());
+    }
+    if !want.reachable_from(&live, p.default_model_live.load(Ordering::SeqCst)) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "a running process cannot go back to a Default model or effort",
+        ));
+    }
+    if live.model != want.model {
+        // Empty is "Default": null resets the process to the model it would pick with
+        // no setting, which is what a fresh Default process launches on.
+        let model = if want.model.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(want.model)
+        };
+        p.write_line(&live_request_line(serde_json::json!({ "subtype": "set_model", "model": model })))?;
+        live.model = want.model.clone();
+    }
+    if live.effort != want.effort && !want.effort.is_empty() {
+        p.write_line(&live_request_line(serde_json::json!({
+            "subtype": "apply_flag_settings",
+            "settings": { "effortLevel": want.effort }
+        })))?;
+        live.effort = want.effort.clone();
+    }
+    if live.thinking != want.thinking {
+        p.write_line(&live_request_line(thinking_request(&want.thinking)))?;
+        live.thinking = want.thinking.clone();
+    }
+    if live.perm_mode != want.perm_mode && !want.perm_mode.is_empty() {
+        p.write_line(&live_request_line(serde_json::json!({
+            "subtype": "set_permission_mode",
+            "mode": want.perm_mode
+        })))?;
+        live.perm_mode = want.perm_mode.clone();
+    }
+    Ok(())
+}
+
+/// Request ids of the settings read-back, so the reader can tell its reply apart.
+const SETTINGS_PREFIX: &str = "eclipse-settings-";
+
+/// How often the settings are read back while Remote Control is on. A second, so a
+/// model or effort picked on another device lands here about as fast as it would have
+/// been typed here. It costs one line of JSON down a pipe to a process on this machine:
+/// no network, no tokens, and answered even mid-turn (verified). Only while a bridge is
+/// up — nothing else changes these behind the view's back.
+const SETTINGS_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// One "what are your settings" control request.
+fn settings_request_line() -> String {
+    static SETTINGS_SEQ: AtomicU64 = AtomicU64::new(1);
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": format!("{}{}", SETTINGS_PREFIX, SETTINGS_SEQ.fetch_add(1, Ordering::Relaxed)),
+        "request": { "subtype": "get_settings" }
+    })
+    .to_string()
+}
+
+/// Reads the CLI's settings back every couple of seconds while Remote Control is on,
+/// so a model or effort change made on the phone or claude.ai shows up in this view
+/// rather than only in the next turn's status bar.
+///
+/// A poll, because there is nothing to listen to: the CLI announces a permission-mode
+/// change itself (`system/status`) but says nothing at all when the model or effort
+/// changes, and writes nothing to disk either (verified). `get_settings` is a local
+/// control request — no turn, no quota. The VS Code extension has no equivalent poll
+/// because its own picker reads the user's settings file, which it writes and watches;
+/// ours is per conversation, so the process is the only thing that knows.
+fn start_settings_poll(proc: Arc<ProcHandle>) {
+    if proc.settings_poll.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("claude-settings-poll".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(SETTINGS_POLL);
+                let on = proc.rc_session.lock().unwrap().is_some();
+                if !on || proc.is_dead() {
+                    break;
+                }
+                if proc.write_line(&settings_request_line()).is_err() {
+                    break;
+                }
+            }
+            proc.last_applied.lock().unwrap().take();
+            proc.settings_poll.store(false, Ordering::SeqCst);
+        })
+        .ok();
+}
+
+/// What moved in a `get_settings` reply since the last one, as the JSON the page
+/// receives — `None` for the first reply (that one is the baseline) and when nothing
+/// moved. The new values become this process's own, so the next send carries them
+/// instead of putting the old ones back.
+fn settings_change(proc: &ProcHandle, response: &serde_json::Value) -> Option<String> {
+    // `effective` is what the CLI's own settings say; no model there means its reset
+    // and a fresh launch agree, which is what makes a live switch back to Default safe
+    // (see `ProcHandle::default_model_live`). Re-read every time: the file can change.
+    proc.default_model_live.store(
+        response["effective"]["model"].as_str().unwrap_or("").is_empty(),
+        Ordering::SeqCst,
+    );
+    let applied = &response["applied"];
+    let model = applied["model"].as_str().unwrap_or("").to_string();
+    // Absent on a model with no effort ladder (haiku), which is not a change to report.
+    let effort = applied["effort"].as_str().unwrap_or("").to_string();
+    if model.is_empty() {
+        return None;
+    }
+    let previous = proc.last_applied.lock().unwrap().replace((model.clone(), effort.clone()))?;
+    if previous.0 == model && previous.1 == effort {
+        return None;
+    }
+    {
+        let mut live = proc.live.lock().unwrap();
+        live.model = model.clone();
+        if !effort.is_empty() {
+            live.effort = effort.clone();
+        }
+    }
+    if crate::is_debug() {
+        eprintln!("[live-settings] changed elsewhere: model={:?} effort={:?}", model, effort);
+    }
+    Some(serde_json::json!({ "model": model, "effort": effort }).to_string())
+}
+
 struct CallbacksRef {
     java_vm: Arc<jni::JavaVM>,
     obj: Arc<jni::objects::GlobalRef>, // Arc so we can share without cloning GlobalRef
+}
+
+/// Request ids of the `mcp_set_servers` that adds `claude-in-chrome`, so the reader
+/// can tell its reply from every other control request's.
+const CHROME_ON_PREFIX: &str = "eclipse-chrome-on-";
+
+/// Whether a process serves the conversation `resume_id` names. A process has no
+/// session id until the CLI's init event arrives — one `ensure_process` has only
+/// just started, when the send right behind it checks — so until then it is judged
+/// by the session it was spawned to resume. Judging it by the missing id replaced
+/// that process on the spot, and with it the browser the send had just switched on.
+fn serves_conversation(session_id: Option<&str>, spawn_resume: &str, resume_id: &str) -> bool {
+    match session_id {
+        Some(sid) => !resume_id.is_empty() && sid == resume_id,
+        None => spawn_resume == resume_id,
+    }
+}
+
+/// Takes a process out of service. The browser belongs to the conversation, not to
+/// the process: a respawn for a model or effort change, or after a deleted message,
+/// must not quietly take it away while the banner still says connected. So when it
+/// was on, the conversation is remembered for [`restore_chrome`]. Clearing the flag
+/// first keeps the reader's EOF from reporting the browser gone in the meantime.
+///
+/// Remote Control is carried the same way, and for the same reason: killing the
+/// process that holds the bridge leaves the phone and claude.ai on a session nothing
+/// answers, while the tab still says Remote Control is active.
+fn retire_proc(state: &Mutex<ChatState>, p: &ProcHandle) {
+    if p.chrome_enabled.swap(false, Ordering::SeqCst) {
+        state.lock().unwrap().chrome_carry = Some(p.conversation());
+    }
+    if let Some(bridge_session_id) = p.rc_session.lock().unwrap().take() {
+        let conversation = p.conversation();
+        let mut s = state.lock().unwrap();
+        s.rc_carry = Some(RcCarry { conversation, bridge_session_id });
+        // Nothing holds that bridge until the replacement takes it back over.
+        s.bridge_session_id = None;
+    }
+    p.alive.store(false, Ordering::Relaxed);
+    p.kill();
+}
+
+/// Remote Control owed to the process replacing a retired one.
+struct RcCarry {
+    /// The conversation the bridge belongs to.
+    conversation: String,
+    /// The bridge session to take back over.
+    bridge_session_id: String,
+}
+
+/// Gives a just-spawned process the Remote Control a retired one had, when it
+/// carries the same conversation: it takes over the same bridge session, so
+/// whoever is on the phone or claude.ai stays on it. The reply arrives on the
+/// reader like any switch-on's. Any other conversation starts without it, and the
+/// page is told the bridge is gone.
+fn restore_remote_control(
+    state: &Mutex<ChatState>,
+    p: &ProcHandle,
+    resume_id: &str,
+    java_vm: &Arc<jni::JavaVM>,
+    callbacks: &Arc<jni::objects::GlobalRef>,
+) {
+    let Some(carry) = state.lock().unwrap().rc_carry.take() else { return };
+    let gone = || {
+        fire_string(java_vm, callbacks, "onRemoteControl", &crate::bridge::rc_state_json("failed"));
+    };
+    if carry.conversation != resume_id {
+        if crate::is_debug() {
+            eprintln!("[remote-control] not carried: bridge was on {:?}, new process is on {:?}",
+                      carry.conversation, resume_id);
+        }
+        gone();
+        return;
+    }
+    static REATTACH_SEQ: AtomicU64 = AtomicU64::new(1);
+    let (_, line) = crate::bridge::rc_reattach_line(
+        REATTACH_SEQ.fetch_add(1, Ordering::Relaxed),
+        &carry.bridge_session_id,
+    );
+    if crate::is_debug() {
+        eprintln!("[remote-control] carrying bridge {:?} to the replacement process", carry.bridge_session_id);
+    }
+    if p.write_line(&line).is_err() {
+        gone();
+    }
+}
+
+/// Gives a just-spawned process the browser a retired one had, when it carries the
+/// same conversation. The model already has the browser instruction from the
+/// transcript, so only the server is added. Any other conversation starts without
+/// it, and the banner is told.
+fn restore_chrome(
+    state: &Mutex<ChatState>,
+    p: &ProcHandle,
+    claude_cmd: &str,
+    resume_id: &str,
+    java_vm: &Arc<jni::JavaVM>,
+    callbacks: &Arc<jni::objects::GlobalRef>,
+) {
+    let Some(conversation) = state.lock().unwrap().chrome_carry.take() else { return };
+    let emit = |json: &str| fire_string(java_vm, callbacks, "onBrowserState", json);
+    if !conversation.is_empty() && conversation == resume_id {
+        p.chrome_enabled.store(true, Ordering::SeqCst);
+        write_chrome_on(p, &crate::chrome::server_config(claude_cmd), &emit);
+    } else {
+        emit(r#"{"status":"disconnected"}"#);
+    }
+}
+
+/// Writes the `mcp_set_servers` that adds `claude-in-chrome` to `p`, whose flag the
+/// caller has set. The banner reads "Connecting to browser…" until the CLI answers —
+/// the reader turns the reply into connected or an error (see `chrome_set_error`).
+/// False when the process no longer takes input.
+fn write_chrome_on(p: &ProcHandle, server_config: &serde_json::Value, emit: &dyn Fn(&str)) -> bool {
+    emit(r#"{"status":"connecting"}"#);
+    static CHROME_SEQ: AtomicU64 = AtomicU64::new(1);
+    let req_id = format!("{CHROME_ON_PREFIX}{}", CHROME_SEQ.fetch_add(1, Ordering::Relaxed));
+    let msg = serde_json::json!({
+        "type": "control_request",
+        "request_id": req_id,
+        "request": { "subtype": "mcp_set_servers", "servers": { "claude-in-chrome": server_config } }
+    });
+    if p.write_line(&msg.to_string()).is_err() {
+        p.chrome_enabled.store(false, Ordering::SeqCst);
+        emit(r#"{"status":"disconnected"}"#);
+        return false;
+    }
+    true
+}
+
+/// What the extension tells the model when the browser is disconnected, verbatim.
+const BROWSER_DISCONNECTED_NOTE: &str =
+    "[Browser disconnected: The browser connection has been closed. Browser tools are no longer available.]";
+
+/// The failure in a reply to adding `claude-in-chrome`, worded as the extension
+/// words it (`name: reason`, comma-joined), or `None` when the server was added.
+fn chrome_set_error(inner: &serde_json::Value) -> Option<String> {
+    if inner["subtype"].as_str() == Some("error") {
+        let e = inner["error"].as_str().unwrap_or("").trim();
+        return Some(if e.is_empty() { "Unknown error".to_string() } else { e.to_string() });
+    }
+    let errors = inner["response"]["errors"].as_object()?;
+    if errors.is_empty() {
+        return None;
+    }
+    Some(
+        errors
+            .iter()
+            .map(|(k, v)| format!("{k}: {}", v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +580,8 @@ impl ChatManager {
                 cancel: Arc::new(AtomicBool::new(false)),
                 persistent: false,
                 proc: None,
+                chrome_carry: None,
+                rc_carry: None,
                 bridge_session_id: None,
                 workspace_root: String::new(),
                 open_cards: std::collections::HashSet::new(),
@@ -348,31 +794,20 @@ impl ChatManager {
             }
         };
 
-        let sig = format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}",
-            claude_cmd, workspace_root, mcp_port, mcp_auth_token,
-            perm_mode, effort, model, thinking
-        );
+        let sig = spawn_signature(&claude_cmd, &workspace_root, mcp_port, &mcp_auth_token, &perm_mode,
+                                  allow_skip_flag(&claude_cmd));
+        let want = LiveSettings::new(&perm_mode, &effort, &model, &thinking);
 
         let mut proc_opt = { self.state.lock().unwrap().proc.clone() };
-        let reusable = match &proc_opt {
-            Some(p) => {
-                let sid = p.session_id.lock().unwrap().clone();
-                let same_conversation = if resume_id.is_empty() {
-                    sid.is_none()
-                } else {
-                    sid.as_deref() == Some(resume_id.as_str())
-                };
-                !p.is_dead() && p.spawn_sig == sig && same_conversation
-            }
-            None => false,
-        };
+        let reusable = proc_opt.as_ref().is_some_and(|p| {
+            !p.is_dead() && p.spawn_sig == sig && p.serves(&resume_id)
+                && apply_live_settings(p, &want).is_ok()
+        });
         if reusable {
             return true;
         }
         if let Some(p) = proc_opt.take() {
-            p.alive.store(false, Ordering::Relaxed);
-            p.kill();
+            retire_proc(&self.state, &p);
         }
 
         match spawn_persistent(
@@ -381,7 +816,9 @@ impl ChatManager {
             Arc::clone(&self.state), Arc::clone(&java_vm), Arc::clone(&callbacks),
         ) {
             Ok(p) => {
-                self.state.lock().unwrap().proc = Some(p);
+                self.state.lock().unwrap().proc = Some(Arc::clone(&p));
+                restore_chrome(&self.state, &p, &claude_cmd, &resume_id, &java_vm, &callbacks);
+                restore_remote_control(&self.state, &p, &resume_id, &java_vm, &callbacks);
                 true
             }
             Err(e) => {
@@ -406,6 +843,10 @@ impl ChatManager {
     ///
     /// Returns false only when there is no live process to ask.
     pub fn remote_control(&self, enabled: bool) -> bool {
+        if !enabled {
+            // Switched off before a replacement took it back over: nothing is owed.
+            self.state.lock().unwrap().rc_carry = None;
+        }
         let proc = self.state.lock().unwrap().proc.clone();
         let Some(p) = proc else { return false };
         if p.is_dead() {
@@ -415,6 +856,37 @@ impl ChatManager {
         let (_req_id, line) =
             crate::bridge::rc_request_line(RC_SEQ.fetch_add(1, Ordering::Relaxed), enabled);
         p.write_line(&line).is_ok()
+    }
+
+    /// Applies this tab's launch settings to its live process NOW, instead of waiting
+    /// for the next message. A model or effort change belongs to the conversation the
+    /// moment it is made: the status bar shows it, and under Remote Control the phone
+    /// and claude.ai are told by the CLI itself, which cannot happen while the change
+    /// is still sitting in the view. The permission mode has always worked this way.
+    ///
+    /// False when there is no live process, or when the change needs a new one — the
+    /// next message makes it, as before.
+    pub fn apply_settings_now(&self, perm_mode: &str, effort: &str, model: &str, thinking: &str) -> bool {
+        let proc = self.state.lock().unwrap().proc.clone();
+        let Some(p) = proc else { return false };
+        if p.is_dead() {
+            return false;
+        }
+        apply_live_settings(&p, &LiveSettings::new(perm_mode, effort, model, thinking)).is_ok()
+    }
+
+    /// Whether switching this conversation back to a Default model would have to
+    /// replace its process — which takes its Remote Control session down with it, so
+    /// the view asks first. False when there is nothing running, and false when the
+    /// switch can be made on the running process (see
+    /// [`ProcHandle::default_model_live`]).
+    pub fn default_model_restarts(&self) -> bool {
+        let proc = self.state.lock().unwrap().proc.clone();
+        let Some(p) = proc else { return false };
+        if p.is_dead() {
+            return false;
+        }
+        !p.live.lock().unwrap().model.is_empty() && !p.default_model_live.load(Ordering::SeqCst)
     }
 
     /// Switches the permission mode of this manager's live process via the CLI's
@@ -440,7 +912,93 @@ impl ChatManager {
             "request_id": req_id,
             "request": { "subtype": "set_permission_mode", "mode": mode }
         });
-        p.write_line(&msg.to_string()).is_ok()
+        let ok = p.write_line(&msg.to_string()).is_ok();
+        if ok {
+            // So the next send does not send it again.
+            p.live.lock().unwrap().perm_mode = mode.to_string();
+        }
+        ok
+    }
+
+    /// Adds the `claude-in-chrome` MCP server to this manager's live process via
+    /// the CLI's `mcp_set_servers` control request — how the VS Code extension
+    /// switches the browser on mid-conversation. The `eclipse` server from
+    /// `--mcp-config` stays connected alongside it (verified against 2.1.266).
+    /// Returns 1 when this call switched it on, 0 when it already was on, and -1
+    /// when there is no live process.
+    pub fn enable_chrome(&self, server_config: &serde_json::Value) -> i32 {
+        let proc = self.state.lock().unwrap().proc.clone();
+        let Some(p) = proc else { return -1 };
+        if p.is_dead() {
+            return -1;
+        }
+        if p.chrome_enabled.swap(true, Ordering::SeqCst) {
+            return 0;
+        }
+        if write_chrome_on(&p, server_config, &|json| self.emit_browser_state(json)) {
+            1
+        } else {
+            -1
+        }
+    }
+
+    /// Takes `claude-in-chrome` back out of this manager's live process — the browser
+    /// banner's ×, the extension's `disableChromeMcp`. An empty `mcp_set_servers`
+    /// removes only the servers set that way; the `eclipse` server from `--mcp-config`
+    /// stays connected (verified against 2.1.266).
+    ///
+    /// The model is told with the extension's own notice, sent the way the extension
+    /// sends it: the CLI starts a turn on it and Claude acknowledges the disconnect
+    /// right away, so the conversation records that the browser was closed on
+    /// purpose (verified against 2.1.266). The reader opens that turn in the view
+    /// like any queued one. Held back until the next message instead
+    /// (`shouldQuery:false`), it arrived alongside that message and read as the
+    /// browser having dropped on its own.
+    ///
+    /// Clearing `chrome_enabled` is what makes a later `@browser` switch the browser
+    /// on again and resend the instruction. Returns whether the browser was on.
+    pub fn disable_chrome(&self) -> bool {
+        let proc = self.state.lock().unwrap().proc.clone();
+        let was_on = proc
+            .as_ref()
+            .map(|p| p.chrome_enabled.swap(false, Ordering::SeqCst))
+            .unwrap_or(false);
+        // A respawn not yet followed by a spawn still owes its replacement the browser.
+        let was_on = self.state.lock().unwrap().chrome_carry.take().is_some() || was_on;
+        if let Some(p) = proc.filter(|p| was_on && !p.is_dead()) {
+            static OFF_SEQ: AtomicU64 = AtomicU64::new(1);
+            let off = serde_json::json!({
+                "type": "control_request",
+                "request_id": format!("eclipse-chrome-off-{}", OFF_SEQ.fetch_add(1, Ordering::Relaxed)),
+                "request": { "subtype": "mcp_set_servers", "servers": {} }
+            });
+            let note = serde_json::json!({
+                "type": "user",
+                "session_id": "",
+                "parent_tool_use_id": null,
+                "isSynthetic": true,
+                "message": { "role": "user", "content": BROWSER_DISCONNECTED_NOTE }
+            });
+            if p.write_line(&off.to_string()).is_ok() {
+                let _ = p.write_line(&note.to_string());
+            }
+        }
+        self.emit_browser_state(r#"{"status":"disconnected"}"#);
+        was_on
+    }
+
+    fn emit_browser_state(&self, json: &str) {
+        let guard = self.callbacks.lock().unwrap();
+        if let Some(cb) = guard.as_ref() {
+            fire_string(&cb.java_vm, &cb.obj, "onBrowserState", json);
+        }
+    }
+
+    fn emit_remote_control(&self, json: &str) {
+        let guard = self.callbacks.lock().unwrap();
+        if let Some(cb) = guard.as_ref() {
+            fire_string(&cb.java_vm, &cb.obj, "onRemoteControl", json);
+        }
     }
 
     /// Drops the conversation process but KEEPS the conversation: `has_session`
@@ -462,9 +1020,9 @@ impl ChatManager {
             s.awaiting = false;
             s.proc.take()
         };
+        // The browser stays: the next send resumes this conversation and switches it back on.
         if let Some(p) = proc {
-            p.alive.store(false, Ordering::Relaxed);
-            p.kill();
+            retire_proc(&self.state, &p);
         }
     }
 
@@ -481,8 +1039,15 @@ impl ChatManager {
                 s.proc.take()
             };
             if let Some(p) = proc {
-                p.alive.store(false, Ordering::Relaxed);
-                p.kill();
+                retire_proc(&self.state, &p);
+            }
+            // A new conversation starts without the browser.
+            if self.state.lock().unwrap().chrome_carry.take().is_some() {
+                self.emit_browser_state(r#"{"status":"disconnected"}"#);
+            }
+            // Nor with Remote Control: that bridge session is the old conversation's.
+            if self.state.lock().unwrap().rc_carry.take().is_some() {
+                self.emit_remote_control(&crate::bridge::rc_state_json("failed"));
             }
             self.emit_system("Session reset.");
             return;
@@ -529,29 +1094,23 @@ impl ChatManager {
             .spawn(move || {
                 fire_void(&java_vm, &callbacks, "onStreamStart");
 
-                let sig = format!(
-                    "{}|{}|{}|{}|{}|{}|{}|{}",
-                    claude_cmd, workspace_root, mcp_port, mcp_auth_token,
-                    perm_mode, effort, model, thinking
-                );
+                let sig = spawn_signature(&claude_cmd, &workspace_root, mcp_port, &mcp_auth_token, &perm_mode,
+                                          allow_skip_flag(&claude_cmd));
+                let want = LiveSettings::new(&perm_mode, &effort, &model, &thinking);
 
-                // Reuse only when the process is alive, was spawned with the same
-                // settings, and carries the conversation the GUI is addressing:
+                // Reuse only when the process is alive, has nothing in its spawn
+                // signature that differs (the rest is sent to it live), and carries
+                // the conversation the GUI is addressing:
                 //  - same tab      → resume_id == live session id
                 //  - New Chat      → resume_id empty but a session exists → respawn fresh
                 //  - tab switch    → different resume_id → respawn with --resume
                 let mut proc_opt = { state.lock().unwrap().proc.clone() };
                 let reusable = match &proc_opt {
                     Some(p) => {
-                        let sid = p.session_id.lock().unwrap().clone();
-                        let same_conversation = if resume_id.is_empty() {
-                            sid.is_none()
-                        } else {
-                            sid.as_deref() == Some(resume_id.as_str())
-                        };
-                        if p.is_dead() || p.spawn_sig != sig || !same_conversation {
-                            p.alive.store(false, Ordering::Relaxed);
-                            p.kill();
+                        if p.is_dead() || p.spawn_sig != sig || !p.serves(&resume_id)
+                            || apply_live_settings(p, &want).is_err()
+                        {
+                            retire_proc(&state, p);
                             false
                         } else {
                             true
@@ -573,6 +1132,8 @@ impl ChatManager {
                         ) {
                             Ok(p) => {
                                 state.lock().unwrap().proc = Some(Arc::clone(&p));
+                                restore_chrome(&state, &p, &claude_cmd, &resume_id, &java_vm, &callbacks);
+                                restore_remote_control(&state, &p, &resume_id, &java_vm, &callbacks);
                                 p
                             }
                             Err(e) => {
@@ -629,35 +1190,54 @@ impl Drop for ChatManager {
 // One conversation turn (runs on a dedicated thread)
 // ---------------------------------------------------------------------------
 
-/// Builds the `message.content` for a user turn. With no images it's a plain
-/// string (unchanged wire format); with images it's the Anthropic content-block
-/// array — a text block (omitted when empty) followed by base64 image blocks.
-/// `images_json` is a JSON array of `{"media_type","data"}` (data = raw base64);
-/// malformed / empty input degrades to the plain-string form.
+/// Builds the `message.content` for a user turn. With nothing attached it's a
+/// plain string (unchanged wire format); otherwise it's the Anthropic
+/// content-block array — a text block (omitted when empty) followed by each
+/// attachment in order. `images_json` is a JSON array whose entries are either a
+/// pasted image as `{"media_type","data"}` (data = raw base64), or a ready block:
+/// `{"type":"document",…}` for an uploaded file, `{"type":"text","text"}` for
+/// context such as the browser blocks. Malformed / empty input degrades to the
+/// plain-string form.
 fn build_user_content(message: &str, images_json: &str) -> serde_json::Value {
-    let imgs: Vec<serde_json::Value> = if images_json.trim().is_empty() {
+    let items: Vec<serde_json::Value> = if images_json.trim().is_empty() {
         Vec::new()
     } else {
         serde_json::from_str(images_json).unwrap_or_default()
     };
-    if imgs.is_empty() {
-        return serde_json::Value::String(message.to_string());
-    }
     let mut content: Vec<serde_json::Value> = Vec::new();
     if !message.is_empty() {
         content.push(serde_json::json!({ "type": "text", "text": message }));
     }
-    for img in &imgs {
-        let data = img.get("data").and_then(|v| v.as_str()).unwrap_or("");
-        if data.is_empty() { continue; }
-        let media_type = img.get("media_type").and_then(|v| v.as_str()).unwrap_or("image/png");
-        content.push(serde_json::json!({
-            "type": "image",
-            "source": { "type": "base64", "media_type": media_type, "data": data }
-        }));
+    let mut attached = 0;
+    for item in &items {
+        let block = match item.get("type").and_then(|v| v.as_str()) {
+            Some("document") => {
+                let src = &item["source"];
+                let valid = matches!(src["type"].as_str(), Some("text") | Some("base64"))
+                    && src["data"].as_str().is_some_and(|d| !d.is_empty());
+                valid.then(|| item.clone())
+            }
+            Some("text") => item["text"]
+                .as_str()
+                .filter(|t| !t.is_empty())
+                .map(|t| serde_json::json!({ "type": "text", "text": t })),
+            Some(_) => None,
+            None => {
+                let data = item.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                let media_type = item.get("media_type").and_then(|v| v.as_str()).unwrap_or("image/png");
+                (!data.is_empty()).then(|| serde_json::json!({
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": media_type, "data": data }
+                }))
+            }
+        };
+        if let Some(b) = block {
+            content.push(b);
+            attached += 1;
+        }
     }
-    // All images turned out invalid → fall back to the plain string.
-    if content.is_empty() || (content.len() == 1 && content[0]["type"] == "text") {
+    // Nothing valid attached → the plain string.
+    if attached == 0 {
         return serde_json::Value::String(message.to_string());
     }
     serde_json::Value::Array(content)
@@ -884,7 +1464,7 @@ fn run_turn(
     }
 
     let exit_ok = if cancel.load(Ordering::Relaxed) {
-        let _ = child.kill();
+        crate::launch::kill_process_tree(&mut child);
         false
     } else {
         child.wait().map(|s| s.success()).unwrap_or(false)
@@ -946,6 +1526,16 @@ fn spawn_persistent(
         "--permission-prompt-tool".into(),
         "stdio".into(),
     ];
+    // Lets the mode be switched to bypassPermissions ("Auto") on the running process,
+    // which the CLI otherwise refuses — the VS Code SDK passes this for the same
+    // reason. It ALLOWS that mode; it does not enter it, and it does not loosen the
+    // others: verified, a Write in Manual mode still comes to the card, and only after
+    // a switch to Auto does it run unasked. Gated twice: a CLI that does not know the
+    // flag would abort on it, and the preference behind `live_auto_mode` exists because
+    // this is also what lets another device put the conversation into Auto.
+    if allow_skip_flag(claude_cmd) {
+        cmd_args.push(ALLOW_SKIP_FLAG.into());
+    }
     if !effort.is_empty() {
         cmd_args.push("--effort".into());
         cmd_args.push(effort.to_string());
@@ -1006,9 +1596,10 @@ fn spawn_persistent(
         cmd.env(k, v);
     }
 
-    if thinking == "0" {
-        cmd.env("MAX_THINKING_TOKENS", "0");
-    }
+    // Thinking off is not MAX_THINKING_TOKENS=0 here, unlike run_turn: the CLI keeps
+    // thinking off for a session launched with it disabled, so it could never be
+    // switched back on live. It is switched off over stdin instead, the moment the
+    // process is up (below), which lands before any turn.
 
     // File checkpointing is off by default in -p/SDK mode; without this the CLI
     // writes no file-history-snapshot entries and the GUI's Rewind cannot
@@ -1052,12 +1643,26 @@ fn spawn_persistent(
     let stderr_stream = child.stderr.take().unwrap();
 
     let proc = Arc::new(ProcHandle {
-        stdin: Mutex::new(stdin),
+        stdin: Mutex::new(Some(stdin)),
         child: Mutex::new(child),
         session_id: Mutex::new(None),
         spawn_sig,
         alive: AtomicBool::new(true),
+        chrome_enabled: AtomicBool::new(false),
+        spawn_resume: resume_id.to_string(),
+        rc_session: Mutex::new(None),
+        live: Mutex::new(LiveSettings::new(perm_mode, effort, model, thinking)),
+        settings_poll: AtomicBool::new(false),
+        last_applied: Mutex::new(None),
+        default_model_live: AtomicBool::new(false),
     });
+    if thinking == "0" {
+        // A failed write surfaces as the reader's EOF, like any dead process.
+        let _ = proc.write_line(&live_request_line(thinking_request("0")));
+    }
+    // Asked once at startup so the answer — which decides whether a later switch back
+    // to Default can be done on this process — is in before the user can pick it.
+    let _ = proc.write_line(&settings_request_line());
 
     // Stderr drain (surfaced only if the process dies mid-turn).
     let stderr_buf = Arc::new(Mutex::new(String::new()));
@@ -1173,6 +1778,9 @@ fn reader_loop(
                     if crate::is_debug() {
                         eprintln!("[remote-control] {}", json);
                     }
+                    // What retire_proc hands on if this process is replaced.
+                    *proc.rc_session.lock().unwrap() =
+                        reply.enabled.then(|| reply.bridge_session_id.clone());
                     // Remembered because an inbound message names only a uuid;
                     // this is the log that uuid has to be looked up in.
                     state.lock().unwrap().bridge_session_id = if reply.enabled {
@@ -1180,7 +1788,37 @@ fn reader_loop(
                     } else {
                         None
                     };
-                    fire_string(&java_vm, &callbacks, "onRemoteControl", &json);
+                    if reply.enabled {
+                        // Someone on the other device can change the model or effort now.
+                        start_settings_poll(Arc::clone(&proc));
+                    }
+                    if crate::bridge::rc_is_reattach(rid) && !reply.enabled {
+                        // A carried bridge that could not be taken back over. The page
+                        // asked for nothing, so it would discard a reply; what it has to
+                        // hear is that the bridge it shows as active is gone.
+                        fire_string(&java_vm, &callbacks, "onRemoteControl",
+                                    &crate::bridge::rc_state_json("failed"));
+                    } else {
+                        fire_string(&java_vm, &callbacks, "onRemoteControl", &json);
+                    }
+                } else if rid.starts_with(SETTINGS_PREFIX) {
+                    if let Some(json) = settings_change(&proc, &inner["response"]) {
+                        fire_string(&java_vm, &callbacks, "onSettingsChanged", &json);
+                    }
+                } else if rid.starts_with(CHROME_ON_PREFIX) {
+                    // The browser was switched off while this was in flight: the
+                    // banner is already gone, so a late "connected" must not bring
+                    // it back.
+                    if proc.chrome_enabled.load(Ordering::SeqCst) {
+                        let json = match chrome_set_error(inner) {
+                            Some(error) => {
+                                proc.chrome_enabled.store(false, Ordering::SeqCst);
+                                serde_json::json!({ "status": "error", "error": error })
+                            }
+                            None => serde_json::json!({ "status": "connected" }),
+                        };
+                        fire_string(&java_vm, &callbacks, "onBrowserState", &json.to_string());
+                    }
                 }
                 continue;
             }
@@ -1245,7 +1883,13 @@ fn reader_loop(
                         if crate::is_debug() {
                             eprintln!("[remote-control] bridge {}", state);
                         }
-                        let json = crate::bridge::rc_state_json(state);
+                        // Only "failed" is a bridge gone for good — the VS Code extension's
+                        // rule; the CLI passes through other states on its way back up. A
+                        // gone bridge is not one to carry to a replacement process.
+                        if state == "failed" {
+                            *proc.rc_session.lock().unwrap() = None;
+                        }
+                        let json = crate::bridge::rc_bridge_state_json(state, event["bridge_epoch"].as_i64());
                         fire_string(&java_vm, &callbacks, "onRemoteControl", &json);
                         continue;
                     }
@@ -1255,6 +1899,23 @@ fn reader_loop(
                     // answers the turn with that text) or a compact_boundary carrying
                     // compact_metadata {trigger, pre_tokens, post_tokens}.
                     "status" => {
+                        // The one launch setting the CLI announces by itself, the moment
+                        // it changes and wherever it was changed — here, the phone, or
+                        // claude.ai (verified). Model and effort are polled instead.
+                        if let Some(mode) = event["permissionMode"].as_str() {
+                            let changed = {
+                                let mut live = proc.live.lock().unwrap();
+                                let differs = live.perm_mode != mode;
+                                if differs {
+                                    live.perm_mode = mode.to_string();
+                                }
+                                differs
+                            };
+                            if changed {
+                                fire_string(&java_vm, &callbacks, "onSettingsChanged",
+                                            &serde_json::json!({ "permMode": mode }).to_string());
+                            }
+                        }
                         if event["status"].as_str() == Some("compacting") {
                             fire_string(&java_vm, &callbacks, "onCompact",
                                         "{\"phase\":\"compacting\"}");
@@ -1375,6 +2036,25 @@ fn reader_loop(
     // dispose — all set `alive=false` *before* killing) from a genuine CRASH
     // (alive still true). swap returns the previous value: true = was alive = crash.
     let crashed = proc.alive.swap(false, Ordering::Relaxed);
+    // The browser went with the process. Unless a replacement process has already
+    // switched it back on — its banner is the live one and must stay.
+    if proc.chrome_enabled.swap(false, Ordering::SeqCst) {
+        let replacement_on = state
+            .lock()
+            .unwrap()
+            .proc
+            .as_ref()
+            .is_some_and(|cur| !Arc::ptr_eq(cur, &proc) && cur.chrome_enabled.load(Ordering::SeqCst));
+        if !replacement_on {
+            fire_string(&java_vm, &callbacks, "onBrowserState", r#"{"status":"disconnected"}"#);
+        }
+    }
+    // So did its bridge. An intentional kill has handed it on already (retire_proc);
+    // a crash leaves the page showing Remote Control as active unless it is told.
+    let rc_was_on = proc.rc_session.lock().unwrap().take().is_some();
+    if crashed && rc_was_on {
+        fire_string(&java_vm, &callbacks, "onRemoteControl", &crate::bridge::rc_state_json("failed"));
+    }
     // Either way the process is gone, so any card still up is unanswerable —
     // its control_response has nowhere to go. Do this before the early return:
     // an intentional kill (respawn, reset, dispose) leaves cards behind just as
@@ -2275,6 +2955,93 @@ mod tests {
         assert_eq!(build_user_content("hi", "not json"), json!("hi"));
         // images present but every one lacks data → plain string, not an empty array
         assert_eq!(build_user_content("hi", r#"[{"media_type":"image/png"}]"#), json!("hi"));
+        // a document without data, an empty text block, an unknown type → nothing attached
+        let junk = r#"[{"type":"document","source":{"type":"text","data":""}},{"type":"text","text":""},{"type":"video"}]"#;
+        assert_eq!(build_user_content("hi", junk), json!("hi"));
+    }
+
+    #[test]
+    fn only_what_a_live_process_cannot_change_replaces_it() {
+        use super::{spawn_signature, thinking_request, LiveSettings};
+        // On a CLI that takes the allow flag, NO launch setting is in the signature:
+        // every one of them is sent live, Auto included.
+        let live = |perm: &str| spawn_signature("claude", "C:\\ws", 1, "tok", perm, true);
+        assert_eq!(live("default"), live("plan"));
+        assert_eq!(live("acceptEdits"), live("bypassPermissions"));
+        // On one too old for it (or with the preference off), Auto is a launch-time
+        // choice again, and going into or out of it replaces the process.
+        let old = |perm: &str| spawn_signature("claude", "C:\\ws", 1, "tok", perm, false);
+        assert_eq!(old("default"), old("plan"));
+        assert_ne!(old("default"), old("bypassPermissions"));
+        // Where it runs and what it talks to always part them.
+        assert_ne!(live("default"), spawn_signature("claude", "C:\\other", 1, "tok", "default", true));
+        assert_ne!(live("default"), spawn_signature("claude", "C:\\ws", 2, "tok", "default", true));
+
+        // Model and effort are sent live (max included).
+        let live = |effort: &str, model: &str| LiveSettings::new("default", effort, model, "2");
+        assert!(live("max", "opus[1m]").reachable_from(&live("high", "sonnet"), false));
+        // A Default tab adopting the model its first turn ran on keeps its process.
+        assert!(live("high", "claude-sonnet-5").reachable_from(&live("high", ""), false));
+        assert!(live("high", "sonnet").reachable_from(&live("", "sonnet"), false));
+        // Back to Default: only when the CLI has no model setting of its own.
+        assert!(live("high", "").reachable_from(&live("high", "sonnet"), true));
+        assert!(!live("high", "").reachable_from(&live("high", "sonnet"), false));
+        // Effort has no such reset, either way.
+        assert!(!live("", "sonnet").reachable_from(&live("high", "sonnet"), true));
+
+        assert_eq!(thinking_request("0")["max_thinking_tokens"], 0);
+        let on = thinking_request("2");
+        assert!(on["max_thinking_tokens"].is_null());
+        assert_eq!(on["thinking_display"], "summarized");
+        assert!(thinking_request("1").get("thinking_display").is_none());
+    }
+
+    #[test]
+    fn a_process_is_judged_by_the_session_it_resumes_until_init() {
+        use super::serves_conversation as serves;
+        // Before init (a process ensure_process has just started).
+        assert!(serves(None, "s1", "s1"));
+        assert!(serves(None, "", ""));
+        assert!(!serves(None, "s1", ""));
+        assert!(!serves(None, "", "s1"));
+        // After init, by the session the CLI reported.
+        assert!(serves(Some("s1"), "", "s1"));
+        assert!(serves(Some("s1"), "s1", "s1"));
+        assert!(!serves(Some("s1"), "s1", "s2"));
+        assert!(!serves(Some("s1"), "", ""));
+    }
+
+    #[test]
+    fn chrome_set_reply_errors_are_worded_like_the_extension() {
+        assert_eq!(super::chrome_set_error(&json!({"subtype":"success","response":{"added":["claude-in-chrome"],"removed":[],"errors":{}}})), None);
+        assert_eq!(
+            super::chrome_set_error(&json!({"subtype":"success","response":{"errors":{"claude-in-chrome":"spawn ENOENT","x":{"code":1}}}})),
+            Some("claude-in-chrome: spawn ENOENT, x: {\"code\":1}".to_string())
+        );
+        assert_eq!(super::chrome_set_error(&json!({"subtype":"error","error":"bad request"})), Some("bad request".to_string()));
+        assert_eq!(super::chrome_set_error(&json!({"subtype":"error"})), Some("Unknown error".to_string()));
+        // A reply with no errors object at all is not a failure.
+        assert_eq!(super::chrome_set_error(&json!({"subtype":"success","response":{}})), None);
+    }
+
+    #[test]
+    fn documents_and_text_blocks_pass_through_in_order() {
+        let items = r#"[
+            {"type":"document","source":{"type":"text","media_type":"text/plain","data":"abc"},"title":"a.txt"},
+            {"media_type":"image/png","data":"QUJD"},
+            {"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBE"},"title":"b.pdf"},
+            {"type":"text","text":"<browser tabGroupId=\"1\" tabId=\"2\"></browser>"}
+        ]"#;
+        assert_eq!(
+            build_user_content("look", items),
+            json!([
+                { "type": "text", "text": "look" },
+                { "type": "document", "source": { "type": "text", "media_type": "text/plain", "data": "abc" }, "title": "a.txt" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "QUJD" } },
+                { "type": "document", "source": { "type": "base64", "media_type": "application/pdf", "data": "JVBE" }, "title": "b.pdf" },
+                { "type": "text", "text": "<browser tabGroupId=\"1\" tabId=\"2\"></browser>" }
+            ])
+        );
     }
 
     // ---- /usage parsing -------------------------------------------------

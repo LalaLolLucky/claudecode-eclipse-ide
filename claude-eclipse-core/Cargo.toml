@@ -21,6 +21,8 @@ base64         = "0.22"
 vt100          = "0.15"
 ureq           = { version = "2", features = ["json"] }
 qrcode = { version = "0.14.1", default-features = false }
+# The composer's @-mention file list: ripgrep's own gitignore-aware walker.
+ignore          = "0.4"
 
 # Dictation. Capture is native (cpal) and transcription is Anthropic's own
 # streaming service, reached over a WebSocket from Rust -- NOT from the webview.

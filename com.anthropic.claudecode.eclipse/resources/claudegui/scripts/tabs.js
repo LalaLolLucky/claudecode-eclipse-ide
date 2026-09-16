@@ -38,7 +38,15 @@ let tabs = [], activeId = null, tabSeq = 0;
 let editingTabId = null;
 // Defaults a NEW conversation starts with (not inherited from the last-viewed tab).
 const DEFAULT_EFFORT_IDX = 2;      // "high"
-const DEFAULT_THINKING = false;    // thinking off
+const DEFAULT_THINKING = true;     // thinking on, unless the preference says otherwise
+/* The preference behind a NEW conversation's thinking toggle ("Enable Thinking by
+   default"). Read per call rather than cached, so changing it takes effect on the next
+   conversation without a restart; DEFAULT_THINKING covers a page with no view behind
+   it (the jsdom tests). */
+function defaultThinking() {
+  try { return window._thinkingOnStartup ? !!_thinkingOnStartup() : DEFAULT_THINKING; }
+  catch (e) { return DEFAULT_THINKING; }
+}
 const DEFAULT_PERM_MODE = 'default';   // "Manual"
 function defaultModel() { return (typeof customModel !== 'undefined' && customModel) ? customModel : ''; }
 /** @returns {Tab|null} */
@@ -116,7 +124,7 @@ function createTab(opts) {
     rootId: opts.rootId || activeRootId,
     model: (opts.model !== undefined ? opts.model : defaultModel()),
     effortIdx: (opts.effortIdx !== undefined ? opts.effortIdx : DEFAULT_EFFORT_IDX),
-    thinking: (opts.thinking !== undefined ? opts.thinking : DEFAULT_THINKING),
+    thinking: (opts.thinking !== undefined ? opts.thinking : defaultThinking()),
     permMode: (opts.permMode !== undefined ? opts.permMode : DEFAULT_PERM_MODE) });
   switchTab(id);
   const created = tabs[tabs.length - 1];
@@ -158,6 +166,7 @@ function switchTab(id) {
   }
   if (typeof renderBottomCard === 'function') renderBottomCard();   // card only in its own tab
   if (typeof renderPendingImages === 'function') renderPendingImages();  // this tab's pasted-image chips
+  if (typeof renderBrowserBanner === 'function') renderBrowserBanner();  // this tab's browser connection
   if (typeof syncComposer === 'function') syncComposer();           // send/stop reflects THIS tab
   // The root rides along: Java scopes session history, rewind and the status bar to
   // the conversation's own folder, not to the workspace root.
@@ -472,9 +481,10 @@ function clearSession() {
   t.compacting = false;
   t.downgradeWarned = null;
   t.pane.innerHTML = '';
-  // Emptying the pane also took away the Remote Control indicator, if a bridge was
-  // coming up in this tab. /clear replaces the conversation, not the connection.
-  if (typeof showWorkingFor === 'function') showWorkingFor(t);
+  // The bridge went with the process, so the new conversation starts Remote Control
+  // afresh — off, or connecting again (which raises its own indicator) when Remote
+  // Control on startup is set.
+  if (typeof resetRemoteControlForNewConversation === 'function') resetRemoteControlForNewConversation(t);
   // The old transcript's scroll state means nothing against an emptied pane: left alone, a
   // scrolled-up scrollTop would reopen the fresh conversation scrolled into blank space
   // with the button showing, the next time this tab is switched to while the lock is on.

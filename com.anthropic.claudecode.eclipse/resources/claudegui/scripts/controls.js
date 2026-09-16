@@ -27,8 +27,9 @@ window.onRateLimit = function(tabId, json) {   // tabId ignored — usage is acc
   const resetTxt = info.resetsAt ? ' · resets ' + resetIn(info.resetsAt) : '';
   const msg = (pct != null) ? ("You've used " + pct + '% of your ' + scope)
             : (reached ? "You've reached your " + scope : "You're approaching your " + scope);
-  el.innerHTML = '<span class="uw-txt"></span><a href="https://claude.ai/settings/usage">View usage</a><span class="uw-x">' + ICONS.X + '</span>';
-  el.querySelector('.uw-txt').textContent = msg + resetTxt + ' · ';
+  el.innerHTML = '<span class="uw-txt"></span><span class="uw-sep"> · </span>'
+    + '<a href="https://claude.ai/settings/usage">View usage</a><span class="uw-x">' + ICONS.X + '</span>';
+  el.querySelector('.uw-txt').textContent = msg + resetTxt;
   el.querySelector('.uw-x').onclick = () => { usageDismissed = true; el.classList.remove('show'); };
   el.classList.add('show');
 };
@@ -80,7 +81,10 @@ function toggleContext() {
         ONE line, so it never renders wrapped; it goes before the context label
      2. context filename — icon only
      3. send/stop button — minimized
-     4. gaps/padding tighten as the last resort
+     4. label padding tightens
+     5. every control a size smaller and the gaps close
+     6. smaller again, into the input box's padding — the last resort, for a view
+        squeezed by a minimized Eclipse
    Widening re-runs from the full state, so everything comes back. */
 function fitComposerBar() {
   const bar = document.getElementById('composer-bar');
@@ -93,7 +97,7 @@ function fitComposerBar() {
   chip.classList.remove('icon-only');
   modes.classList.remove('icon-only');
   sendBtn.classList.remove('mini');
-  bar.classList.remove('compact');
+  bar.classList.remove('compact', 'tight', 'tiny');
   const overflowing = () => bar.scrollWidth > bar.clientWidth + 1;
   // The mode label goes as soon as the bar gets tight: either it already
   // overflows, or the context chip is being squeezed below its natural width
@@ -106,6 +110,8 @@ function fitComposerBar() {
   if (overflowing()) chip.classList.add('icon-only');
   if (overflowing()) sendBtn.classList.add('mini');
   if (overflowing()) bar.classList.add('compact');
+  if (overflowing()) bar.classList.add('tight');
+  if (overflowing()) bar.classList.add('tiny');
   // icon-only mode button still tells you the mode on hover
   modes.title = modes.classList.contains('icon-only') ? (modesLbl.textContent || '') : '';
 }
@@ -133,6 +139,17 @@ function applyModeUI(mode) {
   const chk = el.querySelector('.check'); if (chk) chk.style.visibility = '';
   fitComposerBar();   // mode label changed — re-check the narrow-width collapse
 }
+/* Bypass permissions is listed only while the preference allows it — the VS Code
+   extension hides it behind its own setting the same way. A conversation already in
+   that mode is left alone: hiding the entry does not change what is running. */
+function applyBypassModeVisibility() {
+  const item = document.getElementById('mode-bypass');
+  if (!item) return;
+  let allowed = true;
+  try { allowed = window._bypassModeAllowed ? !!_bypassModeAllowed() : true; } catch (e) {}
+  item.style.display = allowed ? '' : 'none';
+}
+
 function selectMode(el) {
   const mode = el.getAttribute('data-mode') || DEFAULT_PERM_MODE;
   const t = activeTab();
@@ -205,6 +222,9 @@ function setEffort(idx, opts) {
   if (typeof updateEffortGate === 'function') updateEffortGate();
   if (!(opts && opts.noPersist) && typeof persistTabPrefs === 'function') persistTabPrefs(t);
   if (typeof notifyStatusSelection === 'function') notifyStatusSelection();
+  // A user pick reaches the process at once; painting a tab's stored settings does not
+  // (nothing changed, and the process already has them).
+  if (!(opts && opts.noPersist) && typeof pushLaunchSettings === 'function') pushLaunchSettings(t);
 }
 let effortDragging = false, effortDragSlider = null;
 function effortFromX(slider, clientX) {

@@ -348,6 +348,37 @@ pub(crate) fn rc_request_line(seq: u64, enabled: bool) -> (String, String) {
     (request_id, line)
 }
 
+/// Request ids of a switch-on that takes over the bridge a replaced process held.
+/// Starts with [`RC_REQ_PREFIX`], so [`rc_owns_response`] still claims its reply.
+const RC_REATTACH_PREFIX: &str = "eclipse-rc-reattach-";
+
+/// Builds the switch-on for a process replacing one that had Remote Control on
+/// (a respawn for a model or effort change). `reattach_session_id` hands it the
+/// bridge session the old process held, so the phone and claude.ai stay on the
+/// same session instead of being left on one nothing answers — verified live: a
+/// fresh process given the id of a hard-killed one's session gets that session
+/// back, same url. An empty id (the CLI sometimes omits it) asks for a new one.
+pub(crate) fn rc_reattach_line(seq: u64, bridge_session_id: &str) -> (String, String) {
+    let request_id = format!("{}{}", RC_REATTACH_PREFIX, seq);
+    let mut request = serde_json::json!({ "subtype": "remote_control", "enabled": true });
+    if !bridge_session_id.is_empty() {
+        request["reattach_session_id"] = serde_json::json!(bridge_session_id);
+    }
+    let line = serde_json::json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": request
+    })
+    .to_string();
+    (request_id, line)
+}
+
+/// Whether a control-response id answers a [`rc_reattach_line`] — a switch-on
+/// nobody on the page asked for, so the page is owed no reply to it.
+pub(crate) fn rc_is_reattach(request_id: &str) -> bool {
+    request_id.starts_with(RC_REATTACH_PREFIX)
+}
+
 /// Whether a control-response id belongs to a remote-control request.
 pub(crate) fn rc_owns_response(request_id: &str) -> bool {
     request_id.starts_with(RC_REQ_PREFIX)
@@ -358,6 +389,8 @@ pub(crate) struct RcReply {
     pub enabled: bool,
     pub url: String,
     pub bridge_session_id: String,
+    /// Which bridge this is, when the CLI says: a later `failed` is matched against it.
+    pub bridge_epoch: Option<i64>,
     pub error: serde_json::Value,
 }
 
@@ -373,6 +406,7 @@ pub(crate) fn rc_parse_reply(inner: &serde_json::Value) -> RcReply {
         enabled: ok && !url.is_empty(),
         url,
         bridge_session_id: payload["bridge_session_id"].as_str().unwrap_or("").to_string(),
+        bridge_epoch: payload["bridge_epoch"].as_i64(),
         error: if ok {
             serde_json::Value::Null
         } else {
@@ -387,6 +421,7 @@ pub(crate) fn rc_reply_json(r: &RcReply) -> String {
         "enabled": r.enabled,
         "url": r.url,
         "bridgeSessionId": r.bridge_session_id,
+        "bridgeEpoch": r.bridge_epoch,
         "error": r.error,
     })
     .to_string()
@@ -395,6 +430,18 @@ pub(crate) fn rc_reply_json(r: &RcReply) -> String {
 /// Renders a bridge-state signal as the JSON Java receives.
 pub(crate) fn rc_state_json(state: &str) -> String {
     serde_json::json!({ "bridgeState": state }).to_string()
+}
+
+/// Renders a `bridge_state` event, with its epoch when the CLI sent one. The epoch
+/// is what a `failed` is matched against, so the failure of a bridge the tab no
+/// longer shows is not read as the failure of the one it does — the VS Code
+/// extension's rule.
+pub(crate) fn rc_bridge_state_json(state: &str, bridge_epoch: Option<i64>) -> String {
+    let mut v = serde_json::json!({ "bridgeState": state });
+    if let Some(epoch) = bridge_epoch {
+        v["bridgeEpoch"] = serde_json::json!(epoch);
+    }
+    v.to_string()
 }
 
 /// Renders a session url as a scannable QR code, as SVG.
@@ -637,6 +684,39 @@ mod rc_tests {
     #[test]
     fn ids_are_unique_per_sequence() {
         assert_ne!(rc_request_line(1, true).0, rc_request_line(2, true).0);
+    }
+
+    #[test]
+    fn reattach_hands_the_old_bridge_session_to_the_new_process() {
+        let (id, line) = rc_reattach_line(3, "cse_01YS1GZJiryQChtiFb2D94ei");
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["request"]["subtype"], "remote_control");
+        assert_eq!(v["request"]["enabled"], true);
+        assert_eq!(v["request"]["reattach_session_id"], "cse_01YS1GZJiryQChtiFb2D94ei");
+        assert!(rc_owns_response(&id) && rc_is_reattach(&id));
+        assert!(!rc_is_reattach(&rc_request_line(3, true).0));
+
+        let (_, fresh) = rc_reattach_line(4, "");
+        let v: serde_json::Value = serde_json::from_str(&fresh).unwrap();
+        assert!(v["request"].get("reattach_session_id").is_none());
+    }
+
+    #[test]
+    fn bridge_epoch_rides_along_to_the_page() {
+        let inner: serde_json::Value = serde_json::from_str(
+            r#"{"subtype":"success","request_id":"eclipse-rc-1","response":{
+                 "session_url":"https://claude.ai/code/session_01","bridge_epoch":3,
+                 "bridge_session_id":"cse_01"}}"#,
+        )
+        .unwrap();
+        let j: serde_json::Value = serde_json::from_str(&rc_reply_json(&rc_parse_reply(&inner))).unwrap();
+        assert_eq!(j["bridgeEpoch"], 3);
+
+        let s: serde_json::Value = serde_json::from_str(&rc_bridge_state_json("failed", Some(3))).unwrap();
+        assert_eq!(s["bridgeState"], "failed");
+        assert_eq!(s["bridgeEpoch"], 3);
+        let bare: serde_json::Value = serde_json::from_str(&rc_bridge_state_json("failed", None)).unwrap();
+        assert!(bare.get("bridgeEpoch").is_none());
     }
 
     #[test]

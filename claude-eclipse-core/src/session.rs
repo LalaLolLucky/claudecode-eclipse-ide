@@ -43,6 +43,29 @@ fn strip_ide_preamble(s: &str) -> String {
     t.trim_start().to_string()
 }
 
+/// A synthetic message the host sent (the browser-disconnected notice), as the CLI
+/// records it: flagged `isMeta`, its text prefixed with this marker (CLI 2.1.266).
+const NON_USER_MARKER: &str = "[MESSAGE FROM NON-USER SOURCE - NOT USER INPUT]";
+
+fn is_non_user_notice(event: &serde_json::Value, content: &str) -> bool {
+    event["isMeta"].as_bool().unwrap_or(false) && content.starts_with(NON_USER_MARKER)
+}
+
+/// A background-task notification the host injected while the conversation ran.
+///
+/// The CLI stores it as an ordinary user line whose whole text is the
+/// `<task-notification>` block (and, in its queued form, carries
+/// `commandMode: "task-notification"`). Nobody typed it, so reopening the
+/// conversation must not show it as something the user said — which is exactly how
+/// it looked: several raw XML blocks in a row where the messages should be.
+fn is_task_notification(event: &serde_json::Value, content: &str) -> bool {
+    const TAG: &str = "<task-notification>";
+    const MODE: &str = "task-notification";
+    content.trim_start().starts_with(TAG)
+        || event["commandMode"].as_str() == Some(MODE)
+        || event["attachment"]["commandMode"].as_str() == Some(MODE)
+}
+
 /// Finds the next `<tag ...>` opening (word-boundary after the tag name, like
 /// `\b` in a regex) at or after byte `from`. Returns (start, end-of-open-tag)
 /// byte offsets, the end being one past the closing `>`.
@@ -262,7 +285,11 @@ pub fn list_sessions(workspace_root: &str) -> String {
                             if b["type"].as_str() != Some("text") {
                                 continue;
                             }
-                            let s = strip_ide_preamble(b["text"].as_str().unwrap_or(""));
+                            let raw = b["text"].as_str().unwrap_or("");
+                            if is_browser_context(raw) || attached_file_path(raw).is_some() {
+                                continue;
+                            }
+                            let s = strip_ide_preamble(raw);
                             if !s.trim().is_empty() {
                                 first_user = s.chars().take(120).collect();
                                 break;
@@ -526,7 +553,11 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
                     // A post-compaction summary is stored as a user line flagged
                     // isCompactSummary — surface it as the expandable "Compacted
                     // chat" body, never as a (huge) user bubble.
-                    if event["isCompactSummary"].as_bool().unwrap_or(false) {
+                    if is_non_user_notice(&event, c) || is_task_notification(&event, c) {
+                        // Not something the user typed (the browser-disconnected notice,
+                        // or a background-task notification): Claude's reply to it is what
+                        // the conversation shows.
+                    } else if event["isCompactSummary"].as_bool().unwrap_or(false) {
                         items.push(serde_json::json!({ "t": "compact_summary", "text": c }));
                     } else {
                         let mut item = serde_json::json!({ "t": "user", "content": c });
@@ -556,11 +587,27 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
                     // draw its thumbnail; tool_result-only lines add nothing.
                     let mut text = String::new();
                     let mut images: Vec<serde_json::Value> = Vec::new();
+                    let mut documents: Vec<serde_json::Value> = Vec::new();
+                    // Which document block of THIS message each chip came from, so a
+                    // click can find it again in the transcript.
+                    let mut doc_index = 0usize;
                     for b in blocks {
                         match b["type"].as_str() {
                             Some("text") => {
                                 let s = b["text"].as_str().unwrap_or("");
-                                if !s.is_empty() {
+                                // A file uploaded as a path is one of these blocks: it
+                                // comes back as its chip, not as words in the bubble.
+                                if let Some(path) = attached_file_path(s) {
+                                    documents.push(serde_json::json!({
+                                        "title": path.rsplit(['/', '\\']).next().unwrap_or(path),
+                                        "encoding": "path",
+                                        "path": path,
+                                    }));
+                                    continue;
+                                }
+                                // The browser blocks a `@browser` message carries are
+                                // context for the model, not words the user typed.
+                                if !s.is_empty() && !is_browser_context(s) {
                                     if !text.is_empty() {
                                         text.push('\n');
                                     }
@@ -578,13 +625,34 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
                                     serde_json::json!({ "media_type": mt, "data": data }),
                                 );
                             }
+                            // An uploaded file: only its name and where to find it
+                            // again. The contents stay here — a transcript holds them
+                            // in full, and pushing 30MB of base64 through JNI into the
+                            // webview to redraw a chip would freeze the view. Clicking
+                            // the chip asks for the file itself (session_document_file).
+                            Some("document") => {
+                                let src = &b["source"];
+                                if src["data"].as_str().unwrap_or("").is_empty() {
+                                    continue;
+                                }
+                                documents.push(serde_json::json!({
+                                    "title": b["title"].as_str().unwrap_or(""),
+                                    "media_type": src["media_type"].as_str().unwrap_or(""),
+                                    "encoding": src["type"].as_str().unwrap_or(""),
+                                    "index": doc_index,
+                                }));
+                                doc_index += 1;
+                            }
                             _ => {}
                         }
                     }
-                    if !text.is_empty() || !images.is_empty() {
+                    if !text.is_empty() || !images.is_empty() || !documents.is_empty() {
                         let mut item = serde_json::json!({ "t": "user", "content": text });
                         if !images.is_empty() {
                             item["images"] = serde_json::Value::Array(images);
+                        }
+                        if !documents.is_empty() {
+                            item["documents"] = serde_json::Value::Array(documents);
                         }
                         if let Some(u) = event["uuid"].as_str() {
                             if !u.is_empty() {
@@ -767,6 +835,93 @@ pub(crate) fn flatten_result_content(b: &serde_json::Value) -> String {
         }
     }
     out
+}
+
+/// Writes one uploaded document out of a transcript to a file and returns its
+/// path, or `""` when it isn't there. `index` counts document blocks within the
+/// message `message_uuid`, as `load_session_history` numbered them.
+///
+/// The bytes never go to Java: a transcript keeps every uploaded file in full, so
+/// the page gets a name and this locator, and only a click on the chip spends the
+/// copy — of that one file, straight to disk for the OS to open.
+pub fn session_document_file(
+    workspace_root: &str,
+    session_id: &str,
+    message_uuid: &str,
+    index: usize,
+) -> String {
+    let Some(dir) = projects_dir(workspace_root) else { return String::new() };
+    if session_id.is_empty() || message_uuid.is_empty() {
+        return String::new();
+    }
+    let Ok(file) = fs::File::open(dir.join(format!("{session_id}.jsonl"))) else {
+        return String::new();
+    };
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        if event["uuid"].as_str() != Some(message_uuid) {
+            continue;
+        }
+        let Some(blocks) = event["message"]["content"].as_array() else { continue };
+        let mut seen = 0usize;
+        for b in blocks {
+            if b["type"].as_str() != Some("document")
+                || b["source"]["data"].as_str().unwrap_or("").is_empty()
+            {
+                continue;
+            }
+            if seen == index {
+                return write_document_file(b);
+            }
+            seen += 1;
+        }
+    }
+    String::new()
+}
+
+/// One document block's contents, written under the temp directory and named after
+/// the file it came from. Returns the path, or `""` if anything failed.
+fn write_document_file(block: &serde_json::Value) -> String {
+    use base64::Engine as _;
+    let src = &block["source"];
+    let data = src["data"].as_str().unwrap_or("");
+    let bytes = if src["type"].as_str() == Some("base64") {
+        match base64::engine::general_purpose::STANDARD.decode(data) {
+            Ok(b) => b,
+            Err(_) => return String::new(),
+        }
+    } else {
+        data.as_bytes().to_vec()
+    };
+    let title = block["title"].as_str().unwrap_or("");
+    let safe: String = title
+        .chars()
+        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+        .collect();
+    let name = if safe.trim().is_empty() { "attachment".to_string() } else { safe };
+    let dir = std::env::temp_dir().join(format!("claude-attachment-{}", std::process::id()));
+    if fs::create_dir_all(&dir).is_err() {
+        return String::new();
+    }
+    let out = dir.join(name);
+    if fs::write(&out, bytes).is_err() {
+        return String::new();
+    }
+    out.to_string_lossy().into_owned()
+}
+
+/// The `<browser_instruction>` and `<browser tabGroupId=…>` text blocks sent
+/// alongside a message that mentions the browser.
+fn is_browser_context(text: &str) -> bool {
+    text.starts_with("<browser_instruction>") || text.starts_with("<browser tabGroupId=\"")
+}
+
+/// The path in an `<attached_file path="…" />` block — the whole block and nothing
+/// else, so a message that merely quotes one stays the user's own words.
+fn attached_file_path(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("<attached_file path=\"")?;
+    let (path, tail) = rest.split_once('"')?;
+    (tail == " />" && !path.is_empty()).then_some(path)
 }
 
 /// Longest error summary we surface. The full text stays in the transcript; the
@@ -1203,11 +1358,11 @@ pub fn rename_session_offline(
             .is_ok();
         drop(stdin);
         if !ok {
-            let _ = child.kill();
+            crate::launch::kill_process_tree(&mut child);
             return false;
         }
     } else {
-        let _ = child.kill();
+        crate::launch::kill_process_tree(&mut child);
         return false;
     }
 
@@ -1218,7 +1373,7 @@ pub fn rename_session_offline(
     let stdout = match child.stdout.take() {
         Some(s) => s,
         None => {
-            let _ = child.kill();
+            crate::launch::kill_process_tree(&mut child);
             return false;
         }
     };
@@ -1262,7 +1417,7 @@ pub fn rename_session_offline(
     done.store(true, std::sync::atomic::Ordering::Relaxed);
 
     // Reap (or put down) the child either way; the rename outcome is decided.
-    let _ = child.kill();
+    crate::launch::kill_process_tree(&mut child);
     let _ = child.wait();
     let _ = watchdog.join();
     renamed
@@ -1651,6 +1806,65 @@ mod tests {
         assert_eq!(sess2["timestamp"], "2026-07-03T08:00:02.000Z");
     }
 
+    /// Background-task notifications are injected into the transcript as ordinary
+    /// user lines. Reopening a conversation showed them as the user's own messages —
+    /// several raw <task-notification> XML blocks in a row where the conversation
+    /// should be.
+    #[test]
+    fn load_session_hides_background_task_notifications() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join("claude-eclipse-session-tasknote-home");
+        let root = r"C:\tasknotews";
+        let dir = home.join(".claude").join("projects").join("C--tasknotews");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        // Both shapes the CLI writes, copied from a real transcript.
+        fs::write(dir.join("sessn.jsonl"), concat!(
+            r#"{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-09-16T17:19:00.000Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>b0mc0q2r4</task-id>\n<summary>Monitor event</summary>\n</task-notification>"},"timestamp":"2026-09-16T17:19:37.000Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":"<task-notification>\n<status>completed</status>\n</task-notification>"},"commandMode":"task-notification","timestamp":"2026-09-16T17:19:41.000Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"noted."}]},"timestamp":"2026-09-16T17:19:45.000Z"}"#, "\n",
+        )).unwrap();
+
+        set_home(&home);
+        let loaded = super::load_session_history(root, "sessn");
+        let _ = fs::remove_dir_all(&home);
+
+        let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let want: serde_json::Value = serde_json::from_str(r#"[
+            {"t":"user","content":"hi","ts":"2026-09-16T17:19:00.000Z"},
+            {"t":"text","text":"noted.","model":"claude-opus-5"}
+        ]"#).unwrap();
+        assert_eq!(got, want, "a notification nobody typed must not come back as a message");
+    }
+
+
+    #[test]
+    fn load_session_hides_the_browser_disconnected_notice() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join("claude-eclipse-session-notice-home");
+        let root = r"C:\noticews";
+        let dir = home.join(".claude").join("projects").join("C--noticews");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("sessn.jsonl"), concat!(
+            r#"{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-09-15T08:40:00.000Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":"[MESSAGE FROM NON-USER SOURCE - NOT USER INPUT]\n[Browser disconnected: The browser connection has been closed. Browser tools are no longer available.]"},"isMeta":true,"timestamp":"2026-09-15T08:40:23.282Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"Chrome has disconnected."}]},"timestamp":"2026-09-15T08:40:25.000Z"}"#, "\n",
+        )).unwrap();
+
+        set_home(&home);
+        let loaded = super::load_session_history(root, "sessn");
+        let _ = fs::remove_dir_all(&home);
+
+        let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let want: serde_json::Value = serde_json::from_str(r#"[
+            {"t":"user","content":"hi","ts":"2026-09-15T08:40:00.000Z"},
+            {"t":"text","text":"Chrome has disconnected.","model":"claude-opus-5"}
+        ]"#).unwrap();
+        assert_eq!(got, want);
+    }
+
     /// A compacted session reloads as a "Compacted chat" marker + expandable
     /// summary: the compact_boundary system line becomes a t:"compact" item
     /// (camelCase compactMetadata → trigger/preTokens/postTokens) and the
@@ -1729,6 +1943,84 @@ mod tests {
         // The list title comes from the text block, with the IDE preamble stripped.
         let sessions: serde_json::Value = serde_json::from_str(&listed).unwrap();
         assert_eq!(sessions[0]["display"], serde_json::json!("what is this"));
+    }
+
+    /// An uploaded file comes back as a document its chip can redraw and open, and
+    /// the browser blocks a `@browser` message carries stay out of the bubble and
+    /// the title.
+    #[test]
+    fn load_session_restores_documents_and_hides_browser_blocks() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join("claude-eclipse-session-docs-home");
+        let root = r"C:\docws";
+        let dir = home.join(".claude").join("projects").join("C--docws");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("sessd.jsonl"), concat!(
+            r#"{"type":"user","uuid":"u-doc","message":{"role":"user","content":[{"type":"text","text":"<browser_instruction># x</browser_instruction>"},{"type":"text","text":"read this @browser:new_tab"},{"type":"document","source":{"type":"text","media_type":"text/plain","data":"hello"},"title":"notes.txt"},{"type":"text","text":"<browser tabGroupId=\"1\" tabId=\"2\"></browser>"}]},"timestamp":"2026-09-14T01:00:00.000Z"}"#, "\n",
+        )).unwrap();
+
+        set_home(&home);
+        let loaded = super::load_session_history(root, "sessd");
+        let listed = super::list_sessions(root);
+        // The chip's click fetches the contents the render item deliberately left behind.
+        let file = super::session_document_file(root, "sessd", "u-doc", 0);
+        let second = super::session_document_file(root, "sessd", "u-doc", 1);
+        let unknown = super::session_document_file(root, "sessd", "nope", 0);
+        let _ = fs::remove_dir_all(&home);
+
+        let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let want: serde_json::Value = serde_json::from_str(r#"[
+            {"t":"user","content":"read this @browser:new_tab","id":"u-doc",
+             "documents":[{"title":"notes.txt","media_type":"text/plain","encoding":"text","index":0}],
+             "ts":"2026-09-14T01:00:00.000Z"}
+        ]"#).unwrap();
+        assert_eq!(got, want, "document session render items");
+
+        assert!(file.ends_with("notes.txt"), "{file}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "hello");
+        assert!(second.is_empty(), "no second document");
+        assert!(unknown.is_empty(), "unknown message");
+        let _ = fs::remove_file(&file);
+
+        let sessions: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(sessions[0]["display"], serde_json::json!("read this @browser:new_tab"));
+    }
+
+    /// A file uploaded as a path comes back as its chip; a message that merely quotes
+    /// the block keeps it as the user's own words.
+    #[test]
+    fn load_session_restores_path_attachments() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join("claude-eclipse-session-paths-home");
+        let root = r"C:\pathws";
+        let dir = home.join(".claude").join("projects").join("C--pathws");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("sessp.jsonl"), concat!(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"what is in here"},{"type":"text","text":"<attached_file path=\"C:\\x\\big.zip\" />"}]},"timestamp":"2026-09-15T01:00:00.000Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"I wrote <attached_file path=\"C:\\x\\big.zip\" /> myself"}]},"timestamp":"2026-09-15T01:01:00.000Z"}"#, "\n",
+        )).unwrap();
+
+        set_home(&home);
+        let loaded = super::load_session_history(root, "sessp");
+        let listed = super::list_sessions(root);
+        let _ = fs::remove_dir_all(&home);
+
+        let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let want: serde_json::Value = serde_json::from_str(r#"[
+            {"t":"user","content":"what is in here",
+             "documents":[{"title":"big.zip","encoding":"path","path":"C:\\x\\big.zip"}],
+             "ts":"2026-09-15T01:00:00.000Z"},
+            {"t":"user","content":"I wrote <attached_file path=\"C:\\x\\big.zip\" /> myself",
+             "ts":"2026-09-15T01:01:00.000Z"}
+        ]"#).unwrap();
+        assert_eq!(got, want, "path attachment session render items");
+
+        let sessions: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(sessions[0]["display"], serde_json::json!("what is in here"));
     }
 
     /// Tool dots are reconstructed from the transcript so a reloaded conversation

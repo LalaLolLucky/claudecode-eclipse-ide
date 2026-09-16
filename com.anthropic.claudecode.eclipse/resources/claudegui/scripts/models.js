@@ -111,6 +111,18 @@ function renderModelList() {
  *  confirmation line, so it suppresses the divider rather than saying it twice. */
 function selectModel(id, opts) {
   const prev = curModel;
+  // Default is the one model choice that can still cost the conversation its process,
+  // and with it the Remote Control session on the user's other devices. Java decides
+  // whether that is the case here and answers on onDefaultModelConfirmed — always, so
+  // this path is the same whether or not anything was asked.
+  if (!id && prev && !(opts && opts.confirmed) && window._confirmDefaultModel) {
+    const t0 = activeTab();
+    if (t0) {
+      closeMenus();
+      try { _confirmDefaultModel(t0.id); } catch (e) { selectModel('', { confirmed: true }); }
+      return;
+    }
+  }
   curModel = id; updateModelLabel(); closeMenus();
   const t = activeTab(); if (t) t.model = id;
   // Mark the switch in the transcript (VSCode behavior) — only mid-conversation.
@@ -120,7 +132,7 @@ function selectModel(id, opts) {
   // A gated model may make the current effort/thinking pair illegal — correct it
   // here rather than blocking the switch (the user asked for this model).
   enforceThinkingGate();
-  persistTabPrefs(t); notifyStatusSelection();
+  persistTabPrefs(t); notifyStatusSelection(); pushLaunchSettings(t);
 }
 /* "〰 Switched to <model> 〰" divider element. */
 function makeSwitchDivider(name) {
@@ -142,6 +154,17 @@ function addModelSwitchDivider(id) {
   scrollBottom();
 }
 
+/* The switch to the default model may go ahead — either nothing was at stake or the
+   user said so at the dialog. The tab may have been switched away from in between, in
+   which case it takes the choice without the chooser moving. */
+window.onDefaultModelConfirmed = function (tabId) {
+  const t = tabById(tabId);
+  if (!t) return;
+  if (t === activeTab()) { selectModel('', { confirmed: true }); return; }
+  t.model = '';
+  persistTabPrefs(t);
+};
+
 /* Java tells us the actual model a conversation ran on (resolves "Default").
    A tab with no explicit selection adopts it so the model persists across
    tab switches instead of snapping back to "Default". */
@@ -153,6 +176,41 @@ window.onResolvedModel = function(tabId, id) {
   if (t.model) return;                    // only fill in an unset (Default) tab
   t.model = id;
   if (t === activeTab()) { curModel = id; updateModelLabel(); notifyStatusSelection(); }
+};
+
+/* A launch setting the live process now has, which is not necessarily the one this
+   view last asked for: the same conversation is open on the phone and on claude.ai,
+   and a model, effort or mode picked there changes the process this tab is talking to.
+   Applied to the tab WITHOUT sending anything back — the process is already in this
+   state, and answering it would fight whoever made the change. */
+window.onSettingsChanged = function (tabId, json) {
+  let d = null;
+  try { d = JSON.parse(json || '{}'); } catch (e) { d = null; }
+  if (!d) return;
+  const t = tabById(tabId);
+  if (!t) return;
+  if (d.permMode && typeof adoptModeForTab === 'function') adoptModeForTab(t, d.permMode);
+  if (d.model) {
+    // The CLI names the concrete model; show it as the entry the chooser has, so an
+    // alias stays an alias instead of turning into a bare id.
+    const entry = MODELS.find(m => m.id && (m.id === d.model
+      || normalizeModelId(m.fullId || m.id) === normalizeModelId(d.model)));
+    const id = entry ? entry.id : d.model;
+    if (t.model !== id) {
+      t.model = id;
+      if (t === activeTab()) { curModel = id; updateModelLabel(); notifyStatusSelection(); }
+      persistTabPrefs(t);
+    }
+  }
+  if (d.effort && typeof EFFORTS !== 'undefined') {
+    const idx = EFFORTS.indexOf(d.effort);
+    if (idx >= 0 && idx !== t.effortIdx) {
+      // force: the pair is the CLI's own and already consistent — the thinking gate
+      // must not rewrite it on the way in.
+      if (t === activeTab() && typeof setEffort === 'function') setEffort(idx, { force: true });
+      else t.effortIdx = idx;
+    }
+  }
 };
 
 /* Strip the "claude-" prefix and any -YYYYMMDD suffix so claude-opus-4-5 and
@@ -309,6 +367,33 @@ function notifyStatusSelection() {
   catch (e) {}
 }
 
+/* Hands the tab process its current model/effort/thinking/mode the moment one is
+   picked, rather than at the next message. The permission mode has always been pushed
+   this way. The rest now are too: the CLI tells the phone and claude.ai what its
+   process is running, so a change still sitting in this view is one they never hear
+   about — and the tab would carry it in silently on the next message.
+   Active tab only: the values below mirror whichever tab is in front. */
+function pushLaunchSettings(t) {
+  if (!t || t !== activeTab() || !window._applySettings) return;
+  try { _applySettings(t.id, t.permMode || permMode, effort, curModel, thinkingOn ? "1" : "0"); }
+  catch (e) {}
+}
+
+/* Turns thinking on for a conversation that is about to be reachable from elsewhere.
+   Silent: the Remote Control line already says what changed. */
+function forceThinkingOn(t) {
+  if (!t || t.thinking === true) return;
+  t.thinking = true;
+  if (t === activeTab()) {
+    thinkingOn = true;
+    updateThinkingCheck();
+    updateEffortGate();
+    notifyStatusSelection();
+    pushLaunchSettings(t);
+  }
+  if (typeof persistTabPrefs === "function") persistTabPrefs(t);
+}
+
 /* ---- thinking toggle (off => MAX_THINKING_TOKENS=0) ---- */
 let thinkingOn = true;
 
@@ -344,8 +429,17 @@ function isThinkingGatedModel(id) {
  *  and effort is at a stop that requires it). While true the thinking toggle is
  *  locked on and the xhigh/max stops stay available. */
 function thinkingRequired() {
-  return isThinkingGatedModel(curModel)
-      && EFFORT_REQUIRES_THINKING.indexOf(effort) >= 0;
+  return thinkingLockedByRemote()
+      || (isThinkingGatedModel(curModel)
+          && EFFORT_REQUIRES_THINKING.indexOf(effort) >= 0);
+}
+
+/** @returns {boolean} whether Remote Control is holding thinking on for the tab in
+ *  front. The same conversation is open on other devices, which have no thinking
+ *  toggle of their own, so it stays on while it is reachable from them. */
+function thinkingLockedByRemote() {
+  const t = (typeof activeTab === "function") ? activeTab() : null;
+  return !!(t && (t.remoteControlUrl || t.rcConnecting));
 }
 
 /** Display name for gate messages. Prefers the concrete id the CLI will really
@@ -380,7 +474,9 @@ function enforceThinkingGate(opts) {
     // with thinking off. Auto-correct: the deliberate action wins.
     thinkingOn = true;
     const t = activeTab(); if (t) t.thinking = true;
-    if (!(opts && opts.silent) && typeof addSystem === 'function') {
+    // Remote Control announces itself in the transcript; only the effort/model gate
+    // has to explain why thinking came back on.
+    if (!thinkingLockedByRemote() && !(opts && opts.silent) && typeof addSystem === 'function') {
       addSystem('Thinking enabled — required at ' + EFFORT_LABELS[effortIdx]
         + ' effort on ' + gateModelName(curModel) + '.');
     }
@@ -395,10 +491,13 @@ function updateThinkingCheck() {
   const row = chk ? chk.closest('.item') : null;
   if (!row) return;
   const locked = thinkingRequired();
+  const byRemote = thinkingLockedByRemote();
   row.classList.toggle('locked', locked);
-  row.title = locked
-    ? 'Required at ' + EFFORT_LABELS[effortIdx] + ' effort on ' + gateModelName(curModel)
-    : '';
+  row.title = byRemote
+    ? 'Required while Remote Control is active'
+    : (locked
+      ? 'Required at ' + EFFORT_LABELS[effortIdx] + ' effort on ' + gateModelName(curModel)
+      : '');
   // Explain the lock inline so it doesn't just look broken.
   let note = row.querySelector('.gate-note');
   if (locked && !note) {
@@ -407,7 +506,8 @@ function updateThinkingCheck() {
     row.querySelector('.txt').appendChild(note);
   }
   if (note) {
-    note.textContent = locked ? 'Required at this effort level on Claude 5 models' : '';
+    note.textContent = byRemote ? 'Required while Remote Control is active'
+      : (locked ? 'Required at this effort level on Claude 5 models' : '');
     note.style.display = locked ? '' : 'none';
   }
 }
@@ -437,7 +537,7 @@ function toggleThinking(e) {
   // the state stays legal instead of silently going illegal.
   if (!thinkingOn && effortIdx > maxEffortIdx()) setEffort(maxEffortIdx());
   enforceThinkingGate();
-  persistTabPrefs(t); notifyStatusSelection();
+  persistTabPrefs(t); notifyStatusSelection(); pushLaunchSettings(t);
 }
 
 /* ---- Account & usage window ---- */

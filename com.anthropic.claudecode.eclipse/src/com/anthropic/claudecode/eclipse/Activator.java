@@ -150,6 +150,12 @@ public class Activator extends AbstractUIPlugin {
             // Native library doesn't have setDebugMode — older build, skip silently.
         }
 
+        try {
+            NativeCore.setLiveAutoMode(prefs.getBoolean(Constants.PREF_LIVE_AUTO_MODE));
+        } catch (UnsatisfiedLinkError ignored) {
+            // Older build without setLiveAutoMode — skip silently.
+        }
+
         int portMin = prefs.getInt(Constants.PREF_PORT_MIN);
         int portMax = prefs.getInt(Constants.PREF_PORT_MAX);
 

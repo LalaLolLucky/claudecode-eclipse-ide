@@ -17,9 +17,12 @@ function pendingImages(tab) {
 /** @returns {boolean} whether the active tab has any pending image (send-enable). */
 function hasPendingImages() { const t = activeTab(); return !!(t && t.images && t.images.length); }
 
-/** JSON the Rust side turns into image content blocks (data only — no preview fields). */
+/** JSON the Rust side turns into content blocks (data only — no preview fields). An
+ *  uploaded file that isn't a pasted image carries its own block already: a document
+ *  for one whose contents go inline, a text block naming the path for the rest. */
 function pendingImagesJson(tab) {
-  return JSON.stringify(pendingImages(tab).map(im => ({ media_type: im.media_type, data: im.data })));
+  return JSON.stringify(pendingImages(tab).map(im =>
+    im.block ? im.block : { media_type: im.media_type, data: im.data }));
 }
 
 /** Clipboard bitmaps have no filename; VSCode labels them "image.<ext>". */
@@ -35,14 +38,15 @@ function imageName(mediaType) {
  *   download that finishes after the user switched tabs still lands where it was pasted,
  *   and only redraws the strip when that tab is the one on screen (switching back
  *   re-renders anyway).
+ * @param {string} [name]  an uploaded file's own name; a paste has none ("image.png").
  */
-function addPendingImage(dataUrl, tab) {
+function addPendingImage(dataUrl, tab, name) {
   const m = /^data:([^;,]+)(?:;base64)?,(.*)$/.exec(dataUrl || '');
   if (!m) return;
   const media_type = m[1] || 'image/png';
   const data = m[2] || '';
   if (!data) return;
-  const im = { media_type, data, url: dataUrl, w: 0, h: 0, name: imageName(media_type) };
+  const im = { media_type, data, url: dataUrl, w: 0, h: 0, name: name || imageName(media_type) };
   pendingImages(tab).push(im);
   const onScreen = () => !tab || tab === activeTab();
   // Read natural dimensions off-screen, then refresh the chip's "W×H".
@@ -68,6 +72,128 @@ function imageFromBlock(b) {
   const data = (b && b.data) || '';
   if (!data) return null;
   return { media_type: mt, data, url: 'data:' + mt + ';base64,' + data, w: 0, h: 0, name: imageName(mt) };
+}
+
+/**
+ * Rebuilds an attachment chip from a reloaded transcript's `{title, encoding, index}`.
+ * The uploaded file's contents stay in the transcript — clicking the chip asks the host
+ * for that one file (see _openStoredAttachment), so reopening a conversation never drags
+ * a 30MB upload through the page. A file that went in as a path kept the path instead.
+ * @param {string} [uuid]      the transcript id of the message the chip belongs to
+ * @param {string} [sessionId] the conversation it was loaded from
+ */
+function documentFromBlock(d, uuid, sessionId) {
+  if (!d) return null;
+  if (d.encoding === 'path') {
+    return d.path ? pathAttachment(d.title || basename(d.path), d.path) : null;
+  }
+  if (!uuid || !sessionId) return null;
+  return { kind: 'document', name: d.title || 'Document', path: '',
+           ref: { uuid, sessionId, index: d.index || 0 } };
+}
+
+/* ---- Upload from computer ----
+   Sorted the way the extension sorts them: PNG/JPG/GIF/WebP go in as images, PDFs and
+   text files as documents. What the extension refuses — an archive, a binary, anything
+   else — goes in as its path instead, which is what that refusal tells you to do by
+   hand: Claude reads it with its own tools. */
+const UPLOAD_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const UPLOAD_TEXT_TYPES = ['application/json', 'application/xml', 'application/javascript', 'application/typescript',
+  'application/x-javascript', 'application/x-typescript', 'application/x-yaml', 'application/yaml', 'application/x-sh',
+  'application/x-shellscript', 'application/sql', 'application/graphql', 'application/toml', 'application/x-toml'];
+const UPLOAD_TEXT_EXTS = new Set(['json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'config', 'env', 'properties', 'js',
+  'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts', 'py', 'pyw', 'rb', 'go', 'rs', 'java', 'kt', 'kts', 'scala', 'c', 'h', 'cpp',
+  'hpp', 'cc', 'cxx', 'cs', 'fs', 'fsx', 'swift', 'php', 'pl', 'pm', 'lua', 'r', 'jl', 'ex', 'exs', 'erl', 'hrl', 'clj', 'cljs',
+  'cljc', 'elm', 'hs', 'ml', 'mli', 'v', 'sv', 'vhd', 'vhdl', 'asm', 's', 'html', 'htm', 'xhtml', 'xml', 'svg', 'css', 'scss',
+  'sass', 'less', 'vue', 'svelte', 'astro', 'sh', 'bash', 'zsh', 'fish', 'ps1', 'psm1', 'psd1', 'bat', 'cmd', 'csv', 'tsv',
+  'sql', 'graphql', 'gql', 'prisma', 'md', 'mdx', 'markdown', 'rst', 'txt', 'text', 'rtf', 'tex', 'latex', 'org', 'adoc',
+  'asciidoc', 'makefile', 'cmake', 'gradle', 'dockerfile', 'containerfile', 'vagrantfile', 'rakefile', 'gemfile', 'podfile',
+  'fastfile', 'brewfile', 'procfile', 'lock', 'sum', 'log', 'diff', 'patch', 'gitignore', 'gitattributes', 'editorconfig',
+  'prettierrc', 'eslintrc', 'babelrc', 'npmrc', 'nvmrc', 'yarnrc']);
+
+/** @returns {'image'|'pdf'|'text'|'unsupported'} */
+function attachmentKind(type, name) {
+  if (UPLOAD_IMAGE_TYPES.includes(type)) return 'image';
+  if (type === 'application/pdf') return 'pdf';
+  if (type.startsWith('text/') || UPLOAD_TEXT_TYPES.includes(type)) return 'text';
+  const ext = name.split('.').pop().toLowerCase();
+  if (ext && UPLOAD_TEXT_EXTS.has(ext)) return 'text';
+  const lower = name.toLowerCase();
+  if (UPLOAD_TEXT_EXTS.has(lower) || ['license', 'readme', 'changelog', 'authors', 'contributors', 'copying'].includes(lower)) return 'text';
+  return 'unsupported';
+}
+
+function basename(p) { return String(p || '').split(/[\\/]/).pop(); }
+
+/** A chip for a file that goes in as its path — the block names the path for the model. */
+function pathAttachment(name, path) {
+  return { kind: 'path', name, path,
+           block: { type: 'text', text: '<attached_file path="' + path + '" />' } };
+}
+
+function pickFilesFromComputer() {
+  closeMenus();
+  if (window._pickFiles) window._pickFiles();
+}
+
+window.onFilesPicked = function () {
+  if (!window._drainPickedFiles) return;
+  let files = [];
+  try { files = JSON.parse(window._drainPickedFiles() || '[]'); } catch (e) { return; }
+  const tooLarge = [];
+  files.forEach(f => {
+    const type = String(f.type || '').toLowerCase();
+    const name = String(f.name || '');
+    // Over the cap, the host sends the size instead of the contents — no chip.
+    if (f.tooLarge) { tooLarge.push(name + ' is ' + (Number(f.tooLarge) / 1048576).toFixed(1) + 'MB'); return; }
+    switch (attachmentKind(type, name)) {
+      case 'image':
+        addPendingImage('data:' + type + ';base64,' + f.data, null, name);
+        break;
+      case 'pdf':
+        addPendingDocument(name, f.path, { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: f.data }, title: name });
+        break;
+      case 'text': {
+        const text = new TextDecoder().decode(Uint8Array.from(atob(f.data || ''), c => c.charCodeAt(0)));
+        addPendingDocument(name, f.path, { type: 'document', source: { type: 'text', media_type: 'text/plain', data: text }, title: name });
+        break;
+      }
+      default:
+        // Not something the API takes inline: the path goes instead, so Claude can
+        // reach for the file with its own tools.
+        addPendingAttachment(pathAttachment(name, f.path));
+    }
+  });
+  const t = activeTab();
+  if (tooLarge.length && t) addSystemTo(t, '⚠ File too large (max 32MB): ' + tooLarge.join(', ') + '.');
+};
+
+function addPendingDocument(name, path, block) {
+  if (!block.source.data) return;
+  addPendingAttachment({ kind: 'document', name, path: path || '', block });
+}
+
+/** Adds a non-image chip (a document or a path) to the active tab's strip. */
+function addPendingAttachment(im) {
+  pendingImages().push(im);
+  renderPendingImages();
+  syncComposer();
+}
+
+/** Opens a chip's file the way the OS opens that kind of file. A chip from a reloaded
+ *  conversation names its place in the transcript and the host writes that file out; a
+ *  pending one carries the path it was picked from and its contents. */
+function openAttachment(im) {
+  if (im.ref) {
+    if (window._openStoredAttachment) {
+      window._openStoredAttachment(rootPathOf(activeTab()) || '', im.ref.sessionId, im.ref.uuid, im.ref.index);
+    }
+    return;
+  }
+  const src = (im.block && im.block.source) || {};
+  if (window._openAttachment) {
+    window._openAttachment(im.path || '', im.name || '', src.data || '', src.type === 'base64');
+  }
 }
 
 /** Reads a pasted image File/Blob into a data URL, then adds it. */
@@ -96,6 +222,15 @@ function makeImageChip(im, onRemove) {
   // Everything except the × is one click target that opens the preview.
   const open = document.createElement('span'); open.className = 'ic-open';
   open.title = im.name || 'image.png';
+  if (im.kind === 'document' || im.kind === 'path') {
+    // An uploaded non-image file: the file icon and its own name, opening the file itself.
+    const icon = document.createElement('span'); icon.className = 'ic-file'; icon.innerHTML = ICONS.FILEICON;
+    const label = document.createElement('span'); label.className = 'ic-name'; label.textContent = im.name;
+    open.appendChild(icon); open.appendChild(label);
+    open.onclick = () => openAttachment(im);
+    chip.appendChild(open);
+    return withRemove(chip, onRemove);
+  }
   const thumb = document.createElement('span'); thumb.className = 'ic-thumb';
   thumb.style.backgroundImage = 'url("' + im.url + '")';
   const name = document.createElement('span'); name.className = 'ic-name'; name.textContent = im.name || 'image.png';
@@ -115,6 +250,11 @@ function makeImageChip(im, onRemove) {
   open.appendChild(thumb); open.appendChild(name); open.appendChild(dim);
   open.onclick = () => openLightbox(im);
   chip.appendChild(open);
+  return withRemove(chip, onRemove);
+}
+
+/** Gives a composer chip its hover × (sent bubbles pass no remover). */
+function withRemove(chip, onRemove) {
   if (onRemove) {
     // Marks the chip as the kind that reveals an × on hover, so a sent bubble's chips
     // — which have no × — don't dim their dimensions for nothing.

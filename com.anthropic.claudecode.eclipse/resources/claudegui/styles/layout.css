@@ -3,6 +3,12 @@
 html, body { height: 100%; background: var(--bg); color: var(--fg);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; overflow: hidden; }
 .mono { font-family: 'Cascadia Code', 'Consolas', 'Fira Code', monospace; }
+/* The narrowest the view lays itself out for: the composer's last stage fits at 120px.
+   An Eclipse window squeezed below even that scrolls the whole view sideways rather than
+   crushing it further. Above 120px nothing changes — the scrollbar only exists under the
+   media query. */
+body { min-width: 120px; }
+@media (max-width: 119.98px) { html { overflow-x: auto; } }
 
 #app { display: flex; flex-direction: column; height: 100%; position: relative; }
 /* Zoom-scaled content wrapper. Sized to 100%/z then scaled by z (transform-origin 0 0)
@@ -154,7 +160,8 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
    Shown only when the installed Claude Code is behind the published release, so
    the model chooser (built from the ACCOUNT's models) can't silently offer models
    the binary won't run. Reuses the usage-warning palette. */
-#update-banner { display: none; align-items: center; gap: 8px; flex-shrink: 0;
+#update-banner { display: none; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap;
+  container-type: inline-size;
   padding: 7px 12px; font-size: 12px; color: var(--warn-fg);
   background: var(--warn-bg); border-bottom: 1px solid var(--warn-border); }
 #update-banner.show { display: flex; }
@@ -167,6 +174,14 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
 #update-banner .ub-x { flex-shrink: 0; cursor: pointer; color: var(--warn-fg); opacity: .7;
   display: inline-flex; border-radius: 3px; }
 #update-banner .ub-x:hover { opacity: 1; background: var(--bg-hover); }
+/* A narrow view squeezed the text into a column a word wide beside the buttons, so there
+   the text takes the first row and the buttons drop beneath it. Wrapping changes nothing
+   on a wider view: the text's zero flex-basis always fits beside the buttons. Must come
+   after the .ub-text rule above, whose `flex` shorthand would reset the basis. */
+@container (max-width: 280px) {
+  #update-banner .ub-text { flex-basis: calc(100% - 30px); }
+  #update-banner .ub-x { margin-left: auto; }
+}
 
 /* ── Composer ────────────────────────────────────────────── */
 /* position: relative so #jump-to-latest (chat.css) can anchor to this element's
@@ -179,13 +194,43 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
 #bottom-card { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; padding: 8px 14px 12px; }
 /* usage warning banner (shown above the input near a usage limit) */
 #usage-warn { display: none; align-items: center; gap: 4px; margin-bottom: 8px; padding: 7px 11px;
+  flex-wrap: wrap; container-type: inline-size;
   border: 1px solid var(--warn-border); background: var(--warn-bg); border-radius: 8px; color: var(--warn-fg); font-size: 12px; }
 #usage-warn.show { display: flex; }
-#usage-warn .uw-txt { flex: 1; }
+#usage-warn .uw-txt { flex: 1; min-width: 0; }
 #usage-warn a { color: var(--link); text-decoration: none; white-space: nowrap; }
 #usage-warn .uw-x { color: var(--warn-fg); cursor: pointer; padding: 2px; border-radius: 4px; opacity: .7; flex-shrink: 0; margin-left: 6px; }
 #usage-warn .uw-x:hover { opacity: 1; background: var(--hover-veil); }
-#input-wrap { border: 1px solid var(--accent); border-radius: 10px; background: var(--bg-soft);
+/* Narrow: the sentence takes the first row and the link + close drop beneath it, as
+   the update banner does — beside the link the text was squeezed into a column a word
+   wide. The separator only belongs between them on one line, so it goes with the wrap.
+   Must come after the .uw-txt rule above, whose flex shorthand would reset the basis. */
+@container (max-width: 240px) {
+  #usage-warn .uw-txt { flex-basis: 100%; }
+  #usage-warn .uw-sep { display: none; }
+  #usage-warn .uw-x { margin-left: auto; }
+}
+/* The browser banner: a tab joined to the top of the input box, which overlaps its lower
+   8px (the extension's banner geometry). Tinted from --link, or --red for an error. */
+#browser-banner { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  margin-bottom: -8px; padding: 6px 6px 14px 14px; border: 1px solid; border-bottom: none;
+  border-radius: 8px 8px 0 0; font-size: 11.5px; font-weight: 600; line-height: 1.4;
+  -webkit-user-select: none; user-select: none; cursor: default;
+  color: color-mix(in srgb, var(--fg), var(--link) 50%);
+  border-color: color-mix(in srgb, var(--fg), var(--link) 50%);
+  background: color-mix(in srgb, var(--bg-soft), var(--link) 25%); }
+/* MUST be explicit: the author `display:flex` above beats the UA stylesheet's [hidden],
+   so without this the banner stays on screen, empty, in every conversation. */
+#browser-banner[hidden] { display: none; }
+#browser-banner[data-color=error] { color: color-mix(in srgb, var(--fg), var(--red) 50%);
+  border-color: color-mix(in srgb, var(--fg), var(--red) 50%);
+  background: color-mix(in srgb, var(--bg-soft), var(--red) 25%); }
+#browser-banner .bb-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#browser-banner .bb-x { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 20px; height: 20px; border-radius: 4px; cursor: pointer; color: inherit; }
+#browser-banner .bb-x:hover { background: var(--hover-veil); }
+#browser-banner .bb-x svg { width: 12px; height: 12px; }
+#input-wrap { position: relative; border: 1px solid var(--accent); border-radius: 10px; background: var(--bg-soft);
   padding: 8px 10px 6px; transition: border-color .15s; }
 #input-wrap.blur { border-color: var(--border); }
 .input-row { display: flex; align-items: flex-start; gap: 8px; }
@@ -240,9 +285,14 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
 #input.dictating { font-style: italic; }
 
 #composer-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
-.cb-left, .cb-right { display: flex; align-items: center; gap: 6px; }
-.pill { display: inline-flex; align-items: center; justify-content: center; height: 26px; padding: 0 6px;
-  border-radius: 6px; color: var(--fg-dim); cursor: pointer; }
+/* 2px between controls, the extension's footer spacing; the controls themselves carry
+   the room. The groups must NOT be allowed below their content width (no min-width:0):
+   a group that shrinks lets its controls slide under the other group's, and hides the
+   very overflow fitComposerBar measures to decide how far to collapse. */
+.cb-left, .cb-right { display: flex; align-items: center; gap: 2px; }
+.pill { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  padding: 0; flex-shrink: 0; border-radius: 5px; color: var(--fg-dim); cursor: pointer; }
+.pill svg { display: block; flex-shrink: 0; }
 .pill:hover { background: var(--bg-hover); color: var(--fg); }
 .file-chip { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
   font-size: 12px; color: var(--fg-dim); border-radius: 6px; cursor: pointer; max-width: 220px; }
@@ -260,13 +310,26 @@ html, body { height: 100%; background: var(--bg); color: var(--fg);
 #modes-lbl { white-space: nowrap; }
 #ctx-chip.icon-only #ctx-label { display: none; }
 #modes-btn.icon-only #modes-lbl { display: none; }
-#send.mini { width: 22px; height: 24px; border-radius: 5px; }
+#send.mini { width: 22px; height: 22px; border-radius: 5px; }
 #send.mini svg { width: 12px; height: 12px; }
-#composer-bar.compact .cb-left, #composer-bar.compact .cb-right { gap: 2px; }
-#composer-bar.compact .pill, #composer-bar.compact .modes-btn,
-#composer-bar.compact .file-chip { padding: 0 4px; }
-#send { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 32px;
-  border-radius: 7px; background: var(--accent); color: var(--on-accent); cursor: pointer; flex-shrink: 0; }
+#composer-bar.compact .modes-btn, #composer-bar.compact .file-chip { padding: 0 4px; }
+/* Last stage, for the narrowest view: every control a size smaller, never tinier, and the
+   bar reaches 4px into the input box's side padding (the text above keeps its own). */
+#composer-bar.tight { margin-left: -4px; margin-right: -4px; }
+#composer-bar.tight .cb-left, #composer-bar.tight .cb-right { gap: 0; }
+#composer-bar.tight .pill, #composer-bar.tight .pill svg { width: 22px; height: 22px; }
+#composer-bar.tight .modes-btn, #composer-bar.tight .file-chip { padding: 0 3px; }
+/* Past even that (a minimized Eclipse squeezing the view): 18px boxes, the glyphs scaled
+   down with them, reaching 8px into the input box's 10px side padding. */
+#composer-bar.tiny { margin-left: -8px; margin-right: -8px; }
+#composer-bar.tiny .pill, #composer-bar.tiny .pill svg { width: 18px; height: 18px; }
+#composer-bar.tiny .modes-btn, #composer-bar.tiny .file-chip { height: 18px; padding: 0 1px; }
+#composer-bar.tiny .modes-btn svg, #composer-bar.tiny .file-chip svg { width: 14px; height: 14px; }
+#composer-bar.tiny #send.mini { width: 18px; height: 18px; margin-left: 0; border-radius: 4px; }
+#composer-bar.tiny #send.mini svg { width: 10px; height: 10px; }
+/* Square with its siblings (the extension's 26px send), not the old 28x32. */
+#send { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  margin-left: 2px; border-radius: 5px; background: var(--accent); color: var(--on-accent); cursor: pointer; flex-shrink: 0; }
 #send.disabled { background: var(--send-off-bg); color: var(--send-off-fg); cursor: default; }
 #send.stop { background: var(--accent); }
 

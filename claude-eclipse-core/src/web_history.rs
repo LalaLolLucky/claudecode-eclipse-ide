@@ -151,6 +151,29 @@ fn now_ms() -> u64 {
 /// normally exist. Shelled out through `security` because that is the CLI's own
 /// read path, and it leaves the OS — not us — deciding whether this process may
 /// see the secret.
+/// Whether the CLI is signed in with a claude.ai account — an OAuth credential,
+/// which is what Claude in Chrome needs and what the extension checks for
+/// (`authMethod === "claudeai"`). An API-key login has none. Follows
+/// `CLAUDE_CONFIG_DIR` through [`read_credential`].
+///
+/// Remembered for a minute: the `+` menu asks every time it opens, and on macOS
+/// each read runs `security` against the keychain.
+pub fn has_claude_ai_login() -> bool {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    const TTL: Duration = Duration::from_secs(60);
+    let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((at, known)) = *cache {
+        if at.elapsed() < TTL {
+            return known;
+        }
+    }
+    let known = read_credential().is_some();
+    *cache = Some((Instant::now(), known));
+    known
+}
+
 pub(crate) fn read_credential() -> Option<Credential> {
     #[cfg(target_os = "macos")]
     {
