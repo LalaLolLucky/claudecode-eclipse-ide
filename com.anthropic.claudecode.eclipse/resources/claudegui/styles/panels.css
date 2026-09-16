@@ -14,6 +14,24 @@
 .menu { position: absolute; z-index: 40; background: var(--menu-bg); border: 1px solid var(--border);
   border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); padding: 4px; min-width: 210px; display: none; }
 .menu.open { display: block; }
+/* #actions-menu bundles Rewind/Model/Effort/Thinking/Account/Slash Commands/Appearance
+   into one dropdown (unlike the focused, already-scrollable #slash-menu below) — with no
+   cap of its own it could grow taller than the viewport, and positionMenu's clamp (ui.js)
+   only keeps its TOP edge on-screen, not its bottom, so it would render past the bottom
+   edge with nothing to scroll it into view. Viewport-relative, NOT a fixed px guess like
+   #slash-menu's 260px below — that menu is always short; this one has grown past what any
+   one fixed number fits on every window size, so a fixed cap either clips on a small window
+   or scrolls needlessly on a tall one. 100vh-40px mirrors positionMenu's own 8px+8px
+   top/bottom viewport margin (ui.js) with a little extra breathing room. */
+#actions-menu { max-height: calc(100vh - 40px); overflow-y: auto; }
+/* calc(100% - 20px), not 100%: box-sizing:border-box only folds the input's OWN
+   padding/border into that 100%, never its margin — the 10px left + 10px right margin
+   below was still added ON TOP, making the real box 20px wider than the menu's own
+   content area and pushing it past the right edge. */
+#actions-slash-filter { width: calc(100% - 20px); box-sizing: border-box; margin: 2px 10px 6px; padding: 6px 9px;
+  background: var(--bg-code); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--fg); font-size: 12px; outline: none; }
+#actions-slash-filter:focus { border-color: var(--sel); }
 .menu .item { display: flex; align-items: flex-start; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
 .menu .item:hover { background: var(--menu-hover); }
 .menu .item .ic { margin-top: 1px; color: var(--fg-dim); flex-shrink: 0; }
@@ -26,7 +44,12 @@
 .menu .head .hint { color: var(--fg-faint); font-size: 10.5px; }
 .menu .sep { height: 1px; background: var(--border-soft); margin: 4px 4px; }
 .menu .effort { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; }
-.menu .effort .lbl { color: var(--fg); font-size: 12.5px; display:flex; align-items:center; gap:6px;}
+/* gap was 6px with the icon glued into the .lbl text as a bare character (no element, no
+   spacing) — "Effort"/"Zoom level" sat closer to the left edge than "Switch model" etc.,
+   whose .item rows give the icon a real gap (line 31). Now .ic is a real child here
+   too, so this gap actually applies to it, matched to .item's for the same indentation. */
+.menu .effort .lbl { color: var(--fg); font-size: 12.5px; display:flex; align-items:center; gap:10px; }
+.menu .effort .lbl .ic { color: var(--fg-dim); flex-shrink: 0; }
 .slider { width: 84px; height: 16px; position: relative; cursor: pointer; }
 .slider .track { position: absolute; top: 7px; left: 0; right: 0; height: 3px; background: var(--track); border-radius: 2px; }
 .slider .fill { position: absolute; top: 7px; left: 0; width: 50%; height: 3px; background: var(--accent); border-radius: 2px; }
@@ -260,3 +283,34 @@ body.teleporting #composer { display: none; }
   border: 2px solid var(--accent-dim); border-top-color: var(--accent);
   animation: spin .8s linear infinite; }
 .tp-error { color: var(--red); }
+
+/* ── Agents popup (agents.js) ─────────────────────────────────
+   A list of Agent tool calls made this session, each with a status dot. Same modal-overlay
+   idiom as #rewind-overlay/#rewind-win above (scrim + centered card) — NOT a corner-anchored
+   dropdown; a small floating panel read as detached from anything and had no natural anchor
+   point since it opens from a typed /agents command, not a toolbar button. */
+#agents-overlay { position: absolute; inset: 0; z-index: 60; background: var(--overlay-scrim-soft);
+  display: none; align-items: flex-start; justify-content: center; }
+#agents-overlay.open { display: flex; }
+#agents-win { width: 360px; max-width: 92%; margin-top: 11vh; max-height: 60vh; overflow: hidden;
+  display: flex; flex-direction: column; background: var(--menu-bg); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 12px 40px var(--shadow); padding: 13px 15px; }
+#agents-win .ap-head { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+#agents-win .ap-title { font-size: 14px; font-weight: 600; color: var(--fg); }
+#agents-win .ap-x { color: var(--fg-dim); cursor: pointer; padding: 3px; border-radius: 4px; }
+#agents-win .ap-x:hover { background: var(--bg-hover); color: var(--fg); }
+#agents-win .ap-list { flex: 0 1 auto; min-height: 0; overflow-y: auto; margin-top: 10px; }
+#agents-win .ap-list::-webkit-scrollbar { width: 9px; }
+#agents-win .ap-list::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 5px; }
+#agents-win .ap-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-radius: 6px; }
+/* chat.css's .dot/.dot.done/.dot.red/.dot.spin rules are scoped to ".a-item .dot" (absolutely
+   positioned within a tool line) — a bare .dot outside one gets none of that, so this row's
+   dot is its own small standalone set rather than trying to reuse the scoped one. */
+#agents-win .ap-row .dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--fg-faint); }
+#agents-win .ap-row .dot.done { background: var(--green); }
+#agents-win .ap-row .dot.red { background: var(--red); }
+#agents-win .ap-row .dot.spin { background: transparent; border: 2px solid var(--accent);
+  border-top-color: transparent; width: 9px; height: 9px; animation: spin .8s linear infinite; }
+#agents-win .ap-label { font-size: 12.5px; color: var(--fg-soft); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+#agents-win .ap-empty { padding: 14px 4px; font-size: 12.5px; color: var(--fg-faint); text-align: center; }

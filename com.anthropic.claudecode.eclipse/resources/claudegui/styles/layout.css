@@ -187,7 +187,12 @@ body { min-width: 120px; }
 /* position: relative so #jump-to-latest (chat.css) can anchor to this element's
    top edge rather than the page's; nothing else inside #composer is absolutely
    positioned, so this doesn't change any other element's containing block. */
-#composer { position: relative; flex-shrink: 0; padding: 8px 14px 12px; }
+/* display:flex + centered children caps the composer's actual width (below) instead of
+   letting it stretch edge-to-edge as the view widens — a wide Eclipse view/window would
+   otherwise leave the input box uncomfortably wide with no matching cap on the transcript. */
+#composer { position: relative; flex-shrink: 0; padding: 8px 14px 12px;
+  display: flex; flex-direction: column; align-items: center; }
+#usage-warn, #input-wrap { width: 100%; max-width: 700px; }
 /* Floats OVER the transcript at the composer's position (composer hides while a
    card is up). The transcript never reflows; showBottomCard reserves matching
    bottom padding in #messages so the last message can scroll above the card. */

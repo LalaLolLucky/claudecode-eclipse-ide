@@ -195,6 +195,10 @@ function switchTab(id) {
     followTail = true;
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
+  // Explicit, not left to the 'scroll' event this write may fire: a write landing on a
+  // position the container already holds (e.g. switching back to a tab left at the exact
+  // same spot) is a no-op that fires nothing — same reasoning as the followTail line above.
+  if (typeof updatePinnedPrompt === 'function') updatePinnedPrompt();
   // A conversation restored from the last Eclipse session holds only its session id
   // until it is first shown (see viewstate.js) — rebuilding every transcript at
   // startup would cost one full reconstruction per tab, for panes nobody is looking
@@ -212,6 +216,7 @@ function switchTab(id) {
       // unconditionally and followTail is forced true on every switch anyway.
       if (scrollLocked) { followTail = false; t.followTail = false; }
     }
+    if (typeof updatePinnedPrompt === 'function') updatePinnedPrompt();
     updateJumpToLatest();
   }
 }

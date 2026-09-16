@@ -2128,8 +2128,13 @@ fn build_status_json(event: &serde_json::Value, model: &str) -> Option<String> {
         return None;
     }
 
+    // Clamped to [0, 100]: a ratio above 100% is never legitimate for display (it means
+    // `window` resolved to the wrong, too-small model entry — e.g. modelUsage briefly
+    // keyed by a small-context helper/sub-model instead of `model` — not that usage
+    // actually exceeds the window), and nothing downstream (ClaudeStatusBar's text label)
+    // clamped it either, so a bad ratio here used to surface as literal text like "1097%".
     let context_pct = if window > 0 {
-        (context_tokens as f64 / window as f64) * 100.0
+        ((context_tokens as f64 / window as f64) * 100.0).clamp(0.0, 100.0)
     } else {
         0.0
     };
@@ -2505,11 +2510,20 @@ fn process_event_value(
                     let is_error = b["is_error"].as_bool().unwrap_or(false);
                     // Successes fire too: the dot is then set from what actually
                     // happened instead of inferred when the NEXT tool starts.
+                    //
+                    // On error, tool_error_summary condenses to one line (~160 chars) for
+                    // the muted "⚠ …" note under the tool line — that's the only thing the
+                    // GUI renders for a failure. On success, the GUI now actually renders
+                    // the result (chat.js's applyToolResult/renderToolOutput — an "OUT" box,
+                    // a checklist, a clickable result list), so it needs the FULL flattened
+                    // content, not the empty string this used to send when nothing on the
+                    // GUI side read it yet. No truncation here: the page caps/links out to a
+                    // full view for long content on its own (capIfOverflowing in chat.js).
                     let text = if is_error {
                         crate::session::tool_error_summary(&crate::session::flatten_result_content(b))
                             .unwrap_or_default()
                     } else {
-                        String::new()
+                        crate::session::flatten_result_content(b)
                     };
                     let payload = serde_json::json!({
                         "id": id,

@@ -535,6 +535,13 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
     // under its tool row. Only failures the user did not cause are recorded —
     // see `tool_error_summary`, which returns None for their own decisions.
     let mut result_text: HashMap<String, String> = HashMap::new();
+    // tool_use id → the FULL result text for a SUCCESSFUL tool — separate map from
+    // result_text above, which is error-only and pre-condensed to one line. This one
+    // feeds the same "OUT" rendering (chat.js's renderToolOutput) the live path uses via
+    // chat.rs's build_status_json-adjacent tool_result handler — without it, a reloaded/
+    // resumed conversation showed tool input but never its output, since history.js's
+    // reconstruction never had anything but errorText to hand makeToolLine.
+    let mut result_success_text: HashMap<String, String> = HashMap::new();
 
     for line in reader.lines() {
         let line = match line {
@@ -684,6 +691,14 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
                                 if let Some(sum) = tool_error_summary(&flatten_result_content(b)) {
                                     result_text.insert(tuid.to_string(), sum);
                                 }
+                            } else {
+                                // Full text, no condensing — chat.js caps/links-out to a
+                                // full view for long content on its own (capIfOverflowing),
+                                // same as the live path.
+                                let full = flatten_result_content(b);
+                                if !full.is_empty() {
+                                    result_success_text.insert(tuid.to_string(), full);
+                                }
                             }
                         }
                         if !ask_ids.contains(tuid) {
@@ -813,6 +828,11 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
             // no result and so no text — the red dot alone still says "stopped".
             if let Some(txt) = result_text.get(id) {
                 obj.insert("errorText".into(), serde_json::Value::from(txt.as_str()));
+            }
+            // The successful tool's actual output — makeToolLine (chat.js) renders this
+            // into an OUT box/result-list/checklist exactly like the live path does.
+            if let Some(txt) = result_success_text.get(id) {
+                obj.insert("resultText".into(), serde_json::Value::from(txt.as_str()));
             }
         }
     }
@@ -1786,7 +1806,7 @@ mod tests {
             {"t":"user","content":"<ide_selection a=\"b\">sel junk</ide_selection>please fix the bug","ts":"2026-07-01T10:00:00.000Z"},
             {"t":"thinking","model":"claude-fable-5","text":"hmm secret"},
             {"t":"text","text":"Here is my answer","model":"claude-fable-5"},
-            {"t":"tool","name":"mcp__eclipse__askUserQuestion","input":{"q":"Which color?"},"model":"claude-fable-5","status":"done"},
+            {"t":"tool","name":"mcp__eclipse__askUserQuestion","input":{"q":"Which color?"},"model":"claude-fable-5","status":"done","resultText":"  The user answered: Blue"},
             {"t":"answered","text":"Blue"},
             {"t":"tool","name":"Edit","input":{"file_path":"C:\\x.java","old_string":"a","new_string":"b"},"model":"claude-opus-4-8","status":"interrupted"}
         ]"#).unwrap();
@@ -1935,7 +1955,7 @@ mod tests {
         let want: serde_json::Value = serde_json::from_str(r#"[
             {"t":"user","content":"<ide_context openFile=\"C:\\a\\B.java\" />\n\nwhat is this",
              "images":[{"media_type":"image/jpeg","data":"QUJD"}],"ts":"2026-07-30T01:00:00.000Z"},
-            {"t":"tool","name":"Read","input":{"file_path":"a.txt"},"status":"done","model":"claude-opus-4-8"},
+            {"t":"tool","name":"Read","input":{"file_path":"a.txt"},"status":"done","model":"claude-opus-4-8","resultText":"file contents"},
             {"t":"text","text":"a screenshot","model":"claude-opus-4-8"}
         ]"#).unwrap();
         assert_eq!(got, want, "pasted-image session render items");
@@ -2131,7 +2151,10 @@ mod tests {
 
     /// A failed tool must carry WHY it failed onto its render item, so a reopened
     /// conversation reads the same as it did live. A tool the user declined gets
-    /// the red dot but no text, and a successful one neither.
+    /// the red dot but no text; a successful one carries its full output as
+    /// resultText instead (a DIFFERENT field — see result_text vs
+    /// result_success_text above — so makeToolLine can render it as an OUT box
+    /// rather than the muted one-line error note).
     #[test]
     fn load_session_attaches_error_text_to_failed_tools() {
         let _env = ENV_LOCK.lock().unwrap();
@@ -2160,9 +2183,9 @@ mod tests {
             {"t":"user","content":"go","ts":"2026-09-04T01:00:00.000Z"},
             {"t":"tool","name":"Read","input":{"file_path":"C:\\nope.java"},"model":"claude-opus-4-8","status":"interrupted","errorText":"File does not exist. Note: your current working directory is C:\\ws"},
             {"t":"tool","name":"Edit","input":{"file_path":"C:\\x.java"},"model":"claude-opus-4-8","status":"interrupted"},
-            {"t":"tool","name":"Read","input":{"file_path":"C:\\ok.java"},"model":"claude-opus-4-8","status":"done"}
+            {"t":"tool","name":"Read","input":{"file_path":"C:\\ok.java"},"model":"claude-opus-4-8","status":"done","resultText":"contents"}
         ]"#).unwrap();
-        assert_eq!(got, want, "failed tools carry their reason; declined ones stay quiet");
+        assert_eq!(got, want, "failed tools carry their reason; declined ones stay quiet; successful ones carry their output");
     }
 
     #[test]
