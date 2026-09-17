@@ -168,6 +168,7 @@ function switchTab(id) {
   if (typeof renderPendingImages === 'function') renderPendingImages();  // this tab's pasted-image chips
   if (typeof renderBrowserBanner === 'function') renderBrowserBanner();  // this tab's browser connection
   if (typeof syncComposer === 'function') syncComposer();           // send/stop reflects THIS tab
+  if (typeof updateAgentsBtn === 'function') updateAgentsBtn();     // toolbar pill reflects THIS tab's agents
   // The root rides along: Java scopes session history, rewind and the status bar to
   // the conversation's own folder, not to the workspace root.
   try { if (window._activeTab) window._activeTab(id, rootPathOf(t)); } catch (e) {} // status bar follows active tab
@@ -500,6 +501,7 @@ function clearSession() {
   renderTabs();
   if (typeof renderPendingImages === 'function') renderPendingImages();
   if (typeof syncComposer === 'function') syncComposer();
+  if (typeof updateAgentsBtn === 'function') updateAgentsBtn();   // pane emptied — no agents left in it
   input.focus();
 }
 

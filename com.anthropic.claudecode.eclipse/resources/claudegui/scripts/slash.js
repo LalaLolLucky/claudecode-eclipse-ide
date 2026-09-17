@@ -4,7 +4,6 @@
 /* ===================== Slash commands ===================== */
 const SLASH_COMMANDS = [
   { cmd: '/advisor', desc: 'Set up an advisor model' },
-  { cmd: '/agents',  desc: 'Show agents running or run this session' },
   { cmd: '/clear',   desc: 'Start a new session (tab)' },
   { cmd: '/compact', desc: 'Clear conversation history but keep a summary in context' },
   { cmd: '/model',   desc: 'Switch model' },
@@ -113,13 +112,10 @@ function handleSlashCommand(text) {
   // send it to, same reason /model is reproduced locally above rather than forwarded.
   // No echo: nothing was actually sent, just a panel opened, like /rewind.
   if (cmd === '/resume') { openHistoryForResume(); return true; }
-  // Purely Eclipse-side, like /rewind — opens the fleet panel (agents.js), no CLI
-  // round-trip and no echo (nothing was actually sent).
-  if (cmd === '/agents') { if (window.toggleAgentsPanel) window.toggleAgentsPanel(); return true; }
   if (cmd === '/help') {
     const ht = activeTab();
     addUserMessage(text, null, null, null, nowIso());
-    addSystemTo(ht, 'Commands: /advisor — set up an advisor model · /agents — show agents running or run this session · /clear — new conversation · /compact — compact the conversation into a summary · /context — show context window usage for this conversation · /model — switch model · /remote-control — continue this conversation on the web or your phone · /rewind — restore code and fork from an earlier message · /workflows — watch live progress of a running workflow · /help — this list. Type / to see them.');
+    addSystemTo(ht, 'Commands: /advisor — set up an advisor model · /clear — new conversation · /compact — compact the conversation into a summary · /context — show context window usage for this conversation · /model — switch model · /remote-control — continue this conversation on the web or your phone · /rewind — restore code and fork from an earlier message · /workflows — watch live progress of a running workflow · /help — this list. Type / to see them. The Agents panel has its own toolbar button in the composer.');
     return true;
   }
   return false; // unknown slash: let it pass through to Claude

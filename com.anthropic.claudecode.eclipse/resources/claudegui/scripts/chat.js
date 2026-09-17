@@ -505,13 +505,130 @@ function makeIoBlock(label, text) {
   appendIoRow(block, label, text);
   return block;
 }
+/** Per-subagent nested transcript — keyed by the Agent tool_use's own id (the same value a
+ *  .tool-line stores as data-tuid). Shared by BOTH the inline collapsible section under a
+ *  running agent's own line (renderAgentLogItem below) and the Agents popup's
+ *  list/detail/"Open transcript" views (agents.js), so the two never disagree about the
+ *  same agent. Populated two ways depending on how the entry got here: live, incrementally
+ *  by applyAgentActivity below (fed by chat.rs's onAgentActivity relay); on reload, all at
+ *  once by history.js from session.rs's reconstructed agentLog field (built from the same
+ *  parent_tool_use_id-tagged transcript lines, just read back off disk instead of streamed
+ *  live) — so a reopened conversation's agents keep their duration/tokens/prompt/tool-call
+ *  list/transcript instead of losing them the moment the webview that ran them live is gone. */
+const agentLogs = new Map();
+function ensureAgentLog(id) {
+  let log = agentLogs.get(id);
+  // startedAt defaults to NOW, not 0: addToolLine's own explicit stamp (the tool_use
+  // actually starting) is the accurate one and still wins whenever it runs, but
+  // duration must never depend on that ONE call site succeeding — whichever event
+  // touches this agent's log FIRST (a live activity update, a reload's reconstructed
+  // data) still gives a real, ticking number instead of a permanent "0s" if it doesn't.
+  if (!log) {
+    log = { items: [], tokens: 0, model: '', startedAt: Date.now(), endedAt: 0, input: {}, taskId: '', finishStatus: '' };
+    agentLogs.set(id, log);
+  }
+  return log;
+}
+/** Java → JS via stream.js's window.onAgentActivity. One `kind` per chat.rs relay event:
+ *  'text'/'thinking' append onto the trailing item of that kind (mirrors curText's own
+ *  delta-accumulation for the top-level stream); 'tool_start'/'tool_end' are a step in the
+ *  subagent's own tool use, matched by ITS OWN tool_use id (info.id) — distinct from
+ *  parentId, which is the AGENT's id; 'tokens' carries cumulative usage + model, piggybacked
+ *  on whichever message just completed rather than its own event. */
+function applyAgentActivity(json) {
+  let info; try { info = JSON.parse(json); } catch (e) { return; }
+  if (!info || !info.parentId) return;
+  const log = ensureAgentLog(info.parentId);
+  if (info.kind === 'tokens') {
+    if (typeof info.tokens === 'number') log.tokens = info.tokens;
+    if (info.model) log.model = info.model;
+  } else if (info.kind === 'text' || info.kind === 'thinking') {
+    const last = log.items[log.items.length - 1];
+    let item = (last && last.kind === info.kind) ? last : null;
+    if (!item) { item = { kind: info.kind, text: '' }; log.items.push(item); }
+    item.text += info.text || '';
+    renderAgentLogItem(info.parentId, item);
+  } else if (info.kind === 'tool_start') {
+    const item = { kind: 'tool', name: info.name, input: info.input || {}, id: info.id };
+    log.items.push(item);
+    renderAgentLogItem(info.parentId, item);
+  } else if (info.kind === 'tool_end') {
+    const item = log.items.find(it => it.kind === 'tool' && it.id === info.id);
+    if (item) {
+      item.status = info.isError ? 'interrupted' : 'done';
+      item.errorText = info.isError ? info.text : '';
+      item.resultText = info.isError ? '' : info.text;
+      renderAgentLogItem(info.parentId, item);
+    }
+  } else if (info.kind === 'finished') {
+    // The background agent's own system/task_notification actually finishing (chat.rs)
+    // — the only real "it's done" signal for one of these; its top-level tool_result
+    // (applyToolResult) fires almost immediately as a "kicked off" ack and deliberately
+    // does NOT stamp this itself, or duration would freeze near-zero the same way it
+    // used to before that was found and fixed. tokens/durationMs are server-computed
+    // totals for the agent's WHOLE run — more accurate than the running total this
+    // page tallied itself from each individual message's usage — so they win here.
+    if (typeof info.tokens === 'number') log.tokens = info.tokens;
+    if (info.summary) log.summary = info.summary;
+    // "completed" vs "stopped" (the user hit Stop agent) — agents.js's detail view
+    // shows this instead of always saying "Finished".
+    if (info.status) log.finishStatus = info.status;
+    log.endedAt = (typeof info.durationMs === 'number' && log.startedAt)
+        ? log.startedAt + info.durationMs
+        : Date.now();
+  } else if (info.kind === 'taskId') {
+    // The agent's own internal task id (chat.rs's task_started) — a DIFFERENT id
+    // from parentId (its tool_use id) — captured while it's still running, since
+    // it's the only thing "Stop agent" (agents.js) can actually send a stop_task
+    // control_request against.
+    log.taskId = info.taskId;
+  }
+  if (window.renderAgentsPanel) window.renderAgentsPanel();
+}
+/** Builds ONE log item's DOM node — shared by the live inline collapsible below and
+ *  agents.js's "Open transcript" full view, so a subagent's work never renders two
+ *  different ways depending on where it's being looked at. */
+function buildAgentLogItemEl(item) {
+  if (item.kind === 'tool') {
+    return makeToolLine(item.name, item.input, item.status, item.errorText, rootPathOf(activeTab()), item.resultText);
+  }
+  const el = document.createElement('div');
+  el.className = 'a-item muted' + (item.kind === 'thinking' ? ' agent-log-think' : '');
+  el.innerHTML = '<span class="dot gray"></span><span class="a-body"></span>';
+  el.querySelector('.a-body').innerHTML = renderMarkdown(item.text);
+  return el;
+}
+/** (Re)builds one log item's DOM node and places/replaces it inside the LIVE inline
+ *  collapsible section under that agent's own tool line — a no-op if that line isn't
+ *  rendered right now (the data is still recorded in agentLogs either way; the Agents
+ *  popup's "Open transcript" always renders fresh from there, so this is only about
+ *  keeping the inline copy live while it's actually on screen). */
+function renderAgentLogItem(parentId, item) {
+  const line = document.querySelector('.tool-line[data-tuid="' + parentId + '"]');
+  const body = line && line.querySelector(':scope > .agent-log > .agent-log-body');
+  if (!body) return;
+  const el = buildAgentLogItemEl(item);
+  if (item._el && item._el.parentNode) item._el.replaceWith(el); else body.appendChild(el);
+  item._el = el;
+}
+/** The collapsible "Agent activity" toggle appended under a running agent's own tool
+ *  line — collapsed by default so a busy subagent's own steps don't dominate the main
+ *  transcript, but never hidden entirely per-request: real work, just tucked behind a
+ *  fold instead of interleaved as if it were the top-level Claude's own steps. */
+function makeAgentLogSection() {
+  const wrap = document.createElement('div'); wrap.className = 'agent-log';
+  wrap.innerHTML = '<div class="agent-log-head"><span class="chev">' + ICONS.CHEVRON + '</span>'
+      + '<span class="agent-log-label">Agent activity</span></div><div class="agent-log-body"></div>';
+  wrap.querySelector('.agent-log-head').onclick = () => wrap.classList.toggle('open');
+  return wrap;
+}
 // Tools whose input is fully represented some other way (a diff block, the description
 // span, a checklist, or their own dedicated card elsewhere) — never also get a boxed IN.
 const SKIP_IN_BOX = new Set([
   'write', 'edit', 'multiedit', 'notebookedit', 'agent', 'task', 'todowrite',
   'askuserquestion', 'approvalprompt', 'exitplanmode'
 ]);
-function makeToolLine(name, input, status, errorText, root, resultText) {
+function makeToolLine(name, input, status, errorText, root, resultText, hasAgentLog) {
   input = input || {};
   const key = String(name || '').indexOf('mcp__') === 0
       ? String(name).split('__').pop().toLowerCase() : String(name || '').toLowerCase();
@@ -559,6 +676,12 @@ function makeToolLine(name, input, status, errorText, root, resultText) {
     // Stashed on the line so a later OUT (the agent's own eventual result) joins into
     // this SAME box instead of opening a second, separately-bordered one right under it.
     if (input.prompt) line.appendChild(line._ioBlock = makeIoBlock('IN', input.prompt));
+    // Live (status undefined) always gets the toggle — it starts empty and fills in as
+    // the agent actually runs, so there's nothing to check upfront. Reload only gets one
+    // when session.rs's reconstructed agentLog actually has something in it (hasAgentLog,
+    // set by the caller — never hardcode "no toggle with nothing behind it" the other way
+    // around, matching capIfOverflowing's own rule elsewhere in this file).
+    if (status === undefined || hasAgentLog) line.appendChild(makeAgentLogSection());
   } else {
     // A tool's own description (e.g. Bash's "what this command does") sits inline next to
     // the name, same slot Agent uses above — independent of whether detail is boxed below.
@@ -644,7 +767,18 @@ function addToolLine(payload) {
   // works the same whether a card got here via live streaming or history reconstruction,
   // and survives a reload/resume that a session-only registry wouldn't. This just pokes it
   // to re-render if the popup happens to be open right now.
-  if (AGENT_KEYS.has(line.dataset.tname) && window.renderAgentsPanel) window.renderAgentsPanel();
+  if (AGENT_KEYS.has(line.dataset.tname)) {
+    if (info.id) {
+      // Duration/prompt for the Agents popup's list+detail views — recorded here
+      // (start of the tool_use) rather than only in agentLogs' activity-driven
+      // entries, so it exists even for an agent that finishes with zero steps of
+      // its own logged (a near-instant one, or one that only ever answers in text).
+      const log = ensureAgentLog(info.id);
+      log.startedAt = Date.now();
+      log.input = info.input || {};
+    }
+    if (window.renderAgentsPanel) window.renderAgentsPanel();
+  }
   curTurn.appendChild(line);
   // End the current text body so any text Claude emits AFTER this tool starts a new
   // body BELOW the tool line (otherwise the closing "Done…" merges in above the edits).
@@ -676,7 +810,20 @@ function applyToolResult(payload) {
   if (dot) dot.className = info.isError ? 'dot red' : 'dot done';
   // The dot's class (just set above) already reflects the outcome — agents.js reads that
   // straight off the DOM, so this is just a poke to re-render if the popup is open.
-  if (AGENT_KEYS.has(line.dataset.tname) && window.renderAgentsPanel) window.renderAgentsPanel();
+  if (AGENT_KEYS.has(line.dataset.tname)) {
+    const log = ensureAgentLog(info.id);
+    // A BACKGROUND agent's own top-level tool_result is an early "kicked off"
+    // acknowledgment, not its real completion — confirmed live: a real run logged 21k
+    // tokens and 3 of its own steps (via onAgentActivity) in the ~30ms window between
+    // this firing and the agent's own start. Stamping endedAt from it froze duration at
+    // that ~30ms forever. Foreground agents don't have this problem — their tool_result
+    // genuinely IS the final result — so only skip the stamp for background ones; leaving
+    // endedAt unset lets agentDurationMs keep counting up against Date.now() instead.
+    if (!(log.input && log.input.run_in_background)) {
+      log.endedAt = Date.now();
+    }
+    if (window.renderAgentsPanel) window.renderAgentsPanel();
+  }
   if (info.isError) { setToolError(line, info.text); return; }
   renderToolOutput(line, line.dataset.tname || '', info.text);
 }

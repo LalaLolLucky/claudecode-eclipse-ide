@@ -108,6 +108,9 @@
         <div class="cb-left">
           <span class="pill" id="plus-btn" title="Add" onclick="openPlusMenu(this)">__PLUS__</span>
           <span class="pill" id="slash-btn" title="Commands" onclick="toggleMenu('actions-menu', this)">__SLASH__</span>
+          <span class="agents-pill" id="agents-btn" title="Agents" onclick="toggleAgentsPanel()" style="display:none">
+            <span class="agents-dot" id="agents-dot"></span> <span id="agents-count"></span>
+          </span>
           <span class="file-chip empty" id="ctx-chip" title="Toggle file context" onclick="toggleContext()"><span id="ctx-ic">__FILEICON__</span> <span id="ctx-label">No file open</span></span>
         </div>
         <div class="cb-right">

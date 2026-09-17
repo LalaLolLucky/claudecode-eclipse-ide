@@ -176,6 +176,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction openFileInEditorFn;
     @SuppressWarnings("unused") private BrowserFunction openTextInEditorFn;
     @SuppressWarnings("unused") private BrowserFunction getContextStatusFn;
+    @SuppressWarnings("unused") private BrowserFunction stopAgentTaskFn;
     @SuppressWarnings("unused") private BrowserFunction clipGetFn;
     @SuppressWarnings("unused") private BrowserFunction clipSetFn;
     @SuppressWarnings("unused") private BrowserFunction clipImagesFn;
@@ -938,6 +939,17 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // /resume — has no interactive surface to answer it over stream-json.
         getContextStatusFn = new SimpleFunction(browser, "_getContextStatus",
                 a -> lastRustStatusJson != null ? lastRustStatusJson : "{}");
+        // "Stop agent" (agents.js's detail view) — a fast, non-blocking stdin write
+        // (ChatManager::stop_task), same reasoning as _renameSession calling straight
+        // through with no extra thread. managerFor, not managers.get: the tab this
+        // agent is running in already has a live process by definition, but there is
+        // no harm in the lazy-create path either way.
+        stopAgentTaskFn = new SimpleFunction(browser, "_stopAgentTask", a -> {
+            if (a.length > 1 && a[0] instanceof String tabId && a[1] instanceof String taskId) {
+                managerFor(tabId).stopTask(taskId);
+            }
+            return null;
+        });
 
         // The composer's @ list: files and folders under the conversation's working folder,
         // or Chrome tabs for "@browser:". Answered through window.onFilesListed, which
@@ -2458,6 +2470,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // conversation is the same one on the phone and on claude.ai, so a change
         // made there belongs on the buttons here too.
         m.setOnSettingsChanged(j -> display.asyncExec(() -> executeJS("window.onSettingsChanged && window.onSettingsChanged('" + tj + "','" + esc(j) + "')")));
+        m.setOnAgentActivity(j -> display.asyncExec(() -> executeJS("window.onAgentActivity && window.onAgentActivity('" + tj + "','" + esc(j) + "')")));
         // Remote Control goes to two places: the page, which writes the transcript
         // line and remembers the session url, and the status bar, which shows the
         // indicator. Only the ACTIVE tab may drive the bar — it shows one
