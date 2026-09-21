@@ -17,7 +17,7 @@ uuid           = { version = "1", features = ["v4"] }
 tokio-stream   = { version = "0.1", features = ["sync"] }
 futures-util   = "0.3"
 portable-pty   = "0.8"
-base64         = "0.22"
+base64         = "0.23"
 vt100          = "0.15"
 ureq           = { version = "2", features = ["json"] }
 qrcode = { version = "0.14.1", default-features = false }
