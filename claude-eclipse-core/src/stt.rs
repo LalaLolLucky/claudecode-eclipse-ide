@@ -210,7 +210,7 @@ fn open_microphone(
     let cfg = device
         .default_input_config()
         .map_err(|e| format!("input config: {e}"))?;
-    let rate = cfg.sample_rate().0;
+    let rate = cfg.sample_rate();
     let channels = cfg.channels() as usize;
     let cap = rate as usize * MAX_TAKE.as_secs() as usize;
 
@@ -219,7 +219,7 @@ fn open_microphone(
     // is a dropout.
     let stream = device
         .build_input_stream(
-            &cfg.clone().into(),
+            cfg.clone().into(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 let Ok(mut buf) = sink.lock() else { return };
                 if buf.len() >= cap {

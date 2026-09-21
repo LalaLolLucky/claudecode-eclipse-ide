@@ -26,7 +26,6 @@
 //! token that cache has to survive a restart to be worth having. The key comes
 //! from the OS, never from this binary.
 
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -434,32 +433,30 @@ enum RawError {
 }
 
 fn get_once(url: &str, token: &Secret) -> Result<String, RawError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
-        .timeout(std::time::Duration::from_secs(CALL_TIMEOUT_SECS))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS)))
+        .timeout_global(Some(std::time::Duration::from_secs(CALL_TIMEOUT_SECS)))
+        .build()
+        .into();
 
     let resp = agent
         .get(url)
-        .set("Authorization", &format!("Bearer {}", token.as_str()))
-        .set("Content-Type", "application/json")
-        .set("anthropic-version", ANTHROPIC_VERSION)
-        .set("anthropic-client-platform", CLIENT_PLATFORM)
+        .header("Authorization", &format!("Bearer {}", token.as_str()))
+        .header("Content-Type", "application/json")
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .header("anthropic-client-platform", CLIENT_PLATFORM)
         .call();
 
     match resp {
-        Ok(r) => {
-            let mut body = String::new();
-            if r.into_reader().read_to_string(&mut body).is_err() {
-                return Err(RawError::Failed("couldn't read the response".into()));
-            }
-            Ok(body)
-        }
-        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+        Ok(mut r) => r
+            .body_mut()
+            .read_to_string()
+            .map_err(|_| RawError::Failed("couldn't read the response".into())),
+        Err(ureq::Error::StatusCode(401)) | Err(ureq::Error::StatusCode(403)) => {
             Err(RawError::Unauthorized)
         }
-        Err(ureq::Error::Status(code, _)) => Err(RawError::Failed(format!("HTTP {}", code))),
-        Err(ureq::Error::Transport(t)) => Err(RawError::Failed(transport_reason(&t))),
+        Err(ureq::Error::StatusCode(code)) => Err(RawError::Failed(format!("HTTP {}", code))),
+        Err(e) => Err(RawError::Failed(transport_reason(&e))),
     }
 }
 
@@ -484,10 +481,10 @@ fn refresh_credential(claude_cmd: &str) {
 
 /// Keeps the user-facing reason short, and free of the request URL that ureq's
 /// own `Display` would splice in.
-fn transport_reason(t: &ureq::Transport) -> String {
-    match t.kind() {
-        ureq::ErrorKind::Dns => "couldn't resolve api.anthropic.com".into(),
-        ureq::ErrorKind::ConnectionFailed => "couldn't reach api.anthropic.com".into(),
+fn transport_reason(e: &ureq::Error) -> String {
+    match e {
+        ureq::Error::HostNotFound => "couldn't resolve api.anthropic.com".into(),
+        ureq::Error::ConnectionFailed => "couldn't reach api.anthropic.com".into(),
         _ => "network error".into(),
     }
 }
