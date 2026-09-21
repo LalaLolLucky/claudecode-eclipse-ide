@@ -41,7 +41,7 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 # not load the plugin at all. There, ALSA is opened at runtime instead (see
 # src/alsa_capture.rs) and dictation reports itself unavailable when it is missing.
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-cpal            = "0.15"
+cpal            = "0.18"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 libloading      = "0.8"
