@@ -43,3 +43,24 @@ jobs:
         continue-on-error: true
       - run: cargo clippy --locked --all-targets
         continue-on-error: true
+
+  # GitHub has no FreeBSD runners, so this boots a FreeBSD VM on an Ubuntu
+  # runner. 14.3 matches the sysroot build-natives.ps1 links the shipped
+  # FreeBSD library against.
+  freebsd:
+    name: build & test (freebsd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        with:
+          release: "14.3"
+          usesh: true
+          prepare: |
+            pkg install -y curl
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          run: |
+            . "$HOME/.cargo/env"
+            cd claude-eclipse-core
+            cargo build --locked --all-targets
+            cargo test --locked
