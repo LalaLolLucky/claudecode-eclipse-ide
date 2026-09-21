@@ -7,7 +7,7 @@ This repository also hosts the update site, so nobody pushes to it directly — 
 reaches users through a pull request, and then through a release the maintainer publishes.
 
 1. **Fork** the repository on GitHub and clone your fork.
-2. **Create a branch** for your change.
+2. **Create a branch** off `dev` for your change.
 3. **Import the projects** into Eclipse: *File ▸ Import ▸ Existing Projects into Workspace*,
    pointing at the clone.
 4. **Make your change.** If it touches Rust, run `cargo test` in `claude-eclipse-core` and
@@ -15,7 +15,7 @@ reaches users through a pull request, and then through a release the maintainer 
    [Building the Native Library](README.md#building-the-native-library)) so you can run what you wrote.
 5. **Try it** — *Run As ▸ Eclipse Application* launches a second Eclipse with the plugin
    installed. Confirm the behaviour there before sending anything.
-6. **Push to your fork** and open a pull request against `master`, describing what changed
+6. **Push to your fork** and open a pull request against `dev`, describing what changed
    and how you tested it. CI builds and tests `claude-eclipse-core` on Linux, macOS and
    Windows, and reviews the dependency diff for known vulnerabilities.
 

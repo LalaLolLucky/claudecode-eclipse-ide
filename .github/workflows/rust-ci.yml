@@ -1,10 +1,9 @@
 name: Rust CI
 
 on:
+  # Every PR, so the build & test checks can be required without leaving a
+  # PR that touches no Rust code waiting on a check that never runs.
   pull_request:
-    paths:
-      - "claude-eclipse-core/**"
-      - ".github/workflows/rust-ci.yml"
   push:
     branches: [master]
     paths:
