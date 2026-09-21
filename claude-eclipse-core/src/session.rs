@@ -551,8 +551,9 @@ fn read_agent_log(projects_dir: &std::path::Path, session_id: &str, tool_use_id:
         if !name.ends_with(".meta.json") {
             continue;
         }
-        let meta: serde_json::Value = fs::read_to_string(&path).ok()
-            .and_then(|s| serde_json::from_str(&s).ok())?;
+        // A malformed sidecar only rules out its own agent, not the rest of the folder.
+        let Some(meta) = fs::read_to_string(&path).ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) else { continue; };
         if meta["toolUseId"].as_str() == Some(tool_use_id) {
             let jsonl_name = format!("{}.jsonl", name.trim_end_matches(".meta.json"));
             jsonl_path = Some(subagents_dir.join(jsonl_name));

@@ -2827,11 +2827,13 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      * no backing file — in a real editor tab. Writes it to a throwaway temp file and reuses
      * {@link org.eclipse.ui.ide.IDE#openEditorOnFileStore} rather than building a custom
      * read-only {@code IDocumentProvider}: the file is scratch, deleted on JVM exit, and
-     * nobody is expected to save over it.
+     * nobody is expected to save over it. A crash skips that deletion, so each call also
+     * sweeps leftovers more than a day old.
      */
     private static void openTextInEditor(String text) {
         Display.getDefault().asyncExec(() -> {
             try {
+                sweepStaleOutputFiles();
                 Path tmp = Files.createTempFile("claude-output-", ".txt");
                 Files.writeString(tmp, text, java.nio.charset.StandardCharsets.UTF_8);
                 tmp.toFile().deleteOnExit();
@@ -2844,6 +2846,25 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 // Same failure policy as openFileInEditor: no popup, the click is a no-op.
             }
         });
+    }
+
+    /** Deletes {@code claude-output-*.txt} temp files older than a day — ones a crashed
+     *  session left behind. Anything still open in an editor is younger than that or,
+     *  on Windows, locked; either way a failed delete is simply skipped. */
+    private static void sweepStaleOutputFiles() {
+        long cutoff = System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(1);
+        Path tmpDir = Path.of(System.getProperty("java.io.tmpdir"));
+        try (java.nio.file.DirectoryStream<Path> stale = Files.newDirectoryStream(tmpDir, "claude-output-*.txt")) {
+            for (Path p : stale) {
+                try {
+                    if (Files.getLastModifiedTime(p).toMillis() < cutoff) Files.deleteIfExists(p);
+                } catch (Exception ignored) {
+                    // in use or already gone
+                }
+            }
+        } catch (Exception ignored) {
+            // temp dir unreadable — nothing to sweep
+        }
     }
 
     /** Make sure the Rust MCP server (used by chat for editor tools) is up. */
