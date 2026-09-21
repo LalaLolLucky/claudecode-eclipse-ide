@@ -45,8 +45,9 @@ jobs:
         continue-on-error: true
 
   # GitHub has no FreeBSD runners, so this boots a FreeBSD VM on an Ubuntu
-  # runner. "15" is the newest 15.x release, the FreeBSD counterpart of the
-  # -latest runner labels; bump it when a new major version ships.
+  # runner. No `release:` is set, so it runs the action's default -- the
+  # newest FreeBSD it ships -- and moves up whenever Dependabot bumps the
+  # pinned action, the way the -latest runner labels move.
   freebsd:
     name: build & test (freebsd-latest)
     runs-on: ubuntu-latest
@@ -54,7 +55,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
         with:
-          release: "15"
           usesh: true
           prepare: |
             pkg install -y curl
