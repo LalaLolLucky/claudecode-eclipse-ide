@@ -48,7 +48,7 @@ jobs:
   # runner. 14.3 matches the sysroot build-natives.ps1 links the shipped
   # FreeBSD library against.
   freebsd:
-    name: build & test (freebsd)
+    name: build & test (freebsd-latest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
