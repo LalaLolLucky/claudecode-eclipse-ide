@@ -44,4 +44,4 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 cpal            = "0.15"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-libloading      = "0.8"
+libloading      = "0.9"
