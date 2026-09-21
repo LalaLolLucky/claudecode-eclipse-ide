@@ -28,7 +28,7 @@ use std::time::Duration;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{SinkExt, StreamExt};
-use rubato::{FftFixedIn, Resampler};
+use rubato::{Fft, FixedSync, Resampler, WindowFunction};
 
 /// The service takes 16 kHz mono signed 16-bit little-endian PCM.
 const WIRE_RATE: usize = 16_000;
@@ -39,8 +39,8 @@ const KEEPALIVE: Duration = Duration::from_secs(8);
 /// before giving up and promoting whatever interim is pending. Mirrors the
 /// CLI's own `safety` timeout.
 const FINALIZE_SAFETY: Duration = Duration::from_millis(5000);
-/// Samples handed to the resampler at a time. Fixed because `FftFixedIn` is a
-/// fixed-size block resampler, and keeping one instance across the take is what
+/// Samples handed to the resampler at a time. Fixed because `Fft` runs here as a
+/// fixed-input block resampler, and keeping one instance across the take is what
 /// makes the chunk boundaries seamless.
 const RESAMPLE_CHUNK: usize = 1024;
 /// Ceiling on one take, matching the CLI's two-minute cap.
@@ -391,7 +391,7 @@ async fn run_take(
                 for buf in resampler.drain(pcm, stopping) {
                     peak = peak.max(rms_of_linear16(&buf));
                     sent += buf.len();
-                    tx.send(Message::Binary(buf)).await.map_err(|e| format!("send: {e}"))?;
+                    tx.send(Message::Binary(buf.into())).await.map_err(|e| format!("send: {e}"))?;
                 }
                 // Drives the composer's level meter. Sent every tick, including
                 // silent ones, so the bars fall back to rest instead of sticking
@@ -523,7 +523,7 @@ fn error_text(v: &serde_json::Value) -> String {
 /// Device rate → 16 kHz as one stateful resampler for the whole take, rather
 /// than a fresh one per chunk, so block boundaries stay seamless.
 struct Resampling {
-    inner: Option<FftFixedIn<f32>>,
+    inner: Option<Fft<f32>>,
     carry: Vec<f32>,
 }
 
@@ -533,8 +533,16 @@ impl Resampling {
             None
         } else {
             Some(
-                FftFixedIn::<f32>::new(device_rate as usize, WIRE_RATE, RESAMPLE_CHUNK, 2, 1)
-                    .map_err(|e| format!("resampler: {e}"))?,
+                Fft::<f32>::new_custom(
+                    device_rate as usize,
+                    WIRE_RATE,
+                    RESAMPLE_CHUNK,
+                    2,
+                    1,
+                    WindowFunction::BlackmanHarris2,
+                    FixedSync::Input,
+                )
+                .map_err(|e| format!("resampler: {e}"))?,
             )
         };
         Ok(Self {
@@ -562,29 +570,29 @@ impl Resampling {
             Some(rs) => {
                 while self.carry.len() >= RESAMPLE_CHUNK {
                     let block: Vec<f32> = self.carry.drain(..RESAMPLE_CHUNK).collect();
-                    if let Ok(got) = rs.process(&[block], None) {
-                        if let Some(ch) = got.into_iter().next() {
-                            if !ch.is_empty() {
-                                out.push(to_linear16(&ch));
-                            }
-                        }
+                    if let Some(ch) = resample_block(rs, &block) {
+                        out.push(to_linear16(&ch));
                     }
                 }
                 if flush && !self.carry.is_empty() {
                     let mut block = std::mem::take(&mut self.carry);
                     block.resize(RESAMPLE_CHUNK, 0.0);
-                    if let Ok(got) = rs.process(&[block], None) {
-                        if let Some(ch) = got.into_iter().next() {
-                            if !ch.is_empty() {
-                                out.push(to_linear16(&ch));
-                            }
-                        }
+                    if let Some(ch) = resample_block(rs, &block) {
+                        out.push(to_linear16(&ch));
                     }
                 }
             }
         }
         out
     }
+}
+
+/// One mono block through the resampler; `None` on an error or an empty result,
+/// which the caller treats as nothing to send.
+fn resample_block(rs: &mut Fft<f32>, block: &[f32]) -> Option<Vec<f32>> {
+    let input = rubato::audioadapter_buffers::direct::InterleavedSlice::new(block, 1, block.len()).ok()?;
+    let got = rs.process(&input, None).ok()?.take_data();
+    (!got.is_empty()).then_some(got)
 }
 
 /// RMS of a `linear16` payload, normalised to roughly 0..1. Used only to drive
@@ -687,7 +695,7 @@ mod tests {
         assert_eq!(out[0].len(), 200); // 100 samples, 2 bytes each
     }
 
-    /// The ratio must hold in STEADY STATE, not on the first block: FftFixedIn
+    /// The ratio must hold in STEADY STATE, not on the first block: the FFT resampler
     /// has startup latency, so an early chunk legitimately emits short. A
     /// persistent rate error would mean audio leaves at the wrong effective
     /// rate, which garbles every transcript, so this checks convergence.
