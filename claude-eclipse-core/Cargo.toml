@@ -32,7 +32,7 @@ ignore          = "0.4"
 # entirely.
 #
 # All pure Rust: the nine-target build has no C++ cross-toolchain.
-rubato          = "0.15"
+rubato          = "5.0"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 
 # Capture. Windows and macOS go through cpal, whose audio frameworks ship with the
