@@ -4,7 +4,30 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.3] — 2026-09-17 *(current)*
+## [3.2.4] — 2026-09-21 *(current)*
+
+### Added
+- **An Agents panel** lists each subagent with its duration and tokens, and opens its prompt, tool calls, response and full transcript; a running background agent can be stopped from there ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **`/context`** shows how the context window is being used ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Security issues can be reported privately** through GitHub's vulnerability reporting ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #124).
+
+### Changed
+- **A tool's input and output share one box**, and long output or diffs are capped with a link that opens the full text in an editor ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Bash, Agent and Workflow show their description beside the tool name**, with the command or prompt always boxed ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Your latest prompt stays pinned at the top while you scroll** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **The composer no longer stretches edge to edge on a wide view** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+
+### Fixed
+- **A subagent's own messages and tool calls no longer appear inside Claude's reply** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **A reopened conversation shows its tools' output**, not just their input ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Background agents report their real duration and token count** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Grep and Glob show the search pattern** rather than the folder searched ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **The context meter no longer reads past 100%** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **The actions menu has its filter box again** and no longer runs off-screen ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+
+---
+
+## [3.2.3] — 2026-09-17
 
 ### Added
 - **Connect Claude to Chrome.** `@browser` in the composer hands Claude the browser; a banner shows while it is connected, and its × ends it and tells Claude you meant to.
