@@ -4,7 +4,15 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.4] — 2026-09-21 *(current)*
+## [3.2.5] — 2026-09-22 *(current)*
+
+### Fixed
+- One unreadable subagent record no longer hides every agent log in the conversation.
+- Tool output opened in an editor no longer leaves temp files behind after a crash.
+
+---
+
+## [3.2.4] — 2026-09-21
 
 ### Added
 - **An Agents panel** lists each subagent with its duration and tokens, and opens its prompt, tool calls, response and full transcript; a running background agent can be stopped from there ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
