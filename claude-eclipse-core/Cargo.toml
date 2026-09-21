@@ -18,7 +18,7 @@ tokio-stream   = { version = "0.1", features = ["sync"] }
 futures-util   = "0.3"
 portable-pty   = "0.8"
 base64         = "0.22"
-vt100          = "0.15"
+vt100          = "0.16"
 ureq           = { version = "2", features = ["json"] }
 qrcode = { version = "0.14.1", default-features = false }
 # The composer's @-mention file list: ripgrep's own gitignore-aware walker.
