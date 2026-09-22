@@ -627,6 +627,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // otherwise run inside a call this Browser is still executing — the first
         // deadlocks WebView2, the second disposes the widget out from under it.
         confirmCloseViewFn = new SimpleFunction(browser, "_confirmCloseView", a -> {
+            // Which row's × started it, so the wording matches the tab being closed.
+            final String kind = a.length > 0 && "session".equals(a[0]) ? "session" : "directory";
             Display.getDefault().asyncExec(() -> {
                 try {
                     if (browser == null || browser.isDisposed()) return;
@@ -635,8 +637,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                     // not a boolean. Index 0 is the first label; dismissing the dialog
                     // returns -1, which reads as cancel like every other non-zero answer.
                     MessageDialog dlg = new MessageDialog(browser.getShell(),
-                            "Close the last directory?", null,
-                            "You are about to close the last directory tab, this action will "
+                            "Close the last " + kind + "?", null,
+                            "You are about to close the last " + kind + " tab, this action will "
                                     + "close the Claude Code view. Do you wish to proceed?",
                             MessageDialog.CONFIRM, new String[] { "Close the view", "Cancel" }, 1);
                     if (dlg.open() != 0) return;
@@ -3662,34 +3664,26 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private static final String VIEW_FOCUS_CONTEXT_ID =
             "com.anthropic.claudecode.eclipse.contexts.guiViewFocus";
 
-    private org.eclipse.ui.contexts.IContextActivation viewFocusActivation;
-
     /**
-     * Activates {@link #VIEW_FOCUS_CONTEXT_ID} while this view's browser has keyboard
-     * focus, and deactivates it on {@code focusLost} — the same activate/deactivate shape
-     * as {@link #cardOpened()}/{@link #cardClosed()}, just keyed to widget focus instead of
-     * card state. Unlike cardOpen (deliberately global — a card blocks the whole workflow
-     * regardless of which part has focus), Ctrl+F must NOT be global: without this scoping
-     * it would shadow Ctrl+F in every editor and view in the IDE.
+     * Activates {@link #VIEW_FOCUS_CONTEXT_ID} through this view's own site, which keeps it
+     * in force only while this view is the active part — the same scoping as
+     * {@link #applyDictationKeyContext()}. Unlike cardOpen (deliberately global — a card
+     * blocks the whole workflow regardless of which part has focus), Ctrl+F must NOT be
+     * global: without this scoping it would shadow Ctrl+F in every editor and view in the IDE.
+     *
+     * <p>Not driven by the browser's focus events: while a focusLost listener owned the
+     * deactivation, Ctrl+F kept opening this find bar from inside an editor, i.e. the
+     * context outlived the focus. Part activation is Eclipse's own bookkeeping and
+     * follows the click.
      */
     private void hookViewFocusContext() {
-        browser.addFocusListener(new org.eclipse.swt.events.FocusAdapter() {
-            @Override
-            public void focusGained(org.eclipse.swt.events.FocusEvent e) {
-                if (viewFocusActivation != null) return;
-                org.eclipse.ui.contexts.IContextService svc = contextService();
-                if (svc != null) viewFocusActivation = svc.activateContext(VIEW_FOCUS_CONTEXT_ID);
-            }
-            @Override
-            public void focusLost(org.eclipse.swt.events.FocusEvent e) {
-                if (viewFocusActivation == null) return;
-                org.eclipse.ui.contexts.IContextService svc = contextService();
-                if (svc != null) {
-                    try { svc.deactivateContext(viewFocusActivation); } catch (Exception ignored) {}
-                }
-                viewFocusActivation = null;
-            }
-        });
+        try {
+            org.eclipse.ui.contexts.IContextService svc =
+                    getSite().getService(org.eclipse.ui.contexts.IContextService.class);
+            if (svc != null) svc.activateContext(VIEW_FOCUS_CONTEXT_ID);
+        } catch (Exception e) {
+            Activator.logError("Could not activate the Claude Code find key context", e);
+        }
     }
 
     private static int lastToggleFindEventTime = -1;

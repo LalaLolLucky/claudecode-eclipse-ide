@@ -139,11 +139,14 @@ function switchRoot(id) {
  *
  * Nothing is mutated on that branch. The dialog is asynchronous and a cancel has to
  * leave the page exactly as it was, so the teardown below is never started for it.
+ *
+ * `from` names the row whose × started it ('session' or 'directory'), so the
+ * dialog can say which kind of tab is being closed.
  */
-function closeRoot(id) {
+function closeRoot(id, from) {
   const r = rootById(id); if (!r) return;
   if (roots.length === 1) {
-    try { if (window._confirmCloseView) window._confirmCloseView(); } catch (e) {}
+    try { if (window._confirmCloseView) window._confirmCloseView(from || 'directory'); } catch (e) {}
     return;
   }
   const idx = roots.findIndex(x => x.id === id);

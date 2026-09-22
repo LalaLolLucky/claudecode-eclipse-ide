@@ -260,7 +260,7 @@ function closeTab(id, opts) {
   // the view down. Checked BEFORE any teardown: the confirmation is asynchronous, so
   // a cancel has to find this tab still whole.
   if (!opts.keepRoot && tabs.filter(x => x.rootId === t.rootId).length === 1) {
-    closeRoot(t.rootId); return;
+    closeRoot(t.rootId, 'session'); return;
   }
   if (t.streaming && window._cancelRequest) window._cancelRequest(id);   // stop its stream
   if (window._disposeTab) window._disposeTab(id);                         // free its process
