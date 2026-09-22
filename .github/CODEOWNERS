@@ -1,5 +1,5 @@
-# This only takes effect once branch protection on `master` requires review
-# from code owners (Settings -> Branches). Until then it's a hint, not a gate.
+# Enforced by the `dev-review` and `master` rulesets, which require review
+# from code owners (Settings -> Rules -> Rulesets).
 
 # Default owner for everything not matched more specifically below.
 *                                                     @eilonwy06
