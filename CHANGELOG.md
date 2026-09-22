@@ -4,7 +4,18 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.5] — 2026-09-22 *(current)*
+## [3.2.6] — 2026-09-23 *(current)*
+
+### Changed
+- Updated dependencies (axum 0.8, tokio-tungstenite 0.30, rubato 5).
+- Minor UI fixes.
+
+### Fixed
+- Ctrl+F in an editor no longer opens the Claude Code find bar.
+
+---
+
+## [3.2.5] — 2026-09-22
 
 ### Fixed
 - One unreadable subagent record no longer hides every agent log in the conversation.
