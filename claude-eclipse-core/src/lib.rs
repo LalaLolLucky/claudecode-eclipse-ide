@@ -1,10 +1,11 @@
+mod bridge;
 mod chat;
 mod chrome;
 mod console;
 mod launch;
 mod lock_file;
 mod mcp;
-mod php_bridge;
+mod mentions;
 mod server;
 mod session;
 mod shell_env;
@@ -671,6 +672,43 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeGe
     env.new_string(token).unwrap().into_raw()
 }
 
+/// Starts the in-process relay: binds the first two free ports in
+/// [portMin, portMax] and returns "portA portB", or "" when no pair is free.
+/// Every peer must present `token` on its first line (see bridgeGenerateToken).
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeStartRelay(
+    mut env: JNIEnv,
+    _class: JClass,
+    port_min: jint,
+    port_max: jint,
+    token: JString,
+) -> jstring {
+    let token: String = env.get_string(&token).map(|s| s.into()).unwrap_or_default();
+    let out = match bridge::relay_start(port_min as u16, port_max as u16, &token) {
+        Some((a, b)) => format!("{} {}", a, b),
+        None => String::new(),
+    };
+    env.new_string(out)
+        .unwrap_or_else(|_| env.new_string("").unwrap())
+        .into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeStopRelay(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    bridge::relay_stop();
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeRelayIsRunning(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    bridge::relay_is_running() as jboolean
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeConnect(
     mut env: JNIEnv,
@@ -679,7 +717,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeCo
     token: JString,
 ) -> jboolean {
     let token: String = env.get_string(&token).map(|s| s.into()).unwrap_or_default();
-    php_bridge::connect(port as u16, &token) as jboolean
+    bridge::connect(port as u16, &token) as jboolean
 }
 
 #[no_mangle]
@@ -687,7 +725,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeDi
     _env: JNIEnv,
     _class: JClass,
 ) {
-    php_bridge::disconnect();
+    bridge::disconnect();
 }
 
 #[no_mangle]
@@ -695,7 +733,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeIs
     _env: JNIEnv,
     _class: JClass,
 ) -> jboolean {
-    php_bridge::is_connected() as jboolean
+    bridge::is_connected() as jboolean
 }
 
 // ===========================================================================
@@ -802,6 +840,117 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionL
     };
     let json = session::load_session_history(&root, &id);
     env.new_string(json).unwrap_or_else(|_| env.new_string("[]").unwrap()).into_raw()
+}
+
+/// Writes one uploaded document out of a transcript to a file and returns its
+/// path (`""` when it isn't there) — what a reloaded conversation's attachment
+/// chip opens. **Blocking**, and the file can be large: off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionDocumentFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    workspace_root: JString,
+    session_id: JString,
+    message_uuid: JString,
+    index: jint,
+) -> jstring {
+    let mut arg = |s: JString| -> String {
+        if s.is_null() {
+            String::new()
+        } else {
+            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
+        }
+    };
+    let root = arg(workspace_root);
+    let id = arg(session_id);
+    let uuid = arg(message_uuid);
+    let path = session::session_document_file(&root, &id, &uuid, index.max(0) as usize);
+    env.new_string(path).unwrap_or_else(|_| env.new_string("").unwrap()).into_raw()
+}
+
+/// The composer's `@` list for `query`: the files and folders under `root`, with
+/// the browser tabs after them when `with_browser` (see
+/// `mentions::with_browser_rows` for the order). Those tabs come from the last
+/// lookup so a keystroke never waits on Chrome; a word starting `browser:` asks
+/// Chrome itself. **Blocking** (a folder walk, or Chrome): off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_listMentions(
+    mut env: JNIEnv,
+    _class: JClass,
+    root: JString,
+    claude_cmd: JString,
+    query: JString,
+    with_browser: jboolean,
+) -> jstring {
+    let mut arg = |s: JString| -> String {
+        if s.is_null() {
+            String::new()
+        } else {
+            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
+        }
+    };
+    let root = arg(root);
+    let cmd = arg(claude_cmd);
+    let query = arg(query);
+    let with_browser = with_browser != 0;
+    let json = if with_browser && query.to_lowercase().starts_with("browser:") {
+        chrome::browser_tabs_json(&cmd, &query)
+    } else {
+        let files = mentions::list_files_json(&root, &query);
+        if with_browser {
+            mentions::with_browser_rows(&files, &chrome::cached_browser_tabs_json(&cmd, &query), &query)
+        } else {
+            files
+        }
+    };
+    env.new_string(json).unwrap_or_else(|_| env.new_string("[]").unwrap()).into_raw()
+}
+
+/// Takes the browser back out of this tab's conversation — the banner's ×.
+/// Returns whether it was on.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatDisableChrome(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let manager = unsafe { &*(handle as *const ChatManager) };
+    manager.disable_chrome() as jboolean
+}
+
+/// Whether the CLI is signed in with a claude.ai account — what Browse the web and
+/// the browser tabs in the `@` list need. Cached for a minute in the core.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_hasClaudeAiLogin(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    web_history::has_claude_ai_login() as jboolean
+}
+
+/// Deletes one local session jsonl. Rejects ids that could escape the
+/// projects directory; returns whether the file was actually removed.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionDelete(
+    mut env: JNIEnv,
+    _class: JClass,
+    workspace_root: JString,
+    session_id: JString,
+) -> jboolean {
+    let root: String = if workspace_root.is_null() {
+        String::new()
+    } else {
+        env.get_string(&workspace_root).ok().map(|s| s.into()).unwrap_or_default()
+    };
+    let id: String = if session_id.is_null() {
+        String::new()
+    } else {
+        env.get_string(&session_id).ok().map(|s| s.into()).unwrap_or_default()
+    };
+    session::delete_session(&root, &id) as jboolean
 }
 
 /// Ordered transcript uuids of a session's user messages, matching the bubbles

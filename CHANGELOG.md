@@ -4,7 +4,96 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.22.exp] — 2026-09-07 *(current)*
+## [3.2.5] — 2026-09-22 *(current)*
+
+### Fixed
+- One unreadable subagent record no longer hides every agent log in the conversation.
+- Tool output opened in an editor no longer leaves temp files behind after a crash.
+
+---
+
+## [3.2.4] — 2026-09-21
+
+### Added
+- **An Agents panel** lists each subagent with its duration and tokens, and opens its prompt, tool calls, response and full transcript; a running background agent can be stopped from there ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **`/context`** shows how the context window is being used ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Security issues can be reported privately** through GitHub's vulnerability reporting ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #124).
+
+### Changed
+- **A tool's input and output share one box**, and long output or diffs are capped with a link that opens the full text in an editor ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Bash, Agent and Workflow show their description beside the tool name**, with the command or prompt always boxed ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Your latest prompt stays pinned at the top while you scroll** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **The composer no longer stretches edge to edge on a wide view** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+
+### Fixed
+- **A subagent's own messages and tool calls no longer appear inside Claude's reply** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **A reopened conversation shows its tools' output**, not just their input ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Background agents report their real duration and token count** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **Grep and Glob show the search pattern** rather than the folder searched ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **The context meter no longer reads past 100%** ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+- **The actions menu has its filter box again** and no longer runs off-screen ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #122).
+
+---
+
+## [3.2.3] — 2026-09-17
+
+### Added
+- **Connect Claude to Chrome.** `@browser` in the composer hands Claude the browser; a banner shows while it is connected, and its × ends it and tells Claude you meant to.
+- **Auto permission mode**, which approves what passes a safety check and pauses for anything risky. The mode previously called Auto is now named Bypass permissions, and is listed only when the new preference allows it.
+- **Preference: "Enable Thinking by default"** — new conversations start with thinking on.
+
+### Changed
+- **Switching model, effort, thinking or permission mode no longer restarts the conversation.** It applies to the one already running, and reaches claude.ai and your phone straight away.
+- **A model, effort or mode picked on another device now shows up here**, within a second.
+- **Thinking stays on while Remote Control is active.**
+- **The menus are more compact.**
+
+### Fixed
+- **Remote Control no longer goes one-way**, dropping silently on the first message after you turn it on.
+- **Restarting a conversation no longer leaves its Claude process running** on Windows.
+- **Squeezed narrow, the view stays readable** — banners wrap onto their own rows, "Claude Code" no longer splits mid-word, and a horizontal scrollbar appears below the minimum width.
+
+---
+
+## [3.2.2] — 2026-09-14
+
+### Added
+- **Dictate into the composer (experimental)** with the microphone button or Ctrl+D — hold to talk, or tap to keep recording. Only available on macOS with debug mode; on Linux and FreeBSD it needs ALSA (plus `alsa-plugins` on FreeBSD).
+- **Find in Conversation**: Ctrl+F searches the open conversation ([@jmoraleda](https://github.com/jmoraleda), PR #119).
+- **A tool line's file path opens that file in an editor** when clicked ([@jmoraleda](https://github.com/jmoraleda), PR #120).
+
+### Fixed
+- **The Claude Terminal no longer goes blank after Clear & Refresh** ([@xgsa](https://github.com/xgsa), PR #121).
+- **Escape no longer sometimes takes two presses to close something** ([@jmoraleda](https://github.com/jmoraleda), PR #119).
+
+---
+
+## [3.2.1] — 2026-09-09
+
+### Fixed
+- **A decision card answered on your phone or on claude.ai now closes here too**, instead of staying open and holding up every later prompt in the run.
+- **Messages sent from another device now appear in the conversation**, the first one of a session included.
+- **On macOS, thinking blocks expand again** — along with the model list, the version check and Update, which all failed together when Eclipse was started from Finder.
+
+### Changed
+- **The Claude Terminal's persistent scrollbar is painted in the terminal's own colors on Linux**, rather than standing on a grey panel beside it ([@xgsa](https://github.com/xgsa), PR #117).
+
+---
+
+## [3.2.0] — 2026-09-08
+
+### Added
+- **Continue a conversation on the web or your phone.** `/remote-control` in the Claude Code view hands the conversation to claude.ai; a status-bar indicator shows when it is live, and the chevron beside it opens a QR code to scan. Optionally on for every new conversation, in Preferences ▸ Claude Code.
+- **A Web tab in Session History**, listing the conversations on your Claude account alongside the ones on this machine.
+- **Teleport**: pick a web conversation and it comes down to this machine as a local session, with its files and branch checked out to match — it tells you when the session belongs to a different repository, or when the branch it was on is not the one you are on.
+
+### Fixed
+- **A conversation opened from Session History comes back with the model, effort, thinking and permission mode you left it on**, instead of resetting to the defaults every time (issue #114).
+- **The Terminal's rightmost columns no longer go blank on themes whose scrollbar fades out**, the KDE default among them — with a "Persistent vertical scrollbar" preference, on by default and shown only where it applies ([@xgsa](https://github.com/xgsa), PR #116).
+
+---
+
+## [3.1.22] — 2026-09-07
 
 ### Added
 - **Search in Session History**, the button beside the search box cycles titles, your own messages, or the whole conversation, and matches show the line they were found in ([@jmoraleda](https://github.com/jmoraleda), PR #113).
@@ -16,7 +105,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.21.exp] — 2026-09-06
+## [3.1.21] — 2026-09-06
 
 ### Added
 - **Scroll Lock can start switched on**, as a preference shared by the Claude Code and Claude Terminal views ([@jmoraleda](https://github.com/jmoraleda), PR #111).
@@ -33,7 +122,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.20.exp] — 2026-09-05
+## [3.1.20] — 2026-09-05
 
 ### Added
 - **A timestamp above each message you send**, in local time, in live conversations and in history alike — off by default, in Preferences ▸ Claude Code ▸ Miscellaneous Configuration ([@jmoraleda](https://github.com/jmoraleda), PR #107).
@@ -52,7 +141,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.19.exp] — 2026-09-04
+## [3.1.19] — 2026-09-04
 
 ### Added
 - **"Use custom spinner verbs"** in Preferences ▸ Claude Code ▸ Miscellaneous Configuration ▸ "Use custom spinner verbs" — add your own words to `~/.claude/settings.json` (e.g. `"spinnerVerbs": {"mode": "append", "verbs": ["Example-ing", "Sampling"]}`; or `"mode": "replace"` to use only your own) and tick this box to mix them into the Claude Code view's rotation.
@@ -65,7 +154,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.18.exp] — 2026-09-03
+## [3.1.18] — 2026-09-03
 
 ### Changed
 - Persistent bridge relay ports.
@@ -78,7 +167,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.17.exp] — 2026-09-02
+## [3.1.17] — 2026-09-02
 
 ### Fixed
 - **Fixed port usage.** No more conflicts or pile-up between MCP servers and bridge relays — a restart reuses its port instead of stranding it and climbing to the next one.
@@ -86,7 +175,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.16.exp] — 2026-09-01
+## [3.1.16] — 2026-09-01
 
 ### Added
 - **Conversations can run in any folder, not just the workspace root.** A row of directory tabs sits above the conversation tabs — one per folder, each with its own conversations and its own session history. Add a folder from that row or from a project's context menu; Claude asks before it runs in one for the first time ([#93](https://github.com/eilonwy06/claudecode-eclipse-ide/issues/93)).
@@ -100,7 +189,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.15.exp] — 2026-08-30
+## [3.1.15] — 2026-08-30
 
 ### Added
 - **Scroll Lock in the Claude Code view.** A toolbar toggle, the same one the Terminal has. With it on, reading back through a conversation no longer drags you to the bottom every time Claude writes a line, a tool finishes, or a card appears — and sending a message leaves you where you are. A **Jump to latest** button shows while you're held back; turning the lock off, or switching tabs, follows along again. It applies to every tab, is off by default, and changes nothing while off ([@jmoraleda](https://github.com/jmoraleda), PR #101).
@@ -114,14 +203,14 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.14.exp] — 2026-08-27
+## [3.1.14] — 2026-08-27
 
 ### Fixed
 - **The prompt input's key bindings no longer misfire on Linux.** One press of Emacs's Ctrl+Y pasted two or three times, Ctrl+X H typed an "h" on top of selecting all, and Ctrl+V pasted the clipboard twice — GTK acting on a keystroke Eclipse had already taken. Any custom scheme shaped the same way is covered, not just Emacs. Windows and macOS were never affected ([@jmoraleda](https://github.com/jmoraleda), PR #100, [#97](https://github.com/eilonwy06/claudecode-eclipse-ide/issues/97))
 
 ---
 
-## [3.1.13.exp] — 2026-08-08
+## [3.1.13] — 2026-08-08
 
 ### Changed
 - **Pasting with Ctrl+V in the prompt input should no longer insert the text twice on Linux.** GTK gives no way to call off the webview's own paste, so the second one is dropped — unconfirmed on GTK ([#97](https://github.com/eilonwy06/claudecode-eclipse-ide/issues/97)).
@@ -132,7 +221,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.12.exp] — 2026-08-05
+## [3.1.12] — 2026-08-05
 
 ### Added
 - **Approving a plan asks how you want to continue.** Leaving plan mode now has its own card: apply edits automatically, keep being asked before each one, or stay in plan mode. The conversation ends up in the mode you picked instead of the one it started in.
@@ -148,7 +237,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.11.exp] — 2026-08-03
+## [3.1.11] — 2026-08-03
 
 ### Added
 - **The Claude Code view honours your Eclipse key bindings.** Cut, Copy, Paste, Select All and Delete in the prompt input follow whatever is set under **Window → Preferences → General → Keys** — the Emacs scheme's Alt+W / Ctrl+W / Ctrl+Y, your own customizations, multi-keystroke sequences and all. The right-click menu shows those keys too. Previously only Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+A worked, and they still do on the default scheme.
@@ -163,16 +252,16 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.10.exp] — 2026-08-01
+## [3.1.10] — 2026-08-01
 
 ### Fixed
 - **Arrow keys no longer type box characters on macOS.** Pressing ← or → at the ends of the message you're writing — or any arrow key in an empty composer — inserted an invisible control character that showed up as a box, and got sent to Claude along with your message. Windows and Linux were never affected.
-- **The rewind confirmation fits on screen again.** Rewinding across dozens of files pushed the note and the confirm buttons off the bottom of the dialog, so there was no way to reach them without scrolling a long way down. The file list now scrolls inside the dialog, with the line counts pinned above it and the buttons pinned below.
+- **The rewind confirmation fits on screen again.** Rewinding across dozens of files pushed the note and the **Continue** / **Never mind** buttons off the bottom of the dialog, so there was no way to reach them without scrolling a long way down. The file list now scrolls inside the dialog, with the line counts pinned above it and the buttons pinned below.
 - **The working indicator no longer keeps spinning after a turn ends.** Leaving a permission prompt or a question unanswered for long enough that the turn behind it ended left the animated indicator running at the bottom of the conversation with nothing left to stop it. It's now removed whenever the turn it belongs to is over.
 
 ---
 
-## [3.1.9.exp] — 2026-07-31
+## [3.1.9] — 2026-07-31
 
 ### Fixed
 - **Links in Claude's responses open in your browser.** Clicking a link in a response used to load the page inside the Claude Code view itself, replacing the conversation with no way back — the only way to recover it was to close the view and reopen the conversation from session history. Links now open in your system browser and the conversation stays put.
@@ -180,7 +269,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.8.exp] — 2026-07-31
+## [3.1.8] — 2026-07-31
 
 ### Added
 - **Per-message actions in the Claude Code view.** Hover a message you sent and a badge appears on the bubble. The undo badge opens **Fork conversation from here**, **Rewind code to here** and **Fork conversation and rewind code** — so you can now restore the files without forking, or fork without touching the files, instead of always doing both. Rewinding is still available from the actions menu and `/rewind`.
@@ -197,7 +286,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.7.exp] — 2026-07-29
+## [3.1.7] — 2026-07-29
 
 ### Fixed
 - **Thinking is readable again in the Claude Code view.** The "Thought for Ns" step expands to Claude's reasoning again on recent models.
@@ -208,7 +297,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.6.exp] — 2026-07-28
+## [3.1.6] — 2026-07-28
 
 ### Added
 - **Image pasting in the Claude Code view** — paste a screenshot or image straight into the message box and it's sent along with your message. Click an attached image to view it full size.
@@ -232,39 +321,39 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.1.5.exp] — 2026-07-22
+## [3.1.5] — 2026-07-22
 
 ### Added
 - **Light theme support for the Claude Code view.** The chat view now follows Eclipse's light/dark theme instead of always rendering dark: switch Eclipse to a light theme (General &gt; Appearance) and the whole view — backgrounds, text, menus, cards, code blocks, and diffs — recolors to a matching light palette, keeping the Claude coral accent. The dark appearance is unchanged. The change applies the instant you switch themes, no reopen needed.
 
 ---
 
-## [3.1.4.exp] — 2026-07-18
+## [3.1.4] — 2026-07-18
 
 ### Fixed
 - **Step-dot colors are kept when you reopen a past conversation.** Reloading a conversation from the session-history list used to reset every step dot to gray. The Claude Code view now reconstructs each step's outcome from the conversation transcript, so finished tools stay green and interrupted or rejected ones stay red — matching how the conversation looked live.
 
 ---
 
-## [3.1.3.exp] — 2026-07-16
+## [3.1.3] — 2026-07-16
 
 ### Added
-- **Linux aarch64 (ARM64) support.** Added a native core built for ARM64 Linux (`native/linux/aarch64/libclaude_eclipse_core.so`), cross-compiled from this branch's own Rust source so it exposes the same JNI surface as the x86_64 build. `NativeCore` already resolves `aarch64`/`arm64` to this path, so ARM64 Linux hosts now load a matching native library instead of failing.
+- **Linux aarch64 (ARM64) support** — the native core library now ships for ARM64 Linux (Raspberry Pi 4/5, AWS Graviton, Ampere, and other ARM64 machines), alongside the existing x86_64 build. All plugin features work identically.
 
 ---
 
-## [3.1.2.exp] — 2026-07-14
+## [3.1.2] — 2026-07-14
 
 ### Changed
-- **Simpler step dots in the Claude Code view.** Tool-line dots now default to green (finished) instead of tracking pending/done/interrupted states — cleaner and less visual noise.
+- **Clearer step dots in the Claude Code view.** A step's dot is gray while it's pending or in progress (and for plain conversational replies), turns green only once a tool has finished, and turns red when a step is interrupted or a permission request is rejected. While a permission or question card is open, that step's dot stays gray, then resolves to green (accepted) or red (rejected).
 
-### Removed
-- **Removed the "interrupted" styling and notes.** The red-dot / "Tool interrupted" / "Interrupted" labels after pressing Stop are gone; the view just shows "Request cancelled." and moves on.
-- **Removed the post-cancel callback guard.** The `t.cancelled` flag that dropped late streaming callbacks is no longer needed with the simplified dot logic.
+### Fixed
+- **Pressing Stop now really stops.** Previously a reply already in flight could still slip in just after you cancelled; the view now drops anything the stopped turn sends after you press Stop, so nothing new appears.
+- **Interrupting a turn is clearer.** The step you stopped at is marked in red, followed by "Request cancelled." and an italic "Tool interrupted" (or "Interrupted" when no tool was running) note.
 
 ---
 
-## [3.1.1.exp] — 2026-07-14
+## [3.1.1] — 2026-07-14
 
 ### Changed
 - **The MCP server now always starts on launch.** The plugin can't function without it, so it starts unconditionally rather than depending on a preference. As a result, the old "Start server automatically on Eclipse launch" checkbox has been repurposed into **"Open new Claude Terminal automatically on Eclipse launch"** — tick it to have a Claude Terminal tab open by itself when Eclipse starts (off by default).
@@ -279,7 +368,7 @@ All notable changes to Claude Code for Eclipse are documented here.
 ## [3.1.0] — 2026-07-11
 
 ### Changed
-- **This is the experimental (PHP-bridge) line.** Unlike the mainline 3.1.0, the bundled PHP runtime is **retained** here — the session-history reader and the bridge relay still run through the PHP bridge, not the native core. This is the sole intended divergence of the experimental build.
+- **The bundled PHP runtime is removed.** Everything it did (the session-history reader and the bridge relay) now runs inside the plugin's native core — same behavior, same ports, same session-history output, but the plugin is ~150 MB smaller, starts these features faster, and no longer extracts a scripting runtime to a temp folder.
 - **Deleting a conversation also closes its tab.** Removing a conversation from the session-history list now closes the tab it was open in (deleting the only open conversation just clears the view), matching the VS Code extension.
 - **More variety in the working indicator** — the status word draws from a bigger pool while Claude works.
 

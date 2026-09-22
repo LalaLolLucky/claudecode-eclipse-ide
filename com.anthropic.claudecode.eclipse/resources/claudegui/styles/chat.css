@@ -145,6 +145,34 @@
    inherited overflow-wrap:anywhere from #messages still breaks a long unbroken token,
    which white-space only stops for `pre`/`nowrap`, not for pre-wrap. */
 .user-msg .body { color: var(--fg); line-height: 1.5; white-space: pre-wrap; }
+/* Clamped to ~2 lines by default — a long prompt no longer eats the top of the pane while
+   pinned there by the sticky rule above. .clampable is only added by JS (addUserMessage)
+   once the rendered body actually overflows two lines, so a short prompt never gets a
+   pointless "Show more" with nothing behind it. */
+.user-msg .body.clampable { max-height: 3.1em; overflow: hidden; position: relative; }
+.user-msg .body.clampable::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0;
+  height: 1.4em; background: linear-gradient(transparent, var(--bg-soft)); pointer-events: none; }
+/* Bounded, not "none": .user-msg's .turn is sticky (pinned at the top), which has no
+   internal scroll of its own — a fully unbounded expand on a prompt taller than the
+   viewport just grew past the bottom edge with no way to reach the rest of it, since
+   scrolling #messages can't move a pinned element. Capped to a viewport fraction with its
+   own scrollbar instead, so "Show more" always stays fully reachable regardless of length. */
+.user-msg.expanded .body.clampable { max-height: 35vh; overflow-y: auto; }
+.user-msg.expanded .body.clampable::after { display: none; }
+/* Styled like .copy-btn (chip look, hover-revealed) but anchored bottom-left instead of
+   top-right, and a touch bigger — a plain text link read as too easy to miss/misclick
+   against the clamp fade. "Show more" only ever reveals on hover (nothing to click before
+   that matters); "Show less" stays visible once expanded even without hovering, same as
+   before this restyle — you shouldn't have to re-hover to find your way back to collapsed. */
+.user-msg .clamp-toggle { display: none; position: absolute; left: 8px; bottom: 8px; z-index: 2;
+  background: var(--bg-chip); border: 1px solid var(--border); color: var(--fg-dim);
+  border-radius: 4px; font-size: 11.5px; padding: 3px 9px; cursor: pointer;
+  opacity: 0; transition: opacity .1s; }
+.user-msg .clamp-toggle:hover { background: var(--bg-hover); color: var(--fg); }
+.user-msg:not(.expanded) .clamp-toggle.more { display: inline-block; }
+.user-msg.expanded .clamp-toggle.less { display: inline-block; }
+.user-msg:hover .clamp-toggle.more { opacity: 1; }
+.user-msg:hover .clamp-toggle.less, .user-msg.expanded .clamp-toggle.less { opacity: 1; }
 
 /* ── Per-message actions (joebiden8) ─────────────────────────────────────────
    Hovering a sent message floats round badges over its top-right corner: the

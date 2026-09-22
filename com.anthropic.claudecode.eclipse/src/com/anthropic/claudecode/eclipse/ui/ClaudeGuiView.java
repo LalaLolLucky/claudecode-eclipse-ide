@@ -49,7 +49,6 @@ import org.eclipse.ui.part.ViewPart;
 
 import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.NativeCore;
-import com.anthropic.claudecode.eclipse.bridge.PhpHistory;
 import com.anthropic.claudecode.eclipse.chat.ChatProcessManager;
 
 /**
@@ -2987,19 +2986,15 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         return true;
     }
 
-    // History is served by the bundled PHP (scripts/history.php) so it can be
-    // iterated without a native rebuild; the Rust core stays as a fallback.
+    // History is served by the Rust core (session.rs), which reads the CLI's
+    // per-project jsonl logs directly.
     private String safeSessionList() { return safeSessionList(activeRoot()); }
 
     /** @param root the working root to list — captured by the caller, since the
      *  async path scans off the UI thread while the user may switch tabs. */
     private String safeSessionList(String root) {
         String json = "[]";
-        try { String r = PhpHistory.run("list", root, ""); if (r != null && !r.isBlank()) json = r; }
-        catch (Throwable ignored) {}
-        if ("[]".equals(json)) {
-            try { json = NativeCore.sessionList(root); } catch (Throwable t) {}
-        }
+        try { json = NativeCore.sessionList(root); } catch (Throwable t) {}
         return mergeCustomTitles(json, root);
     }
 
@@ -3085,8 +3080,6 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     }
 
     private String safeSessionLoad(String id) {
-        try { String r = PhpHistory.run("load", activeRoot(), id); if (r != null && !r.isBlank()) return r; }
-        catch (Throwable ignored) {}
         try { return NativeCore.sessionLoad(activeRoot(), id); }
         catch (Throwable t) { return "[]"; }
     }
@@ -3112,9 +3105,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         catch (Throwable t) { return "{\"error\":\"This build's native core has no message delete.\"}"; }
     }
 
-    /** Delete one local session file (PHP bridge; Java file-delete as fallback). */
+    /** Delete one local session file (Rust core; Java file-delete as fallback). */
     private void deleteSessionFile(String id) {
-        try { String r = PhpHistory.run("delete", activeRoot(), id); if (r != null && !r.isBlank()) return; }
+        try { if (NativeCore.sessionDelete(activeRoot(), id)) return; }
         catch (Throwable ignored) {}
         try {
             if (id == null || id.isEmpty() || id.contains("/") || id.contains("\\") || id.contains("..")) return;

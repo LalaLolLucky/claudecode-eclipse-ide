@@ -662,6 +662,131 @@ function loadHistory(id, title, targetTab) {
   if (t === activeTab()) messagesEl.scrollTop = 0;
 }
 
+
+/* ===================== History → Web tab (claude.ai sessions) =====================
+
+   The conversations this account has on claude.ai — including ones started on
+   another machine or from the phone — as the CLI's own History shows them under
+   "Web".
+
+   The fetch itself lives in the Rust core (web_history.rs), not here and not in
+   Java: the OAuth token is read there, spent on one request and wiped, so all
+   that ever reaches this page is {id, title, status, repo, timestamp}. Nothing
+   on this side can leak a credential, because nothing on this side has one.
+
+   Independent of Remote Control — this is a plain REST list, no bridge involved. */
+
+let webSessions = [], webState = '', webMessage = '', webLoading = false, webLoaded = false;
+
+/* Asks Java for the list on every tab switch and lets the Rust side decide whether
+   that means a real fetch or its own cached copy — one freshness policy, in one
+   place, instead of a second timer here that could disagree with it.
+   @param force skip that freshness window and re-fetch now. */
+function loadWebHistoryAsync(force) {
+  if (webLoading) { renderWebHistoryList(); return; }
+  if (!window._listWebSessionsAsync) {
+    // No bridge (an old host, or the page opened outside Eclipse): say so rather
+    // than spinning on a request that will never be answered.
+    webLoading = false; webLoaded = true; webState = 'error'; webMessage = '';
+    renderWebHistoryList();
+    return;
+  }
+  webLoading = true;
+  // Returns whatever was cached — possibly from a previous Eclipse run, since the
+  // cache survives restarts — so the tab paints now instead of after a round trip.
+  // onWebHistoryLoaded replaces it when the fetch lands.
+  applyWebPayload(window._listWebSessionsAsync(!!force), false);
+  renderWebHistoryList();
+}
+
+window.onWebHistoryLoaded = function(json) {
+  webLoading = false;
+  applyWebPayload(json, true);
+  renderWebHistoryList();
+  clampOpenMenu();   // rows may be wider than "Loading…" — re-pin so they aren't cut off
+};
+
+/* @param settle true for the fetched result, which settles the tab's state; false
+   for the optimistic cached paint, which must NOT mark it loaded or let an empty
+   cache overwrite what's on screen. */
+function applyWebPayload(json, settle) {
+  if (settle) webLoaded = true;
+  if (!json) return;
+  let p = null;
+  try { p = JSON.parse(json); } catch (e) { p = null; }
+  if (!p) {
+    if (settle) { webSessions = []; webState = 'error'; webMessage = ''; }
+    return;
+  }
+  webSessions = Array.isArray(p.sessions) ? p.sessions : [];
+  webState = p.state || '';
+  webMessage = p.message || '';
+}
+
+function webEmpty(text) {
+  const d = document.createElement('div');
+  d.className = 'h-empty';
+  d.textContent = text;
+  return d;
+}
+
+function renderWebHistoryList() {
+  const q = (document.getElementById('hist-search') ? document.getElementById('hist-search').value : '').toLowerCase();
+  const el = document.getElementById('history-web');
+  el.innerHTML = '';
+  // Anything already on hand outranks the spinner — a cached list from the last
+  // run is more useful than "Loading…" while the fetch confirms it.
+  if (webLoading && !webLoaded && !webSessions.length) { el.appendChild(webEmpty('Loading…')); return; }
+  if (webState === 'signed-out') { el.appendChild(webEmpty('Sign in to Claude Code to see your web sessions.')); return; }
+  if (webState === 'expired')    { el.appendChild(webEmpty('Your login expired. Sign in again to see your web sessions.')); return; }
+  if (webState === 'error' && !webSessions.length) {
+    el.appendChild(webEmpty(webMessage ? 'Couldn\u2019t load web sessions \u2014 ' + webMessage + '.'
+                                       : 'Couldn\u2019t load web sessions.'));
+    return;
+  }
+  const items = webSessions.filter(s => (s.title || '').toLowerCase().includes(q)
+                                     || (s.repo || '').toLowerCase().includes(q));
+  if (!items.length) {
+    el.appendChild(webEmpty(!webSessions.length ? 'No web sessions yet.' : 'No matches.'));
+    return;
+  }
+  items.forEach(s => {
+    const it = document.createElement('div'); it.className = 'item'; it.dataset.sid = s.id;
+    // Only the two statuses that mean something is still happening get a dot;
+    // idle, completed and archived sessions show none.
+    if (s.status === 'working' || s.status === 'waiting') {
+      const dot = document.createElement('span');
+      dot.className = 'h-dot ' + s.status;
+      dot.title = s.status === 'working' ? 'Working' : 'Waiting for a reply';
+      it.appendChild(dot);
+    }
+    const main = document.createElement('div'); main.className = 'h-main';
+    const title = document.createElement('div'); title.className = 'h-title';
+    title.textContent = s.title || '(untitled)';
+    const time = document.createElement('div'); time.className = 'h-time';
+    const age = relTime(s.timestamp);
+    time.textContent = s.repo ? (age ? s.repo + ' \u00b7 ' + age : s.repo) : age;
+    main.appendChild(title); main.appendChild(time);
+    it.appendChild(main);
+    // Clicking continues the conversation HERE (teleport.js); the arrow beside
+    // it is the way out to the browser. Separated because they are different
+    // intentions, and the one you reach for by default should be the one that
+    // keeps you in the editor.
+    it.title = 'Continue this conversation here';
+    it.onclick = () => { closeHistoryPanel(); startTeleport(s); };
+    const open = document.createElement('span');
+    open.className = 'h-action h-open';
+    open.title = 'Open on claude.ai';
+    open.innerHTML = ICONS.EXTERNAL || ICONS.GLOBE;
+    open.onclick = (e) => { e.stopPropagation(); openWebSession(s.id); };
+    const actions = document.createElement('div');
+    actions.className = 'h-actions';
+    actions.appendChild(open);
+    it.appendChild(actions);
+    el.appendChild(it);
+  });
+}
+
 /* Opens the conversation on claude.ai in the system browser — what the CLI's own
    Remote Control link does, and the one thing we can do with a web session that
    needs nothing but its id. Continuing one inside Eclipse means pulling its

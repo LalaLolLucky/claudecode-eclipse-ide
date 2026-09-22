@@ -25,7 +25,7 @@ import org.eclipse.ui.part.ViewPart;
 
 import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.NativeCore;
-import com.anthropic.claudecode.eclipse.bridge.PhpBridge;
+import com.anthropic.claudecode.eclipse.bridge.Bridge;
 import com.anthropic.claudecode.eclipse.editor.UiHelper;
 
 public class ClaudeCodeView extends ViewPart {
@@ -85,7 +85,7 @@ public class ClaudeCodeView extends ViewPart {
         createLogArea(container, display);
         active = this;
 
-        appendLog("Claude Code for Eclipse v3.1.22.exp\n");
+        appendLog("Claude Code for Eclipse v3.2.5\n");
         appendLog("─────────────────────────────────\n\n");
 
         if (!Activator.getDefault().isServerRunning()) {
@@ -215,10 +215,6 @@ public class ClaudeCodeView extends ViewPart {
      * Stops or starts the MCP server and the bridge relay together, which is the coupling
      * this view exists to make visible. Start goes through the same entry point as launch,
      * so the port scan, lock file and relay handshake all follow their normal paths.
-     *
-     * <p>The relay comes up on the supervisor's first tick rather than inline, so the log
-     * line below can read "not running" for a moment after a start. The status poller
-     * corrects it within a tick — sequencing the two here would buy nothing.
      */
     private void toggleServer() {
         Activator activator = Activator.getDefault();
@@ -373,21 +369,21 @@ public class ClaudeCodeView extends ViewPart {
 
     // Show bridge info for Windows/Linux, or override message for macOS
     private void logBridgeInfo() {
-        PhpBridge phpBridge = Activator.getDefault().getBridge();
-        if (phpBridge != null && phpBridge.isOverridden()) {
+        Bridge bridge = Activator.getDefault().getBridge();
+        if (bridge != null && bridge.isOverridden()) {
             appendLog("macOS detected, direct protocol active.\n\n");
-        } else if (phpBridge != null && phpBridge.isRunning()) {
-            String phpMsg = phpBridge.getPhpMessage();
-            if (phpMsg != null && !phpMsg.isEmpty()) {
-                appendLog(phpMsg + "\n");
+        } else if (bridge != null && bridge.isRunning()) {
+            String msg = bridge.getMessage();
+            if (msg != null && !msg.isEmpty()) {
+                appendLog(msg + "\n");
             }
-            appendLog("Bridge relay ports: " + phpBridge.getPortA() + " ↔ " + phpBridge.getPortB() + "\n\n");
+            appendLog("Bridge relay ports: " + bridge.getPortA() + " ↔ " + bridge.getPortB() + "\n\n");
         } else {
             appendLog("Bridge relay is not running.\n\n");
         }
     }
 
-    /** Diagnostic helper: native-side connection state without throwing if the native lib is old. */
+    /** Diagnostic helper: native-side connection state without throwing. */
     private static boolean safeBridgeConnected() {
         try { return NativeCore.bridgeIsConnected(); } catch (Throwable t) { return false; }
     }
@@ -437,13 +433,12 @@ public class ClaudeCodeView extends ViewPart {
             setServerStatus(Status.RED, "Stopped");
         }
 
-        PhpBridge phpBridge = activator.getBridge();
-        if (phpBridge != null && phpBridge.isOverridden()) {
+        Bridge bridge = activator.getBridge();
+        if (bridge != null && bridge.isOverridden()) {
             setBridgeStatus(Status.BLUE, "Overridden");
-        } else if (phpBridge != null && phpBridge.isRunning()) {
+        } else if (bridge != null && bridge.isRunning()) {
             if (safeBridgeConnected()) {
-                setBridgeStatus(Status.GREEN,
-                        "Connected " + phpBridge.getPortA() + " ↔ " + phpBridge.getPortB());
+                setBridgeStatus(Status.GREEN, "Connected " + bridge.getPortA() + " ↔ " + bridge.getPortB());
             } else {
                 setBridgeStatus(Status.YELLOW, "Running");
             }
