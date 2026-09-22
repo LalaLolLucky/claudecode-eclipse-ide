@@ -8,8 +8,7 @@ initModelConfig();
 initRoots();
 /* Reopen the roots and conversations this workspace was last closed with; only when
    there is nothing to restore does the view open its usual single empty conversation. */
-const restored = restoreViewState();
-if (!restored) createTab();
+if (!restoreViewState()) createTab();
 updateCtxChip();
 /* Paint the composer from the module defaults ONLY when nothing was restored.
    restoreViewState() ends in switchTab() -> applyTabSettings(), which has already
@@ -26,9 +25,3 @@ buildActionsSlash();
 /* Last: everything above is the state being restored INTO, and must not be saved
    over the state it was restored FROM. */
 startViewStatePersistence();
-
-/* With "Enable remote control on startup" set, every conversation the view opened
-   with becomes reachable from a phone too — not just the ones created afterwards
-   (createTab handles those). Last, so it runs over the fully restored set rather
-   than racing the restore. A no-op when the preference is off, which is default. */
-if (typeof autoEnableRemoteControlAll === 'function') autoEnableRemoteControlAll();

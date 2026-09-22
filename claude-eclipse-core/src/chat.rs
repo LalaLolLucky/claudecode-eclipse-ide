@@ -2895,10 +2895,10 @@ fn fire_string(
     method: &str,
     value: &str,
 ) {
-    // Mirror through the bridge if connected
-    if crate::bridge::is_connected() {
+    // Mirror through PHP bridge if connected
+    if crate::php_bridge::is_connected() {
         let msg = format!("CHAT:{}:{}", method, value);
-        crate::bridge::send_line(&msg);
+        crate::php_bridge::send_line(&msg);
     }
     // JNI callback
     let mut env = match java_vm.attach_current_thread() {

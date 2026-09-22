@@ -1,0 +1,312 @@
+<?php
+declare(strict_types=1);
+
+/*
+ * Local session-history reader for the Claude GUI.
+ *
+ * Reads the Claude CLI's per-project conversation logs
+ * (~/.claude/projects/<hash>/*.jsonl) — pure local file + JSON work, so it lives
+ * here in PHP instead of the Rust core (history iterates a lot; keeping it as a
+ * script means no DLL rebuild to tweak it).
+ *
+ * Usage:  php history.php <list|load|delete> <workspaceRoot> [sessionId]
+ * Output (stdout, JSON):
+ *   list   -> [{sessionId, display, timestamp}, ...]   (newest first, max 100)
+ *   load   -> [{role, content, timestamp}, ...]        (final text only)
+ *   delete -> {"ok": true|false}
+ */
+
+const MAX_SESSIONS = 100;
+const DISPLAY_CHARS = 120;
+
+$action = $argv[1] ?? '';
+$root   = $argv[2] ?? '';
+$sid    = $argv[3] ?? '';
+
+function workspace_hash(string $p): string {
+    // Mirrors Claude CLI: every non-alphanumeric char becomes '-'.
+    return preg_replace('/[^A-Za-z0-9]/', '-', $p) ?? '';
+}
+
+function home_dir(): ?string {
+    if (PHP_OS_FAMILY === 'Windows') {
+        $h = getenv('USERPROFILE');
+    } else {
+        $h = getenv('HOME');
+    }
+    return ($h !== false && $h !== '') ? $h : null;
+}
+
+function projects_dir(string $root): ?string {
+    $home = home_dir();
+    if ($home === null) return null;
+    $dir = $home . DIRECTORY_SEPARATOR . '.claude' . DIRECTORY_SEPARATOR . 'projects'
+         . DIRECTORY_SEPARATOR . workspace_hash($root);
+    return is_dir($dir) ? $dir : null;
+}
+
+/** Strip the editor-context preamble AND Claude Code command/meta wrappers so list
+ *  titles aren't raw <ide_selection> / <command-name> / <local-command-*> tags. */
+function strip_ide(string $s): string {
+    $s = preg_replace('/<ide_selection\b[^>]*>.*?<\/ide_selection>/is', '', $s) ?? $s;
+    $s = preg_replace('/<ide_context\b[^>]*\/>/is', '', $s) ?? $s;
+    $s = preg_replace('/<local-command-caveat>.*?<\/local-command-caveat>/is', '', $s) ?? $s;
+    $s = preg_replace('/<command-message>.*?<\/command-message>/is', '', $s) ?? $s;
+    $s = preg_replace('/<command-args>.*?<\/command-args>/is', '', $s) ?? $s;
+    $s = preg_replace('/<local-command-stdout>.*?<\/local-command-stdout>/is', '', $s) ?? $s;
+    $s = preg_replace('/<command-name>(.*?)<\/command-name>/is', '$1', $s) ?? $s;
+    return ltrim($s);
+}
+
+function take(string $s, int $n): string {
+    return function_exists('mb_substr') ? mb_substr($s, 0, $n) : substr($s, 0, $n);
+}
+
+function list_sessions(string $root): array {
+    $dir = projects_dir($root);
+    if ($dir === null) return [];
+    $out = [];
+    foreach (glob($dir . DIRECTORY_SEPARATOR . '*.jsonl') ?: [] as $path) {
+        $id = pathinfo($path, PATHINFO_FILENAME);
+        $fh = @fopen($path, 'r');
+        if (!$fh) continue;
+        // The title shown in the list mirrors the CLI's /resume: the user's rename
+        // ("custom-title" event, appended by the rename_session control request —
+        // LAST one wins) beats the AI-generated "ai-title", which beats the first
+        // user message. Neither title event carries a timestamp. The legacy
+        // Eclipse-only sidecar (session-titles.json, applied Java-side) still
+        // overrides all of these. Sort key is the LAST activity timestamp (newest
+        // event), matching /resume's most-recently-used ordering.
+        $customTitle = ''; $aiTitle = ''; $firstUser = ''; $lastTs = ''; $seen = false;
+        while (($line = fgets($fh)) !== false) {
+            $line = trim($line);
+            if ($line === '') continue;
+            $e = json_decode($line, true);
+            if (!is_array($e)) continue;
+            $seen = true;
+            $type = $e['type'] ?? '';
+            if (is_string($e['timestamp'] ?? null)) $lastTs = $e['timestamp'];
+            if ($type === 'custom-title') {
+                $ct = $e['customTitle'] ?? null;
+                if (is_string($ct) && $ct !== '') $customTitle = take($ct, DISPLAY_CHARS);
+            } elseif ($type === 'ai-title') {
+                $at = $e['aiTitle'] ?? null;
+                if (is_string($at) && $at !== '') $aiTitle = take($at, DISPLAY_CHARS);
+            } elseif ($type === 'user' && $firstUser === '') {
+                $c = $e['message']['content'] ?? null;
+                if (is_string($c)) $firstUser = take(strip_ide($c), DISPLAY_CHARS);
+            }
+        }
+        fclose($fh);
+        // Include a session if it has any recognizable title source: a custom-title
+        // (user rename), an ai-title (covers title-only stubs that /resume lists)
+        // or a first user message.
+        $display = $customTitle !== '' ? $customTitle : ($aiTitle !== '' ? $aiTitle : $firstUser);
+        if (!$seen || $display === '') continue;
+        // Fall back to file mtime when no event carried a timestamp (e.g. stubs).
+        if ($lastTs === '') { $mt = @filemtime($path); if ($mt !== false) $lastTs = gmdate('Y-m-d\TH:i:s\Z', $mt); }
+        $out[] = ['sessionId' => $id, 'display' => $display, 'timestamp' => $lastTs];
+    }
+    usort($out, fn($a, $b) => strcmp((string) $b['timestamp'], (string) $a['timestamp']));
+    return array_slice($out, 0, MAX_SESSIONS);
+}
+
+/*
+ * Returns the conversation as an ordered list of render items so the GUI can
+ * reconstruct EXACTLY how the live session looked:
+ *   {t:user, content}      - user message (raw; GUI parses the ide_selection chip)
+ *   {t:thinking}           - a thinking block (shown as "Thinking", no duration)
+ *   {t:tool, name, input, status} - a tool call (Read/Edit/Search/Asking... + inline
+ *                            diff); status "done"/"interrupted" reconstructs the dot
+ *                            color the tool had live (green/red)
+ *   {t:answered, text}     - the user's answer to an askUserQuestion card
+ *   {t:text, text}         - assistant prose
+ *   {t:compact, trigger, preTokens, postTokens} - a /compact (or auto-compact)
+ *                            boundary; becomes the "Compacted chat" collapsible
+ *   {t:compact_summary, text} - that collapsible's body
+ *   {t:error, text}        - a backend error (rate limit, 529, ...) shown as the
+ *                            muted "! ..." line, never as assistant prose
+ */
+function load_session(string $root, string $sid): array {
+    $dir = projects_dir($root);
+    if ($dir === null || $sid === '') return [];
+    $path = $dir . DIRECTORY_SEPARATOR . $sid . '.jsonl';
+    $fh = @fopen($path, 'r');
+    if (!$fh) return [];
+    $items = [];
+    $askIds = [];   // tool_use_id => true, for askUserQuestion calls (to surface answers)
+    $toolIdx = [];  // tool_use_id => index of its item in $items (to stamp its outcome)
+    $resultErr = []; // tool_use_id => whether its tool_result reported an error
+    while (($line = fgets($fh)) !== false) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $e = json_decode($line, true);
+        if (!is_array($e)) continue;
+        $type = $e['type'] ?? '';
+        if ($type === 'user') {
+            $c = $e['message']['content'] ?? '';
+            if (is_string($c)) {
+                // A post-compaction summary is stored as a user line flagged
+                // isCompactSummary - surface it as the expandable "Compacted chat"
+                // body, never as a (huge) user bubble. Mirrors the Rust loader.
+                if (!empty($e['isCompactSummary'])) {
+                    $items[] = ['t' => 'compact_summary', 'text' => $c];
+                    continue;
+                }
+                $item = ['t' => 'user', 'content' => $c];
+                // The transcript uuid, so the GUI can target THIS message for
+                // per-message actions (rewind/fork/delete). Matches what the Rust
+                // loader attaches; without it a history-loaded bubble gets no
+                // data-mid and its hover badges never appear.
+                $uuid = $e['uuid'] ?? '';
+                if (is_string($uuid) && $uuid !== '') {
+                    $item['id'] = $uuid;
+                }
+                $items[] = $item;
+            } elseif (is_array($c)) {
+                // A message the user sent with pasted images is stored as content
+                // BLOCKS (text + image), not a plain string — rebuild it as one
+                // user item so the bubble and its image chips come back on reload.
+                // Images carry their base64 so the chip can draw its thumbnail;
+                // tool_result-only lines add nothing. Mirrors the Rust loader.
+                $text = '';
+                $images = [];
+                foreach ($c as $b) {
+                    $bt = $b['type'] ?? '';
+                    if ($bt === 'text') {
+                        $s = $b['text'] ?? '';
+                        if (is_string($s) && $s !== '') {
+                            if ($text !== '') $text .= "\n";
+                            $text .= $s;
+                        }
+                    } elseif ($bt === 'image') {
+                        $src = $b['source'] ?? [];
+                        $data = is_array($src) ? ($src['data'] ?? '') : '';
+                        if (!is_string($data) || $data === '') continue;
+                        $mt = (is_array($src) && is_string($src['media_type'] ?? null))
+                            ? $src['media_type'] : 'image/png';
+                        $images[] = ['media_type' => $mt, 'data' => $data];
+                    }
+                }
+                if ($text !== '' || $images) {
+                    $item = ['t' => 'user', 'content' => $text];
+                    if ($images) $item['images'] = $images;
+                    $uuid = $e['uuid'] ?? '';
+                    if (is_string($uuid) && $uuid !== '') {
+                        $item['id'] = $uuid;
+                    }
+                    $items[] = $item;
+                }
+                foreach ($c as $b) {
+                    if (($b['type'] ?? '') !== 'tool_result') continue;
+                    // Record the tool's outcome so its dot can be reconstructed:
+                    // is_error ⇒ interrupted/rejected, otherwise finished. (A tool
+                    // with no result at all stays unresolved → interrupted below.)
+                    $tuid = $b['tool_use_id'] ?? '';
+                    if (is_string($tuid) && $tuid !== '') {
+                        $resultErr[$tuid] = !empty($b['is_error']);
+                    }
+                    if (isset($askIds[$tuid])) {
+                        $rc = $b['content'] ?? '';
+                        if (is_array($rc)) {
+                            $txt = '';
+                            foreach ($rc as $rb) { if (($rb['type'] ?? '') === 'text') $txt .= ($rb['text'] ?? ''); }
+                            $rc = $txt;
+                        }
+                        if (is_string($rc) && $rc !== '') {
+                            $rc = preg_replace('/^\s*The user answered:\s*/i', '', $rc);
+                            $items[] = ['t' => 'answered', 'text' => $rc];
+                        }
+                    }
+                }
+            }
+        } elseif ($type === 'system') {
+            // Compaction marker (written by /compact or auto-compact). The jsonl
+            // uses camelCase compactMetadata (unlike the stream's compact_metadata).
+            if (($e['subtype'] ?? '') === 'compact_boundary') {
+                $md = $e['compactMetadata'] ?? [];
+                $trigger = (is_array($md) && is_string($md['trigger'] ?? null)) ? $md['trigger'] : 'manual';
+                $items[] = [
+                    't'          => 'compact',
+                    'trigger'    => $trigger,
+                    'preTokens'  => (int) (is_array($md) ? ($md['preTokens'] ?? 0) : 0),
+                    'postTokens' => (int) (is_array($md) ? ($md['postTokens'] ?? 0) : 0),
+                ];
+            }
+        } elseif ($type === 'assistant') {
+            if (!empty($e['partial'])) continue;
+            $content = $e['message']['content'] ?? null;
+            if (!is_array($content)) continue;
+            // A synthetic assistant message standing in for a backend error (529
+            // overload, session-limit hit, ...). The CLI flags it isApiErrorMessage;
+            // live it renders as the muted "! ..." line via onError, never as a
+            // paragraph, so a reload has to rebuild that same line.
+            if (!empty($e['isApiErrorMessage'])) {
+                $etext = '';
+                foreach ($content as $b) {
+                    if (($b['type'] ?? '') !== 'text') continue;
+                    $s2 = $b['text'] ?? '';
+                    if (is_string($s2) && $s2 !== '') {
+                        if ($etext !== '') $etext .= "
+";
+                        $etext .= $s2;
+                    }
+                }
+                if ($etext !== '') $items[] = ['t' => 'error', 'text' => $etext];
+                continue;
+            }
+            // The model this turn ran on — attached to each item so the GUI can
+            // resume the conversation with its last-used model + show it in the bar.
+            $model = is_string($e['message']['model'] ?? null) ? $e['message']['model'] : '';
+            foreach ($content as $b) {
+                $bt = $b['type'] ?? '';
+                if ($bt === 'thinking') {
+                    $tt = is_string($b['thinking'] ?? null) ? $b['thinking'] : '';
+                    $items[] = ['t' => 'thinking', 'model' => $model, 'text' => $tt];
+                } elseif ($bt === 'text') {
+                    if (isset($b['text']) && is_string($b['text']) && $b['text'] !== '') {
+                        $items[] = ['t' => 'text', 'text' => $b['text'], 'model' => $model];
+                    }
+                } elseif ($bt === 'tool_use') {
+                    $name = is_string($b['name'] ?? null) ? $b['name'] : 'tool';
+                    $input = $b['input'] ?? new stdClass();
+                    $items[] = ['t' => 'tool', 'name' => $name, 'input' => $input, 'model' => $model];
+                    if (isset($b['id']) && is_string($b['id'])) {
+                        // Remember where this tool sits so its result can stamp a
+                        // status onto it after the whole file is read.
+                        $toolIdx[$b['id']] = count($items) - 1;
+                        if (stripos($name, 'askUserQuestion') !== false) {
+                            $askIds[$b['id']] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fclose($fh);
+    // Stamp each tool with a reconstructed dot status so reloading a past
+    // conversation keeps the green/red it had live:
+    //   • result present, not an error → "done"         (finished, green)
+    //   • result present with is_error → "interrupted"  (rejected/stopped, red)
+    //   • no result at all             → "interrupted"  (turn was cut off, red)
+    foreach ($toolIdx as $id => $idx) {
+        $items[$idx]['status'] = (isset($resultErr[$id]) && !$resultErr[$id]) ? 'done' : 'interrupted';
+    }
+    return $items;
+}
+
+function delete_session(string $root, string $sid): bool {
+    if ($sid === '' || strpbrk($sid, "/\\") !== false || str_contains($sid, '..')) return false;
+    $dir = projects_dir($root);
+    if ($dir === null) return false;
+    $path = $dir . DIRECTORY_SEPARATOR . $sid . '.jsonl';
+    return is_file($path) ? @unlink($path) : false;
+}
+
+$flags = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE;
+switch ($action) {
+    case 'list':   echo json_encode(list_sessions($root), $flags); break;
+    case 'load':   echo json_encode(load_session($root, $sid), $flags); break;
+    case 'delete': echo json_encode(['ok' => delete_session($root, $sid)]); break;
+    default:       echo '[]';
+}
