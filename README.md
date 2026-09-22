@@ -360,7 +360,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ## Credits
 
-Special thanks to [xgsa](https://github.com/xgsa) and [jmoraleda](https://github.com/jmoraleda) for the fixes and improvements they have contributed to the plugin.
+Special thanks to [xgsa](https://github.com/xgsa), [jmoraleda](https://github.com/jmoraleda) and [LalaLolLucky](https://github.com/LalaLolLucky) for the fixes and improvements they have contributed to the plugin.
 
 ## License
 
