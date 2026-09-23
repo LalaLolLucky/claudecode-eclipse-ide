@@ -9,6 +9,13 @@ com.anthropic.claudecode.eclipse/bin/
 # Rust build artifacts (claude-eclipse-core)
 claude-eclipse-core/target/
 
+# Maven/Tycho build outputs
+target/
+
+# VS Code Java Language Server local artifacts (machine-specific, regenerated)
+com.anthropic.claudecode.eclipse/.settings/org.eclipse.jdt.core.prefs
+__CREATED_BY_JAVA_LANGUAGE_SERVER__/
+
 # OS
 .DS_Store
 Thumbs.db
