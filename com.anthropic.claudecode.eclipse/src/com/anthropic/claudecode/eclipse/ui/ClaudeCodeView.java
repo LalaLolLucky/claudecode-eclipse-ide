@@ -104,7 +104,7 @@ public class ClaudeCodeView extends ViewPart {
         // The relay is owned by the Activator and comes up with the MCP server at launch,
         // so this view only reports on it — opening or closing the view leaves it alone.
         logBridgeInfo();
-        appendLog("Click 'Launch Claude Terminal' to open the Claude Terminal.\n\n");
+        logEnvironmentThenHint();
 
         updateStatus();
         startStatusPoller();
@@ -381,6 +381,115 @@ public class ClaudeCodeView extends ViewPart {
         } else {
             appendLog("Bridge relay is not running.\n\n");
         }
+    }
+
+    /**
+     * Logs the platform, Eclipse, Node and Claude Code versions, then the launch hint.
+     * The Node and Claude versions each come from running a {@code --version}, so they
+     * are read off the UI thread and both blocks are logged once they are in, keeping
+     * the hint last.
+     */
+    private void logEnvironmentThenHint() {
+        String platform = platformName();
+        String eclipse = joinKnown(eclipseVersion(), eclipseBuild());
+        String claudeCmd = ClaudeGuiView.configuredClaudeCmd();
+        Display display = Display.getCurrent();
+        Thread t = new Thread(() -> {
+            String node = CliVersionService.nodeVersion();
+            String claude = CliVersionService.installedVersion(claudeCmd);
+            if (display.isDisposed()) return;
+            display.asyncExec(() -> {
+                appendLog("Platform: " + orNA(platform) + "\n");
+                appendLog("Eclipse version: " + orNA(eclipse) + "\n");
+                appendLog("Node version: " + orNA(node) + "\n");
+                appendLog("Claude Code version: " + orNA(claude) + "\n\n");
+                appendLog("Click 'Launch Claude Terminal' to open the Claude Terminal.\n\n");
+            });
+        }, "claude-env-info");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private static String orNA(String s) {
+        return s == null || s.isBlank() ? "N/A" : s;
+    }
+
+    /** "Windows 11", "macOS 15.3", "Ubuntu 24.04.1 LTS", "FreeBSD 15.1-RELEASE", …. */
+    private static String platformName() {
+        String name = System.getProperty("os.name", "");
+        String version = System.getProperty("os.version", "");
+        if (Activator.isWindows()) return name;             // already "Windows 11"
+        if (Activator.isMacOS()) return ("macOS " + version).trim();
+        if (Activator.isLinux()) {
+            String distro = osRelease("PRETTY_NAME");
+            if (distro != null) return distro;
+        }
+        return (name + " " + version).trim();
+    }
+
+    /** A field of /etc/os-release (PRETTY_NAME "Ubuntu 24.04.1 LTS", NAME "Ubuntu"), or null. */
+    private static String osRelease(String key) {
+        String prefix = key + "=";
+        try {
+            for (String line : java.nio.file.Files.readAllLines(java.nio.file.Paths.get("/etc/os-release"))) {
+                if (line.startsWith(prefix)) {
+                    String v = line.substring(prefix.length()).trim();
+                    if (v.length() >= 2 && (v.startsWith("\"") || v.startsWith("'"))) v = v.substring(1, v.length() - 1);
+                    return v.isBlank() ? null : v;
+                }
+            }
+        } catch (Exception ignore) {
+            // no os-release: fall back to os.name
+        }
+        return null;
+    }
+
+    /** The Eclipse Platform version, e.g. "4.36.0", or null when it can't be told. */
+    private static String eclipseVersion() {
+        try {
+            org.osgi.framework.Bundle platform = org.eclipse.core.runtime.Platform.getBundle("org.eclipse.platform");
+            if (platform != null) {
+                org.osgi.framework.Version v = platform.getVersion();
+                return v.getMajor() + "." + v.getMinor() + "." + v.getMicro();
+            }
+        } catch (Throwable ignore) {
+            // fall through to the build id
+        }
+        return System.getProperty("eclipse.buildId");
+    }
+
+    /**
+     * The OS and architecture of the Eclipse build that is running, e.g. "Windows x86_64"
+     * or "Ubuntu riscv64". This is the build's, not the machine's: an x86_64 Eclipse
+     * running emulated on an arm64 machine says x86_64.
+     */
+    private static String eclipseBuild() {
+        try {
+            String os = org.eclipse.core.runtime.Platform.getOS();
+            String osName;
+            switch (os == null ? "" : os) {
+                case "win32":   osName = "Windows"; break;
+                case "macosx":  osName = "macOS"; break;
+                case "linux":   osName = joinKnown(osRelease("NAME")); break;
+                case "freebsd": osName = "FreeBSD"; break;
+                default:        osName = os;
+            }
+            if (osName == null) osName = "Linux";     // no os-release NAME
+            return joinKnown(osName, org.eclipse.core.runtime.Platform.getOSArch());
+        } catch (Throwable ignore) {
+            return null;
+        }
+    }
+
+    /** The non-blank parts joined with spaces, or null when there are none. */
+    private static String joinKnown(String... parts) {
+        StringBuilder sb = new StringBuilder();
+        for (String p : parts) {
+            if (p == null || p.isBlank()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(p.trim());
+        }
+        return sb.length() == 0 ? null : sb.toString();
     }
 
     /** Diagnostic helper: native-side connection state without throwing. */

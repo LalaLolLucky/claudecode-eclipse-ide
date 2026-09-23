@@ -348,3 +348,10 @@ body { min-width: 120px; }
 #send.disabled { background: var(--send-off-bg); color: var(--send-off-fg); cursor: default; }
 #send.stop { background: var(--accent); }
 
+
+/* FreeBSD setup guide showing (cliversion.js onSetupGuide): nothing to talk to, so
+   no composer, and no root-directory rows or their controls. */
+body.setup-guide-mode #composer,
+body.setup-guide-mode #supertab-row,
+body.setup-guide-mode #cwd-row,
+body.setup-guide-mode #supertab-toggle-collapsed { display: none !important; }

@@ -255,6 +255,7 @@ function closeTab(id, opts) {
   const idx = tabs.findIndex(t => t.id === id);
   if (idx < 0) return;
   const t = tabs[idx];
+  if (t.setupGuide) return;   // the FreeBSD setup guide stays until claude is installed
   // A root with no conversations has nothing to show, so its last one closing closes
   // the root too — and when that is also the LAST root, closeRoot asks before taking
   // the view down. Checked BEFORE any teardown: the confirmation is asynchronous, so
@@ -327,11 +328,14 @@ function renderTabs() {
     // Rename + close share one action group, the same shape (and 2px gap) the history
     // list's own row actions use — see .tab-actions in layout.css for why they can't
     // just be siblings of the title.
+    // The FreeBSD setup guide's tab (cliversion.js) can be neither renamed nor closed,
+    // so it gets no actions at all, not even on hover.
     el.innerHTML = '<span class="ti">' + ICONS.SUNBURST + '</span><span class="tt"></span>'
-      + '<span class="tab-actions">'
-      +   '<span class="tab-edit" title="Rename">' + ICONS.PENCIL + '</span>'
-      +   '<span class="tab-close">' + ICONS.X + '</span>'
-      + '</span>';
+      + (t.setupGuide ? '' :
+          '<span class="tab-actions">'
+        +   '<span class="tab-edit" title="Rename">' + ICONS.PENCIL + '</span>'
+        +   '<span class="tab-close">' + ICONS.X + '</span>'
+        + '</span>');
     const tt = el.querySelector('.tt');
     el.title = t.title;
     // Routed here rather than as the pencil's own handler, for the same reason .tab-close
@@ -342,7 +346,7 @@ function renderTabs() {
       else if (e.target.closest('.tab-edit')) startTitleEdit(t.id);
       else if (!editing) switchTab(t.id);
     };
-    tt.ondblclick = (e) => { e.stopPropagation(); startTitleEdit(t.id); };
+    tt.ondblclick = (e) => { e.stopPropagation(); if (!t.setupGuide) startTitleEdit(t.id); };
     if (editing) editInput = startTabEditInput(el, tt, t, editSnapshot);
     else tt.textContent = t.title;
     // Drag-to-reorder with a drop-line indicator (best-practice: line before/after).
@@ -443,7 +447,10 @@ function startTitleEdit(tabId) {
   renderTabs();
 }
 /* New conversation in the ACTIVE root — a new FOLDER is newRootDirectory(). */
-function newSession() { closeMenus(); createTab({ rootId: activeRootId }); input.focus(); }
+function newSession() {
+  if (setupGuideMode) return;   // nothing to start a session with (see cliversion.js)
+  closeMenus(); createTab({ rootId: activeRootId }); input.focus();
+}
 
 /* True when t has no conversation AND nothing typed/attached that a reuse would lose —
  * checked before silently repurposing a tab instead of opening a new one (see

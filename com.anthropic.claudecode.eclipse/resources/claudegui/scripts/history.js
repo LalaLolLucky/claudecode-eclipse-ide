@@ -231,6 +231,7 @@ function closeHistoryPanel() {
  * flag, its only option). See openHistoryForResume for the other entry point.
  */
 window.openHistoryFromToolbar = function() {
+  if (setupGuideMode) return;   // no sessions to resume without claude (see cliversion.js)
   const panel = document.getElementById('history-panel');
   if (!openHistoryPanel(false)) return;
   positionMenuFixed(panel);

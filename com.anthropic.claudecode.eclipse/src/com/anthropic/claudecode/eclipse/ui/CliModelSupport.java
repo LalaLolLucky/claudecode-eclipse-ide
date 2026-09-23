@@ -255,6 +255,14 @@ public final class CliModelSupport {
             Path p = base.resolve(name);
             if (isBinary(p)) return p;
         }
+        // FreeBSD (claude-freebsd): <prefix>/bin/claude is a sh wrapper that execs the
+        // Linux build installed at <prefix>/libexec/claude-code/claude. Without this the
+        // scan finds nothing there, and thinking summaries are never requested.
+        Path prefix = dir.getParent();
+        if (prefix != null && com.anthropic.claudecode.eclipse.Activator.isFreeBSD()) {
+            Path p = prefix.resolve("libexec").resolve("claude-code").resolve("claude");
+            if (isBinary(p)) return p;
+        }
         return null;
     }
 
