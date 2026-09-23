@@ -1,9 +1,9 @@
 name: Deploy update site
 
-# Phase A: build from whatever's already committed under native/ and publish
-# straight to GitHub Pages as a build artifact -- no git commit involved.
-# The 9-target native cross-compile matrix (replacing the committed
-# binaries with freshly-built ones) is a separate follow-up on top of this.
+# Cross-compiles the native library for all 9 platform/arch combinations,
+# builds the plugin/feature/site with Tycho against those freshly-built
+# binaries, and publishes straight to GitHub Pages as a build artifact --
+# no git commit involved anywhere in this pipeline.
 #
 # Manual only: nothing publishes without someone with write access
 # explicitly clicking "Run workflow".
@@ -18,11 +18,201 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build p2 site with Tycho
+  # --- Native library cross-compile matrix -----------------------------
+  # Each job replicates the recipe documented in README.md under "Building
+  # the Native Library" and uploads the single binary it produces as an
+  # artifact, for the assemble step below to collect.
+
+  native-windows:
+    name: native (windows x86_64 + aarch64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: claude-eclipse-core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09)
+        with:
+          toolchain: stable
+          targets: aarch64-pc-windows-msvc
+      - run: cargo build --release
+      - run: cargo build --release --target aarch64-pc-windows-msvc
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-windows-x86_64
+          path: claude-eclipse-core/target/release/claude_eclipse_core.dll
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-windows-aarch64
+          path: claude-eclipse-core/target/aarch64-pc-windows-msvc/release/claude_eclipse_core.dll
+
+  native-macos:
+    name: native (macos aarch64 + x86_64)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: claude-eclipse-core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09)
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: cargo build --release --target aarch64-apple-darwin
+      - run: cargo build --release --target x86_64-apple-darwin
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-macos-aarch64
+          path: claude-eclipse-core/target/aarch64-apple-darwin/release/libclaude_eclipse_core.dylib
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-macos-x86_64
+          path: claude-eclipse-core/target/x86_64-apple-darwin/release/libclaude_eclipse_core.dylib
+
+  native-linux-x86_64:
+    name: native (linux x86_64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker run --rm -v "$PWD:/src" -w /src rust:slim-bullseye cargo build --release
+        working-directory: claude-eclipse-core
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-x86_64
+          path: claude-eclipse-core/target/release/libclaude_eclipse_core.so
+
+  native-linux-aarch64:
+    name: native (linux aarch64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - run: docker run --rm --platform linux/arm64 -v "$PWD:/src" -w /src rust:slim-bullseye cargo build --release
+        working-directory: claude-eclipse-core
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-aarch64
+          path: claude-eclipse-core/target/release/libclaude_eclipse_core.so
+
+  native-linux-riscv64:
+    name: native (linux riscv64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No official rust:*-riscv64 image exists, and Bookworm's binutils
+      # rejects the Z-extension ISA strings rustc emits for this target
+      # ("Invalid or unknown z ISA extension"), so this cross-compiles from
+      # Trixie instead of running under QEMU emulation -- see README.md.
+      - name: Build riscv64 cross-compiler image
+        run: |
+          cat > Dockerfile.riscv64 <<'DOCKERFILE'
+          FROM rust:slim-trixie
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+                  gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
+           && rm -rf /var/lib/apt/lists/*
+          RUN rustup target add riscv64gc-unknown-linux-gnu
+          ENV CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc
+          DOCKERFILE
+          docker build -f Dockerfile.riscv64 -t claude-riscv64-builder .
+      - run: docker run --rm -v "$PWD/claude-eclipse-core:/src" -w /src claude-riscv64-builder cargo build --release --target riscv64gc-unknown-linux-gnu
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-riscv64
+          path: claude-eclipse-core/target/riscv64gc-unknown-linux-gnu/release/libclaude_eclipse_core.so
+
+  native-freebsd-x86_64:
+    name: native (freebsd x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # x86_64-unknown-freebsd is tier 2 (prebuilt std), so this just runs
+      # cargo natively inside a real FreeBSD VM -- no cross-compilation.
+      - uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y curl
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          run: |
+            . "$HOME/.cargo/env"
+            cd claude-eclipse-core
+            cargo build --release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-freebsd-x86_64
+          path: claude-eclipse-core/target/release/libclaude_eclipse_core.so
+
+  native-freebsd-aarch64:
+    name: native (freebsd aarch64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # aarch64-unknown-freebsd is tier 3 (no prebuilt std), so this builds
+      # std from source on nightly against a sysroot extracted from
+      # FreeBSD's own release base archive -- see README.md. This is the
+      # most fragile job of the nine: it's a best-effort reconstruction of
+      # the documented recipe and is the one most likely to need fixing
+      # against what an actual run reports.
+      - name: Install clang/lld and nightly with build-std support
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld
+          rustup toolchain install nightly --component rust-src --profile minimal
+      - name: Fetch FreeBSD 14.5-RELEASE aarch64 sysroot
+        run: |
+          mkdir -p /tmp/freebsd-sysroot
+          curl --proto '=https' --tlsv1.2 -sSf https://download.freebsd.org/releases/arm64/aarch64/14.5-RELEASE/base.txz \
+            | tar -xJf - -C /tmp/freebsd-sysroot ./usr/include ./usr/lib ./lib
+      - name: Build
+        working-directory: claude-eclipse-core
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_FREEBSD_LINKER: clang
+          CARGO_TARGET_AARCH64_UNKNOWN_FREEBSD_RUSTFLAGS: -Clink-arg=--target=aarch64-unknown-freebsd -Clink-arg=--sysroot=/tmp/freebsd-sysroot
+        run: cargo +nightly build --release -Z build-std=std,panic_abort --target aarch64-unknown-freebsd
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-freebsd-aarch64
+          path: claude-eclipse-core/target/aarch64-unknown-freebsd/release/libclaude_eclipse_core.so
+
+  # --- Build + publish ---------------------------------------------------
+
+  build:
+    name: Build p2 site with Tycho
+    needs:
+      - native-windows
+      - native-macos
+      - native-linux-x86_64
+      - native-linux-aarch64
+      - native-linux-riscv64
+      - native-freebsd-x86_64
+      - native-freebsd-aarch64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: native-*
+          path: downloaded-natives
+
+      - name: Place native libraries
+        run: |
+          set -eu
+          base=com.anthropic.claudecode.eclipse/native
+          mkdir -p "$base"/windows/x86_64 "$base"/windows/aarch64
+          mkdir -p "$base"/linux/x86_64 "$base"/linux/aarch64 "$base"/linux/riscv64
+          mkdir -p "$base"/freebsd/x86_64 "$base"/freebsd/aarch64
+          mkdir -p "$base"/macos/aarch64 "$base"/macos/x86_64
+          cp downloaded-natives/native-windows-x86_64/claude_eclipse_core.dll "$base"/windows/x86_64/
+          cp downloaded-natives/native-windows-aarch64/claude_eclipse_core.dll "$base"/windows/aarch64/
+          cp downloaded-natives/native-linux-x86_64/libclaude_eclipse_core.so "$base"/linux/x86_64/
+          cp downloaded-natives/native-linux-aarch64/libclaude_eclipse_core.so "$base"/linux/aarch64/
+          cp downloaded-natives/native-linux-riscv64/libclaude_eclipse_core.so "$base"/linux/riscv64/
+          cp downloaded-natives/native-freebsd-x86_64/libclaude_eclipse_core.so "$base"/freebsd/x86_64/
+          cp downloaded-natives/native-freebsd-aarch64/libclaude_eclipse_core.so "$base"/freebsd/aarch64/
+          cp downloaded-natives/native-macos-aarch64/libclaude_eclipse_core.dylib "$base"/macos/aarch64/
+          cp downloaded-natives/native-macos-x86_64/libclaude_eclipse_core.dylib "$base"/macos/x86_64/
 
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
