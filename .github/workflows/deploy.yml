@@ -31,11 +31,20 @@ jobs:
 
       - run: mvn -B integration-test
 
+      # Keep the published p2 site at the same path it has always lived at
+      # (.../com.anthropic.claudecode.eclipse.site/) rather than the Pages
+      # root, since every existing install's update-site URL and the
+      # README's install instructions already point there.
+      - name: Stage p2 site at its historical path
+        run: |
+          mkdir -p _site/com.anthropic.claudecode.eclipse.site
+          cp -r com.anthropic.claudecode.eclipse.site/target/repository/. _site/com.anthropic.claudecode.eclipse.site/
+
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: com.anthropic.claudecode.eclipse.site/target/repository
+          path: _site
 
   deploy:
     name: Publish to GitHub Pages
