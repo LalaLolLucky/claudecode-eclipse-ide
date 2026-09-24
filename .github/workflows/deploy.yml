@@ -19,9 +19,10 @@ concurrency:
 
 jobs:
   # --- Native library cross-compile matrix -----------------------------
-  # Each job replicates the recipe documented in README.md under "Building
-  # the Native Library" and uploads the single binary it produces as an
-  # artifact, for the assemble step below to collect.
+  # Windows and macOS compile all their targets natively/via rustup with no
+  # cross-compiler needed, same as README.md's documented recipe. Each job
+  # uploads the binaries it produces as artifacts for the assemble step
+  # below to collect.
 
   native-windows:
     name: native (windows x86_64 + aarch64)
@@ -69,111 +70,48 @@ jobs:
           name: native-macos-x86_64
           path: claude-eclipse-core/target/x86_64-apple-darwin/release/libclaude_eclipse_core.dylib
 
-  native-linux-x86_64:
-    name: native (linux x86_64)
+  # Linux (aarch64, riscv64) and both FreeBSD targets go through cross-rs/cross,
+  # which already maintains a tested Docker image per target -- including
+  # solved versions of the two hardest problems here (riscv64's toolchain
+  # needing a newer binutils than Debian stable ships, and a real
+  # clang+sysroot cross-compiler for FreeBSD, aarch64 included). Linux
+  # x86_64 also runs through this action but builds natively (no cross
+  # needed for a host-matching architecture).
+  #
+  # Explicit -gnu targets, not the action's own example (which uses musl):
+  # the existing binaries are glibc-linked, and switching libc would be a
+  # compatibility change worth making deliberately, not as a side effect of
+  # copying an example.
+  native-cross:
+    name: native (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact: native-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            artifact: native-linux-aarch64
+          - target: riscv64gc-unknown-linux-gnu
+            artifact: native-linux-riscv64
+          - target: x86_64-unknown-freebsd
+            artifact: native-freebsd-x86_64
+          - target: aarch64-unknown-freebsd
+            artifact: native-freebsd-aarch64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: docker run --rm -v "$PWD:/src" -w /src rust:slim-bullseye cargo build --release
-        working-directory: claude-eclipse-core
+      - uses: houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8 # v1.0.8
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release
+          working-directory: claude-eclipse-core
+          strip: true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-linux-x86_64
-          path: claude-eclipse-core/target/release/libclaude_eclipse_core.so
-
-  native-linux-aarch64:
-    name: native (linux aarch64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-        with:
-          platforms: arm64
-      - run: docker run --rm --platform linux/arm64 -v "$PWD:/src" -w /src rust:slim-bullseye cargo build --release
-        working-directory: claude-eclipse-core
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-linux-aarch64
-          path: claude-eclipse-core/target/release/libclaude_eclipse_core.so
-
-  native-linux-riscv64:
-    name: native (linux riscv64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # No official rust:*-riscv64 image exists, and Bookworm's binutils
-      # rejects the Z-extension ISA strings rustc emits for this target
-      # ("Invalid or unknown z ISA extension"), so this cross-compiles from
-      # Trixie instead of running under QEMU emulation -- see README.md.
-      - name: Build riscv64 cross-compiler image
-        run: |
-          cat > Dockerfile.riscv64 <<'DOCKERFILE'
-          FROM rust:slim-trixie
-          RUN apt-get update && apt-get install -y --no-install-recommends \
-                  gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
-           && rm -rf /var/lib/apt/lists/*
-          RUN rustup target add riscv64gc-unknown-linux-gnu
-          ENV CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc
-          DOCKERFILE
-          docker build -f Dockerfile.riscv64 -t claude-riscv64-builder .
-      - run: docker run --rm -v "$PWD/claude-eclipse-core:/src" -w /src claude-riscv64-builder cargo build --release --target riscv64gc-unknown-linux-gnu
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-linux-riscv64
-          path: claude-eclipse-core/target/riscv64gc-unknown-linux-gnu/release/libclaude_eclipse_core.so
-
-  native-freebsd-x86_64:
-    name: native (freebsd x86_64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # x86_64-unknown-freebsd is tier 2 (prebuilt std), so this just runs
-      # cargo natively inside a real FreeBSD VM -- no cross-compilation.
-      - uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
-        with:
-          usesh: true
-          prepare: |
-            pkg install -y curl
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          run: |
-            . "$HOME/.cargo/env"
-            cd claude-eclipse-core
-            cargo build --release
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-freebsd-x86_64
-          path: claude-eclipse-core/target/release/libclaude_eclipse_core.so
-
-  native-freebsd-aarch64:
-    name: native (freebsd aarch64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # aarch64-unknown-freebsd is tier 3 (no prebuilt std), so this builds
-      # std from source on nightly against a sysroot extracted from
-      # FreeBSD's own release base archive -- see README.md. This is the
-      # most fragile job of the nine: it's a best-effort reconstruction of
-      # the documented recipe and is the one most likely to need fixing
-      # against what an actual run reports.
-      - name: Install clang/lld and nightly with build-std support
-        run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld
-          rustup toolchain install nightly --component rust-src --profile minimal
-      - name: Fetch FreeBSD 14.5-RELEASE aarch64 sysroot
-        run: |
-          mkdir -p /tmp/freebsd-sysroot
-          curl --proto '=https' --tlsv1.2 -sSf https://download.freebsd.org/releases/arm64/aarch64/14.5-RELEASE/base.txz \
-            | tar -xJf - -C /tmp/freebsd-sysroot ./usr/include ./usr/lib ./lib
-      - name: Build
-        working-directory: claude-eclipse-core
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_FREEBSD_LINKER: clang
-          CARGO_TARGET_AARCH64_UNKNOWN_FREEBSD_RUSTFLAGS: -Clink-arg=--target=aarch64-unknown-freebsd -Clink-arg=--sysroot=/tmp/freebsd-sysroot
-        run: cargo +nightly build --release -Z build-std=std,panic_abort --target aarch64-unknown-freebsd
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-freebsd-aarch64
-          path: claude-eclipse-core/target/aarch64-unknown-freebsd/release/libclaude_eclipse_core.so
+          name: ${{ matrix.artifact }}
+          path: claude-eclipse-core/target/${{ matrix.target }}/release/libclaude_eclipse_core.so
 
   # --- Build + publish ---------------------------------------------------
 
@@ -182,11 +120,7 @@ jobs:
     needs:
       - native-windows
       - native-macos
-      - native-linux-x86_64
-      - native-linux-aarch64
-      - native-linux-riscv64
-      - native-freebsd-x86_64
-      - native-freebsd-aarch64
+      - native-cross
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
