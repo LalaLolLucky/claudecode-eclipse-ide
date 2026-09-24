@@ -20,6 +20,12 @@ on:
       changelog_body:
         description: "Changelog entry body (markdown, e.g. '### Fixed\n- ...')"
         required: true
+  # Deletes the release/* branch this workflow created, once its PR merges
+  # -- not relying on the repo-wide "auto delete head branches" setting,
+  # so this is self-contained regardless of that setting.
+  pull_request:
+    types: [closed]
+    branches: [master]
 
 permissions:
   contents: write
@@ -27,6 +33,7 @@ permissions:
 
 jobs:
   prepare-release:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -116,3 +123,16 @@ jobs:
             --body "Version bump and changelog entry for v${VERSION}, prepared via workflow_dispatch.
 
           ${CHANGELOG_BODY}"
+
+  delete-release-branch:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${{ github.event.pull_request.head.ref }}"
