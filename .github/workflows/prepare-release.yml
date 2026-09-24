@@ -55,6 +55,13 @@ jobs:
             com.anthropic.claudecode.eclipse.feature/pom.xml \
             com.anthropic.claudecode.eclipse.site/pom.xml
 
+          # The version banner the plugin itself prints on startup -- every
+          # past manual release commit has bumped this same line by hand
+          # (grep the source for other hardcoded "Claude Code for Eclipse v"
+          # strings if this ever needs revisiting).
+          sed -i "s/Claude Code for Eclipse v${OLD}/Claude Code for Eclipse v${VERSION}/" \
+            com.anthropic.claudecode.eclipse/src/com/anthropic/claudecode/eclipse/ui/ClaudeCodeView.java
+
       - name: Insert changelog entry
         env:
           VERSION: ${{ inputs.version }}
