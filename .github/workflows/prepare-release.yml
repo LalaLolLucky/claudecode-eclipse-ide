@@ -1,0 +1,118 @@
+name: Prepare release
+
+# Bumps the version number everywhere it's recorded and inserts the given
+# changelog entry, then opens a PR for the maintainer to review -- exactly
+# like any other change. Nothing lands on master without that review, and
+# nothing publishes on its own: merging this PR just updates the source;
+# deploy.yml is still a separate, manually-triggered step against whatever
+# commit ends up on master.
+#
+# workflow_dispatch's own form renders text inputs as single-line, so a
+# multi-line changelog body is easiest to supply via the CLI, e.g.:
+#   gh workflow run prepare-release.yml -f version=3.2.7 \
+#     -f changelog_body="$(cat notes.md)"
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version number, e.g. 3.2.7"
+        required: true
+      changelog_body:
+        description: "Changelog entry body (markdown, e.g. '### Fixed\n- ...')"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+
+      - name: Bump version numbers
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          OLD=$(grep -oE 'Bundle-Version: [0-9]+\.[0-9]+\.[0-9]+' com.anthropic.claudecode.eclipse/META-INF/MANIFEST.MF | cut -d' ' -f2)
+          echo "Bumping $OLD -> $VERSION"
+
+          # .qualifier/-SNAPSHOT suffixes stay as-is -- Tycho substitutes a
+          # real qualifier at build time (see deploy.yml), source control
+          # only tracks the version number itself.
+          sed -i "s/Bundle-Version: ${OLD}\.qualifier/Bundle-Version: ${VERSION}.qualifier/" \
+            com.anthropic.claudecode.eclipse/META-INF/MANIFEST.MF
+          sed -i "s/version=\"${OLD}\.qualifier\"/version=\"${VERSION}.qualifier\"/" \
+            com.anthropic.claudecode.eclipse.feature/feature.xml
+          sed -i "s/${OLD}/${VERSION}/g" com.anthropic.claudecode.eclipse.site/site.xml
+          sed -i "s/<version>${OLD}-SNAPSHOT<\/version>/<version>${VERSION}-SNAPSHOT<\/version>/" \
+            pom.xml \
+            com.anthropic.claudecode.eclipse/pom.xml \
+            com.anthropic.claudecode.eclipse.feature/pom.xml \
+            com.anthropic.claudecode.eclipse.site/pom.xml
+
+          # The version banner the plugin itself prints on startup -- every
+          # past manual release commit has bumped this same line by hand
+          # (grep the source for other hardcoded "Claude Code for Eclipse v"
+          # strings if this ever needs revisiting).
+          sed -i "s/Claude Code for Eclipse v${OLD}/Claude Code for Eclipse v${VERSION}/" \
+            com.anthropic.claudecode.eclipse/src/com/anthropic/claudecode/eclipse/ui/ClaudeCodeView.java
+
+      - name: Insert changelog entry
+        env:
+          VERSION: ${{ inputs.version }}
+          BODY: ${{ inputs.changelog_body }}
+        run: |
+          python3 - <<'PYEOF'
+          import datetime
+          import os
+
+          version = os.environ["VERSION"]
+          body = os.environ["BODY"].strip()
+          today = datetime.date.today().isoformat()
+
+          with open("CHANGELOG.md") as f:
+              content = f.read()
+
+          # The previous top entry stops being "current".
+          content = content.replace(" *(current)*", "", 1)
+
+          # Insert right after the existing leading "---\n\n" rather than
+          # consuming it, so that divider (between the intro paragraph and
+          # the entry list) stays put instead of being replaced by this
+          # entry's own trailing "---\n\n" (which separates it from the old
+          # top entry, now pushed down to second place).
+          entry = f"## [{version}] — {today} *(current)*\n\n{body}\n\n---\n\n"
+          marker = "---\n\n## ["
+          insert_at = content.index(marker) + len("---\n\n")
+          content = content[:insert_at] + entry + content[insert_at:]
+
+          with open("CHANGELOG.md", "w") as f:
+              f.write(content)
+          PYEOF
+
+      - name: Open release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          CHANGELOG_BODY: ${{ inputs.changelog_body }}
+        run: |
+          set -eu
+          BRANCH="release/${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "Release v${VERSION}"
+          git push origin "$BRANCH"
+          gh pr create \
+            --base master \
+            --head "$BRANCH" \
+            --title "Release v${VERSION}" \
+            --body "Version bump and changelog entry for v${VERSION}, prepared via workflow_dispatch.
+
+          ${CHANGELOG_BODY}"

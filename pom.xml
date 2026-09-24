@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>com.anthropic.claudecode.eclipse</groupId>
+	<artifactId>claudecode-eclipse-parent</artifactId>
+	<version>3.2.7-SNAPSHOT</version>
+	<packaging>pom</packaging>
+
+	<properties>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<tycho-version>5.0.4</tycho-version>
+	</properties>
+
+	<modules>
+		<module>com.anthropic.claudecode.eclipse</module>
+		<module>com.anthropic.claudecode.eclipse.feature</module>
+		<module>com.anthropic.claudecode.eclipse.site</module>
+	</modules>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.eclipse.tycho</groupId>
+				<artifactId>tycho-maven-plugin</artifactId>
+				<version>${tycho-version}</version>
+				<extensions>true</extensions>
+			</plugin>
+			<plugin>
+				<groupId>org.eclipse.tycho</groupId>
+				<artifactId>target-platform-configuration</artifactId>
+				<version>${tycho-version}</version>
+				<configuration>
+					<target>
+						<file>${maven.multiModuleProjectDirectory}/claudecode.target</file>
+					</target>
+					<environments>
+						<environment>
+							<os>linux</os>
+							<ws>gtk</ws>
+							<arch>x86_64</arch>
+						</environment>
+						<environment>
+							<os>macosx</os>
+							<ws>cocoa</ws>
+							<arch>aarch64</arch>
+						</environment>
+						<environment>
+							<os>win32</os>
+							<ws>win32</ws>
+							<arch>x86_64</arch>
+						</environment>
+					</environments>
+				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.eclipse.tycho</groupId>
+				<artifactId>tycho-compiler-plugin</artifactId>
+				<version>${tycho-version}</version>
+				<configuration>
+					<release>21</release>
+				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.eclipse.tycho</groupId>
+				<artifactId>tycho-surefire-plugin</artifactId>
+				<version>${tycho-version}</version>
+				<!--
+					Tests live inside com.anthropic.claudecode.eclipse itself
+					(test/ source folder, marked "Contains test sources: Yes"
+					in .classpath) rather than a separate .tests fragment.
+					For that layout Tycho's docs call for plugin-test (an
+					OSGi-launched test run bound to integration-test), not the
+					plain `test` goal, which is a silent no-op here since
+					there's no eclipse-test-plugin for it to find.
+				-->
+				<executions>
+					<execution>
+						<id>run-tests</id>
+						<phase>integration-test</phase>
+						<goals>
+							<goal>plugin-test</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+</project>
