@@ -88,3 +88,9 @@
 .answered .ans-head { color: var(--fg-dim); font-size: 11px; margin-bottom: 5px; }
 .answered .ans-body { color: var(--fg); line-height: 1.5; white-space: pre-wrap; }
 
+
+/* FreeBSD setup guide (cliversion.js onSetupGuide): shown while the claude CLI is missing */
+.setup-guide { border: 1px solid var(--warn-border); background: var(--bg-soft); border-radius: 8px; padding: 10px 14px; }
+.setup-guide .sg-body { display: block; line-height: 1.5; }
+.setup-guide .sg-body h2 { margin-top: 0; color: var(--warn-fg); }
+.setup-guide .sg-body h3 { margin-top: 14px; }

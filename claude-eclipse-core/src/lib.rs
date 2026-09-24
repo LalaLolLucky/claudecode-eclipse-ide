@@ -2,6 +2,7 @@ mod bridge;
 mod chat;
 mod chrome;
 mod console;
+mod freebsd_guide;
 mod launch;
 mod lock_file;
 mod mcp;
@@ -1536,6 +1537,18 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttUnava
 ) -> jstring {
     let reason = stt::unavailable_reason().unwrap_or_default();
     env.new_string(reason).unwrap_or_else(|_| env.new_string("").unwrap()).into_raw()
+}
+
+/// FreeBSD only: the setup guide (Markdown) the GUI view shows when the `claude`
+/// CLI is missing. Empty elsewhere. See `freebsd_guide`.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_freebsdSetupGuide(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    env.new_string(freebsd_guide::markdown())
+        .unwrap_or_else(|_| env.new_string("").unwrap())
+        .into_raw()
 }
 
 /// FreeBSD only: true when alsa-plugins -- ALSA's bridge to OSS -- is not

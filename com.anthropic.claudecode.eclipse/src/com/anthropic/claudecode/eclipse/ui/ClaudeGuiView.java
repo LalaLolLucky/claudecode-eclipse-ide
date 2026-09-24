@@ -72,6 +72,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private boolean pageLoaded = false;
     /** View-toolbar Scroll Lock toggle; see {@link #createToolBar()}. */
     private Action scrollLockAction;
+    // Disabled while the FreeBSD setup guide is showing (no claude to start or resume).
+    private Action newSessionAction;
+    private Action sessionHistoryAction;
 
     /** {@link IMemento} key holding the page's own view-state blob (see {@link #viewStateJson}). */
     private static final String MEMENTO_VIEW_STATE = "claudeViewState";
@@ -234,6 +237,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction statusSelectionFn;
     private volatile String availableModelsJson;   // curated model list from /v1/models, pushed to the webview
     private volatile String cliVersionJson;        // {installed,latest,updateAvailable} for the update banner
+    private volatile String setupGuideMd = "";     // FreeBSD setup guide (Markdown) while claude is missing
     private volatile String cliModelsJson;         // newest model per family the INSTALLED binary can run
     private volatile String lastRustStatusJson;   // latest onStatus payload (context %, cost, tokens)
 
@@ -1279,6 +1283,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         sessionHistory.setToolTipText("Session history");
         sessionHistory.setImageDescriptor(Activator.getImageDescriptor(
                 com.anthropic.claudecode.eclipse.Constants.IMG_SESSION_HISTORY));
+        newSessionAction = newSession;
+        sessionHistoryAction = sessionHistory;
+        applySetupGuideToToolbar();
         toolBar.add(sessionHistory);
         toolBar.add(newSession);
         toolBar.add(new org.eclipse.jface.action.Separator());
@@ -1332,6 +1339,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private void checkCliVersionAsync() {
         CliVersionService.checkAsync(configuredClaudeCmd(), info -> {
             cliVersionJson = info.toJson();
+            setupGuideMd = setupGuideFor(info);
             Display.getDefault().asyncExec(this::pushCliVersion);
         });
     }
@@ -1339,10 +1347,41 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private void pushCliVersion() {
         if (cliVersionJson == null || browser == null || browser.isDisposed() || !pageLoaded) return;
         browser.execute("window.onCliVersion && window.onCliVersion('" + esc(cliVersionJson) + "')");
+        if (!setupGuideMd.isEmpty()) {
+            browser.execute("window.onSetupGuide && window.onSetupGuide('" + esc(setupGuideMd) + "')");
+        }
+        applySetupGuideToToolbar();
+    }
+
+    /** New Session and Session history are off while the setup guide is showing. UI thread. */
+    private void applySetupGuideToToolbar() {
+        boolean enabled = setupGuideMd.isEmpty();
+        if (newSessionAction != null) newSessionAction.setEnabled(enabled);
+        if (sessionHistoryAction != null) sessionHistoryAction.setEnabled(enabled);
+    }
+
+    /**
+     * The FreeBSD setup guide when it applies, else "". It applies when the CLI
+     * could not be run AND the command is the default {@code claude}: a custom
+     * command that fails is a wrong preference, not a missing install, and gets
+     * the ordinary launch error instead. Off the UI thread (called from the
+     * version check's callback).
+     */
+    private static String setupGuideFor(CliVersionService.Info info) {
+        if (!Activator.isFreeBSD()) return "";
+        boolean missing = info.installed.isEmpty()
+                && com.anthropic.claudecode.eclipse.Constants.DEFAULT_CLAUDE_CMD.equals(configuredClaudeCmd());
+        if (!missing) return "";
+        try {
+            String md = NativeCore.freebsdSetupGuide();
+            return md == null ? "" : md;
+        } catch (Throwable t) {   // an older library without the export
+            return "";
+        }
     }
 
     /** The configured {@code claude} command, or the default when unset. */
-    private static String configuredClaudeCmd() {
+    static String configuredClaudeCmd() {
         try {
             String cmd = Activator.getDefault().getPreferenceStore()
                     .getString(com.anthropic.claudecode.eclipse.Constants.PREF_CLAUDE_CMD);
@@ -2473,6 +2512,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // made there belongs on the buttons here too.
         m.setOnSettingsChanged(j -> display.asyncExec(() -> executeJS("window.onSettingsChanged && window.onSettingsChanged('" + tj + "','" + esc(j) + "')")));
         m.setOnAgentActivity(j -> display.asyncExec(() -> executeJS("window.onAgentActivity && window.onAgentActivity('" + tj + "','" + esc(j) + "')")));
+        m.setOnNotice(t -> display.asyncExec(() -> executeJS("window.onNotice && window.onNotice('" + tj + "','" + esc(t) + "')")));
         // Remote Control goes to two places: the page, which writes the transcript
         // line and remembers the session url, and the status bar, which shows the
         // indicator. Only the ACTIVE tab may drive the bar — it shows one

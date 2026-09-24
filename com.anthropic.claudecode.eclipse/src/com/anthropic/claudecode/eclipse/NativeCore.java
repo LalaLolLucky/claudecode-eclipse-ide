@@ -519,6 +519,12 @@ public final class NativeCore {
          */
         default void onAgentActivity(String json) {}
         /**
+         * A one-line note for the conversation that did not come from the CLI, for
+         * example the FreeBSD setup guide having been sent to Claude after a tool hit
+         * the fdescfs error. Display only. Non-blocking.
+         */
+        default void onNotice(String text) {}
+        /**
          * Remote Control state changed. Two shapes reach this:
          *
          * <ul>
@@ -890,6 +896,14 @@ public final class NativeCore {
      * on other platforms.
      */
     public static native boolean sttNeedsAlsaPlugins();
+
+    /**
+     * FreeBSD only: the setup guide, as Markdown, that the Claude GUI view shows when
+     * the {@code claude} CLI is missing. Compiled into the library from
+     * {@code claude-eclipse-core/.settings/org.eclipse.core.freebsd.container}, so it
+     * changes only when the natives are rebuilt. Empty on other platforms.
+     */
+    public static native String freebsdSetupGuide();
 
     /**
      * Linux only: true when there is nothing to record from — ALSA finds no sound card,

@@ -94,8 +94,12 @@ public final class CliVersionService {
             } catch (Throwable ex) {
                 info = new Info("", "", false);
             }
-            cached = info;
-            cachedAt = System.currentTimeMillis();
+            // A CLI that could not be run is not cached: installing it has to show up
+            // on the next check (reopening the view), not an hour later.
+            if (!info.installed.isEmpty()) {
+                cached = info;
+                cachedAt = System.currentTimeMillis();
+            }
             try { cb.accept(info); } catch (Throwable ignored) {}
         }, "claude-cli-version");
         t.setDaemon(true);
@@ -109,9 +113,19 @@ public final class CliVersionService {
     }
 
     /** {@code claude --version} → "2.1.220" (the command prints "2.1.220 (Claude Code)"). */
-    private static String installedVersion(String claudeCmd) {
+    static String installedVersion(String claudeCmd) {
         String cmd = (claudeCmd == null || claudeCmd.isBlank())
                 ? com.anthropic.claudecode.eclipse.Constants.DEFAULT_CLAUDE_CMD : claudeCmd;
+        return commandVersion(cmd);
+    }
+
+    /** {@code node --version} → "22.12.0", or "" when Node.js isn't installed. Blocks. */
+    static String nodeVersion() {
+        return commandVersion("node");
+    }
+
+    /** First x.y.z in the output of {@code cmd --version}, or "" when it can't be run. */
+    private static String commandVersion(String cmd) {
         cmd = resolveOnPath(cmd);
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd, "--version");
@@ -129,7 +143,7 @@ public final class CliVersionService {
             Matcher m = Pattern.compile("(\\d+\\.\\d+\\.\\d+)").matcher(out);
             return m.find() ? m.group(1) : "";
         } catch (Throwable t) {
-            return "";   // CLI not on PATH, not installed, etc.
+            return "";   // not on PATH, not installed, etc.
         }
     }
 

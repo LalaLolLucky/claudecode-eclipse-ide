@@ -125,10 +125,25 @@ fn usable_program(path: &std::path::Path) -> Option<std::path::PathBuf> {
     if let Ok(mut file) = std::fs::File::open(path) {
         use std::io::Read;
         if file.read_exact(&mut head).is_ok() && &head == b"#!" {
-            return None;
+            return wrapped_program(path);
         }
     }
     Some(path.to_path_buf())
+}
+
+/// The program behind a `#!` wrapper, where the install layout says which. On FreeBSD,
+/// claude-freebsd puts a sh wrapper at `<prefix>/bin/claude` that execs the Linux build
+/// it installs at `<prefix>/libexec/claude-code/claude`.
+#[cfg(target_os = "freebsd")]
+fn wrapped_program(wrapper: &std::path::Path) -> Option<std::path::PathBuf> {
+    let program = wrapper.parent()?.parent()?.join("libexec/claude-code/claude");
+    program.is_file().then_some(program)
+}
+
+/// Any other wrapper is someone's own, and the program it runs cannot be known.
+#[cfg(not(target_os = "freebsd"))]
+fn wrapped_program(_wrapper: &std::path::Path) -> Option<std::path::PathBuf> {
+    None
 }
 
 /// The file the `claude` command runs — the one to read the CLI's own bundled text
@@ -163,7 +178,8 @@ pub fn claude_program_file(claude_cmd: &str) -> Option<std::path::PathBuf> {
 
 /// The file the `claude` command runs: a path as given, or a bare name found on PATH
 /// ([`program_candidates`] in turn). Symlinks (the native installer's
-/// `~/.local/bin/claude`) are followed when read; a `#!` wrapper is passed over.
+/// `~/.local/bin/claude`) are followed when read; claude-freebsd's `#!` wrapper is
+/// followed to the binary it execs ([`wrapped_program`]), and any other is passed over.
 #[cfg(target_os = "freebsd")]
 pub fn claude_program_file(claude_cmd: &str) -> Option<std::path::PathBuf> {
     program_candidates(claude_cmd).into_iter().find_map(|name| find_on_path(&name))

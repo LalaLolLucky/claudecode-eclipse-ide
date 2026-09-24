@@ -43,6 +43,7 @@ public class ChatProcessManager {
     private Consumer<String> onBrowserState;
     private Consumer<String> onSettingsChanged;
     private Consumer<String> onAgentActivity;
+    private Consumer<String> onNotice;
 
     /** (requestId, toolName, inputJson, rememberLabel) → decision string. See {@link NativeCore.ChatCallbacks#onPermissionRequest}. */
     public interface PermissionHandler {
@@ -89,6 +90,7 @@ public class ChatProcessManager {
             @Override public void onBrowserState(String json) { emit(ChatProcessManager.this.onBrowserState, json); }
             @Override public void onSettingsChanged(String json) { emit(ChatProcessManager.this.onSettingsChanged, json); }
             @Override public void onAgentActivity(String json) { emit(ChatProcessManager.this.onAgentActivity, json); }
+            @Override public void onNotice(String text) { emit(ChatProcessManager.this.onNotice, text); }
         });
     }
 
@@ -122,6 +124,8 @@ public class ChatProcessManager {
     }
     /** A running subagent's current step. See {@link NativeCore.ChatCallbacks#onAgentActivity}. */
     public void setOnAgentActivity(Consumer<String> cb) { this.onAgentActivity = cb; }
+    /** A display-only note for the conversation that did not come from the CLI. */
+    public void setOnNotice(Consumer<String> cb) { this.onNotice = cb; }
 
     /** Turns Remote Control on or off, starting this tab's process first if it
      *  has none.

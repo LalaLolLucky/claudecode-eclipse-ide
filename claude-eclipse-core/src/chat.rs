@@ -112,6 +112,10 @@ struct ProcHandle {
     live: Mutex<LiveSettings>,
     /// Whether [`start_settings_poll`] is already running for this process.
     settings_poll: AtomicBool,
+    /// FreeBSD: whether the setup guide has been queued to this process after a
+    /// tool hit the fdescfs failure ([`queue_fdescfs_diagnosis`]). Once per process,
+    /// so Claude's answer failing the same way cannot set off another.
+    fdescfs_diagnosed: AtomicBool,
     /// The model and effort the CLI last reported, so a change made somewhere else
     /// — the phone, claude.ai — can be told from the settings already known here.
     last_applied: Mutex<Option<(String, String)>>,
@@ -1682,6 +1686,7 @@ fn spawn_persistent(
         rc_session: Mutex::new(None),
         live: Mutex::new(LiveSettings::new(perm_mode, effort, model, thinking)),
         settings_poll: AtomicBool::new(false),
+        fdescfs_diagnosed: AtomicBool::new(false),
         last_applied: Mutex::new(None),
         default_model_live: AtomicBool::new(false),
     });
@@ -2057,6 +2062,7 @@ fn reader_loop(
         }
 
         process_event_value(&event, &java_vm, &callbacks, &mut cursors, &mut tok_base, &mut tok_chars);
+        queue_fdescfs_diagnosis(&event, &proc, &java_vm, &callbacks);
     }
 
     // EOF. Distinguish an INTENTIONAL kill (respawn on settings/tab change, reset,
@@ -2475,6 +2481,44 @@ fn primary_suggestion(suggestions: &serde_json::Value) -> (Option<serde_json::Va
 // ---------------------------------------------------------------------------
 // NDJSON event processing (mirrors Java ChatProcessManager.processEvent)
 // ---------------------------------------------------------------------------
+
+/// FreeBSD: when a tool result in `event` failed with the fdescfs error
+/// ([`crate::freebsd_guide::is_fdescfs_failure`]), queues the setup guide onto
+/// `proc` as a user message, so Claude answers with the fix, and tells the page
+/// it did. Once per process. A no-op everywhere else.
+fn queue_fdescfs_diagnosis(
+    event: &serde_json::Value,
+    proc: &Arc<ProcHandle>,
+    java_vm: &Arc<jni::JavaVM>,
+    callbacks: &Arc<jni::objects::GlobalRef>,
+) {
+    if !cfg!(target_os = "freebsd") || event["type"].as_str() != Some("user") {
+        return;
+    }
+    let Some(blocks) = event["message"]["content"].as_array() else { return };
+    let failure = blocks.iter().find_map(|b| {
+        if b["type"].as_str() != Some("tool_result") || !b["is_error"].as_bool().unwrap_or(false) {
+            return None;
+        }
+        let text = crate::session::flatten_result_content(b);
+        crate::freebsd_guide::is_fdescfs_failure(&text).then_some(text)
+    });
+    let Some(error_text) = failure else { return };
+    let Some(message) = crate::freebsd_guide::diagnosis_message(&error_text) else { return };
+    if proc.fdescfs_diagnosed.swap(true, Ordering::SeqCst) || proc.is_dead() {
+        return;
+    }
+    let msg_json = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": message }] }
+    });
+    if proc.write_line(&msg_json.to_string()).is_err() {
+        return; // the reader's EOF path reports a dead process
+    }
+    fire_string(java_vm, callbacks, "onNotice",
+        "A tool failed with the FreeBSD fdescfs error (ENOTDIR). The FreeBSD setup guide \
+         was sent to Claude so it can explain the fix.");
+}
 
 fn process_event(
     line: &str,

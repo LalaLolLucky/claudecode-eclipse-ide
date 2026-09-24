@@ -390,7 +390,10 @@ function copyToClipboard(btn, text) {
   else if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
   if (!btn) return;
   clearTimeout(btn._copyTimer);
-  const original = btn.textContent;
+  // Captured once: a second click inside the flash would otherwise record "Copied" as
+  // the label to restore, and the button would stay stuck on it.
+  if (btn._copyLabel === undefined) btn._copyLabel = btn.textContent;
+  const original = btn._copyLabel;
   btn.textContent = 'Copied'; btn.classList.add('copied');
   btn._copyTimer = setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 1200);
 }
@@ -824,8 +827,16 @@ function applyToolResult(payload) {
     }
     if (window.renderAgentsPanel) window.renderAgentsPanel();
   }
-  if (info.isError) { setToolError(line, info.text); return; }
-  renderToolOutput(line, line.dataset.tname || '', info.text);
+  if (info.isError) setToolError(line, info.text);
+  else renderToolOutput(line, line.dataset.tname || '', info.text);
+  // The result lands on a line addToolLine already scrolled to, so without this the view
+  // stopped at the tool line and only caught up when the NEXT tool started. Twice: once
+  // for the box itself, and again a frame later, after appendIoRow's deferred
+  // capIfOverflowing has capped it and added its "View full output" hint below.
+  // Pane-guarded like addSystemToPane — a background tab's result must not yank the view.
+  const followResult = () => { if (pane === (activeTab() && activeTab().pane)) scrollBottom(); };
+  followResult();
+  requestAnimationFrame(followResult);
 }
 // Tools whose successful result is already fully represented some other way (a diff,
 // the plan-outcome tool-sub, the question card) — showing the CLI's boilerplate ack text

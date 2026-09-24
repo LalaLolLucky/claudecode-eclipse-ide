@@ -28,6 +28,9 @@ window.onAgentActivity = (tabId, j) => withTab(tabId, () => {
   if (typeof applyAgentActivity === 'function') applyAgentActivity(j);
 });
 window.onSystemMessage = () => {};   /* backend system/init noise — ignored */
+/* A note from the plugin itself, not the CLI (e.g. the FreeBSD setup guide sent to
+   Claude after an fdescfs failure). Display only, in the tab it concerns. */
+window.onNotice        = (tabId, m) => withTab(tabId, (t) => addSystemTo(t, 'ⓘ ' + m));
 window.onError         = (tabId, m) => withTab(tabId, () => { hideWorking(); endAssistant(); setStreaming(false); addSystem('⚠ ' + augmentError(m)); });
 window.onStatusUpdate  = () => {};
 window.onSessionId     = (tabId, id) => { const t = tabById(tabId); if (t && id) { t.sessionId = id; persistTabPrefs(t); } };

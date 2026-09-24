@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "title": "Running Claude Code on FreeBSD (Linux ABI)",
+  "summary": "Claude Code's official Linux binary runs unmodified under FreeBSD's Linux ABI (Linuxulator). Its Bash and Write tools additionally need fdescfs mounted with nodup, plus a small fdescfs kernel patch so readlink still works under nodup. Without these, every shell command and file write fails with ENOTDIR.",
+  "tested_on": {
+    "os": "FreeBSD 15.1-RELEASE",
+    "arch": "arm64 (aarch64)",
+    "kernel": "GENERIC",
+    "claude_code_version": "2.1.280",
+    "installer": "claude-freebsd 1.0.9.2",
+    "linker": "LLD 19.1.7 (base system)"
+  },
+  "requirements": {
+    "arch": ["amd64", "arm64"],
+    "root": true,
+    "kernel_source": "/usr/src matching the running release (needed to build fdescfs.ko)",
+    "packages": [
+      { "name": "linux_base-rl9", "purpose": "Linux userland (glibc, /compat/linux/lib/ld-linux-*.so.1) the Claude binary links against" },
+      { "name": "node24", "purpose": "Node.js runtime, optional for Claude itself; present alongside npm" },
+      { "name": "npm-node24", "purpose": "npm, optional; the claude wrapper redirects its prefix (see install.npm)" }
+    ]
+  },
+  "install": {
+    "linux_abi": {
+      "rc_conf": { "linux_enable": "YES" },
+      "commands": [
+        "pkg install linux_base-rl9 node24 npm-node24",
+        "sysrc linux_enable=YES",
+        "service linux start"
+      ],
+      "notes": "/etc/rc.d/linux loads linux64, fdescfs, linprocfs, linsysfs and pty, and mounts linprocfs, linsysfs, devfs, fdescfs (linrdlnk) and tmpfs under compat.linux.emul_path (/compat/linux)."
+    },
+    "claude": {
+      "tool": "claude-freebsd",
+      "source": "https://github.com/insanityinside/claude-freebsd",
+      "commands": [
+        "fetch -o /tmp/claude-freebsd.sh https://raw.githubusercontent.com/insanityinside/claude-freebsd/v1.0.9.2/claude-freebsd.sh",
+        "sudo sh /tmp/claude-freebsd.sh --install"
+      ],
+      "what_it_installs": {
+        "binary": "/usr/local/libexec/claude-code/claude (official linux-arm64 or linux-x64 build from downloads.claude.ai, SHA256-verified against the signed manifest)",
+        "version_file": "/usr/local/libexec/claude-code/version",
+        "wrapper": "/usr/local/bin/claude",
+        "manager": "/usr/local/bin/claude-freebsd",
+        "channel_file": "/usr/local/share/claude-freebsd/channel"
+      },
+      "update": "sudo claude-freebsd --update",
+      "uninstall": "sudo claude-freebsd --uninstall",
+      "wrapper_behaviour": [
+        "Exports DISABLE_AUTOUPDATER=1 and DISABLE_UPDATES=1; the binary's own updater does not work here.",
+        "Prepends the literal string '~/.local/bin' to PATH and symlinks ~/.local/bin/claude to the real binary, to satisfy Claude's install self-checks.",
+        "Checks the Linux mounts at every launch and prints warnings; suppress with CLAUDE_FBSD_NO_MOUNT_WARN=1.",
+        "Checks for a new release at most once per day; suppress with CLAUDE_FBSD_NO_NOTIFY=1."
+      ]
+    },
+    "npm": {
+      "wrapper_env": { "NPM_CONFIG_PREFIX": "$HOME/.claude/npm-prefix" },
+      "reason": "npm's default prefix /usr/local would make Claude flag /usr/local/bin/claude (the wrapper) as a leftover npm-global install. The redirected prefix has no bin/claude, so the check passes.",
+      "note": "Do not install Claude Code with 'npm install -g @anthropic-ai/claude-code' on FreeBSD; use claude-freebsd."
+    }
+  },
+  "fix": {
+    "problem": "Claude's Bash and Write tools open files through /proc/self/fd/N/<leaf>. For a Linux process, linprocfs resolves /proc/self/fd through the NATIVE /dev/fd. fdesc_lookup() returns ENOTDIR for any path that walks through an fd entry unless the mount has nodup. With nodup, stock fdescfs no longer answers readlink on fd entries, so the kernel patch below is needed as well.",
+    "symptoms": [
+      "ENOTDIR: not a directory, mkdir '/tmp/claude-<uid>/<project>/<session>/tasks'",
+      "task output swap refused (open refused a swapped leaf (ENOTDIR))",
+      "ENOTDIR from the Write tool on any path"
+    ],
+    "kernel_patch": {
+      "file": "/usr/src/sys/fs/fdescfs/fdesc_vnops.c",
+      "purpose": "With nodup, return the underlying vnode only when the lookup continues through the fd entry, or follows it. For a final component looked up without FOLLOW (readlink, lstat), keep returning the fdescfs node, so linrdlnk readlink still works.",
+      "edits": [
+        {
+          "location": "struct fdesc_get_ino_args",
+          "before": "\tbool fdropped;",
+          "after": "\tbool fdropped, linkonly;"
+        },
+        {
+          "location": "fdesc_get_ino_alloc()",
+          "before": "\tif ((fdm->flags & FMNT_NODUP) != 0 && a->fp->f_type == DTYPE_VNODE) {",
+          "after": "\tif ((fdm->flags & FMNT_NODUP) != 0 && a->fp->f_type == DTYPE_VNODE && !a->linkonly) {"
+        },
+        {
+          "location": "fdesc_lookup(), where arg is filled in",
+          "before": "\targ.fdropped = false;",
+          "after": "\targ.fdropped = false; arg.linkonly = (cnp->cn_flags & (ISLASTCN | FOLLOW | TRAILINGSLASH)) == ISLASTCN;"
+        }
+      ]
+    },
+    "build": {
+      "command": "cd /usr/src/sys/modules/fdescfs && sudo env PATH=/sbin:/bin:/usr/sbin:/usr/bin make SRCTOP=/usr/src SYSDIR=/usr/src/sys clean all",
+      "output": "/usr/src/sys/modules/fdescfs/fdescfs.ko",
+      "rules": [
+        "Restrict PATH to the base system. If /usr/local/bin/ld (GNU ld from binutils) is picked up, the module is built without __start_set_* / __stop_set_* symbols; it then loads silently but never registers the filesystem.",
+        "Pass SRCTOP explicitly; under sudo it can be empty, and make then fails with \"don't know how to make fdesc_vfsops.c\"."
+      ],
+      "verify": [
+        { "command": "nm fdescfs.ko | grep -E '__start_set_(sysinit|modmetadata)'", "expect": "two lines with type D" },
+        { "command": "readelf -p .comment fdescfs.ko", "expect": "a line containing 'Linker: LLD'" }
+      ]
+    },
+    "persistent_config": [
+      {
+        "action": "install_module",
+        "command": "install -m 555 /usr/src/sys/modules/fdescfs/fdescfs.ko /boot/modules/fdescfs.ko && kldxref /boot/modules",
+        "note": "Leave /boot/kernel/fdescfs.ko stock as the fallback."
+      },
+      {
+        "action": "append",
+        "file": "/boot/loader.conf",
+        "lines": ["fdescfs_load=\"YES\"", "fdescfs_name=\"/boot/modules/fdescfs.ko\""],
+        "note": "Preloads the patched module. kern.module_path searches /boot/kernel first, so without fdescfs_name the stock module would be autoloaded."
+      },
+      {
+        "action": "edit_line",
+        "file": "/etc/fstab",
+        "before": "fdesc\t/dev/fd\tfdescfs\trw,linrdlnk\t0\t0",
+        "after": "fdesc\t/dev/fd\tfdescfs\trw,linrdlnk,nodup\t0\t0",
+        "note": "This mount is the important one: Linux processes reach it through /proc/self/fd. The stock module also accepts nodup, so boot still succeeds if the patched module is missing."
+      },
+      {
+        "action": "append",
+        "file": "/etc/rc.local",
+        "lines": [
+          "# fdescfs-nodup: Claude Code (Linux ABI) needs nodup on /compat/linux/dev/fd.",
+          "if mount -t fdescfs | grep -qF \" on /compat/linux/dev/fd (\" && umount /compat/linux/dev/fd; then",
+          "\tmount -t fdescfs -o linrdlnk,nodup fdescfs /compat/linux/dev/fd ||",
+          "\t    mount -t fdescfs -o linrdlnk fdescfs /compat/linux/dev/fd",
+          "fi"
+        ],
+        "note": "/etc/rc.d/linux mounts /compat/linux/dev/fd with linrdlnk only and has no knob for extra options, so remount it at the end of boot. Other Linux roots (e.g. /compat/ubuntu/dev/fd) should also be linrdlnk,nodup."
+      }
+    ],
+    "activate": "Reboot. Alternatively, with Claude closed, from a plain terminal: unmount every fdescfs mount, kldunload fdescfs, kldload the patched module, confirm with 'lsvfs fdescfs', then remount /dev/fd and /compat/linux/dev/fd with -o linrdlnk,nodup (and other Linux roots with the same options).",
+    "undo": [
+      "cp /boot/loader.conf.bak /boot/loader.conf (or delete the two fdescfs_* lines)",
+      "cp /etc/fstab.bak /etc/fstab (or remove ',nodup' from the /dev/fd line)",
+      "rm /etc/rc.local (or remove the fdescfs-nodup block)",
+      "rm /boot/modules/fdescfs.ko && kldxref /boot/modules",
+      "reboot"
+    ]
+  },
+  "verification": [
+    { "command": "kldstat | grep fdesc", "expect": "fdescfs.ko loaded (preloaded at boot, low id)" },
+    { "command": "lsvfs fdescfs", "expect": "fdescfs listed" },
+    { "command": "sh -c 'exec 3</tmp; ls -ld /dev/fd/3/ /compat/linux/dev/fd/3/ /compat/linux/proc/self/fd/3/'", "expect": "each shows the /tmp directory (drwxrwxrwt); 'Not a directory' means nodup is missing" },
+    { "command": "sh -c 'exec 3</tmp; readlink /dev/fd/3 /compat/linux/dev/fd/3'", "expect": "/tmp twice; empty output means the patch is not active" },
+    { "command": "claude -p 'Run the shell command: echo ok' --allowedTools Bash", "expect": "ok" }
+  ],
+  "warnings": [
+    "Never unmount /dev/fd or /compat/*/dev/fd, or unload fdescfs, from inside a running Claude session: it kills the session. Use a plain terminal with Claude closed.",
+    "Rebuild and reinstall /boot/modules/fdescfs.ko after any kernel update (freebsd-update, source upgrade). If it is left out of date, the stock module loads and the Bash tool breaks again.",
+    "mount(8) and 'mount -p' do not print fdescfs options such as linrdlnk or nodup. Verify behaviourally with the commands in 'verification'.",
+    "The wrapper warning '/compat/linux/dev/fd is mounted without linrdlnk' only greps /etc/fstab. It is a false alarm when /etc/rc.d/linux mounts it; silence it with CLAUDE_FBSD_NO_MOUNT_WARN=1.",
+    "Inside jails, the jail's own fdescfs mounts need linrdlnk,nodup as well."
+  ]
+}

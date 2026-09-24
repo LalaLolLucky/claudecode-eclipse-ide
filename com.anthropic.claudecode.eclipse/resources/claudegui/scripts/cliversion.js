@@ -20,6 +20,33 @@ window.onCliVersion = function (json) {
   renderUpdateBanner();
 };
 
+/* FreeBSD setup guide (Markdown), pushed by Java while the `claude` CLI is missing.
+   Shown once per tab pane as a card in the conversation; re-pushes (page reload,
+   version re-check) replace it rather than stacking a second copy.
+
+   With nothing to talk to, the view becomes the guide: body.setup-guide-mode hides
+   the composer and the root-directory rows (layout.css), and the tab holding the
+   guide loses its rename/close actions and cannot be closed (tabs.js). Java
+   disables New Session and Session history on the view toolbar at the same time. */
+let setupGuideMode = false;
+
+window.onSetupGuide = function (md) {
+  const t = activeTab();
+  const pane = t ? t.pane : messagesEl;
+  if (!pane || !md) return;
+  setupGuideMode = true;
+  document.body.classList.add('setup-guide-mode');
+  if (t) { t.setupGuide = true; renderTabs(); }
+  clearWelcome(pane);
+  const old = pane.querySelector('.setup-guide');
+  if (old) old.remove();
+  const card = document.createElement('div');
+  card.className = 'turn setup-guide';
+  card.innerHTML = '<div class="sg-body a-body"></div>';
+  card.querySelector('.sg-body').innerHTML = renderMarkdown(md);
+  pane.appendChild(card);
+};
+
 /* Dismissal is per panel-load only (no pref): the banner shouldn't nag within a
    session, but a genuinely outdated CLI is worth re-surfacing next time. */
 let updateBannerDismissed = false;

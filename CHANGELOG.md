@@ -4,7 +4,22 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.6] — 2026-09-23 *(current)*
+## [3.2.7] — 2026-09-24 *(current)*
+
+### Added
+- On FreeBSD, a setup guide appears when Claude Code isn't installed.
+- On FreeBSD, when a tool fails because fdescfs isn't mounted, Claude explains the fix.
+
+### Fixed
+- Thinking text is no longer empty on FreeBSD.
+- A newly installed Claude Code is picked up on the next check, not an hour later.
+- On macOS, copy on a code block now works.
+- The conversation scrolls to a tool's output as soon as it arrives.
+- A Copy button clicked twice no longer stays stuck on "Copied".
+
+---
+
+## [3.2.6] — 2026-09-23
 
 ### Changed
 - Updated dependencies (axum 0.8, tokio-tungstenite 0.30, rubato 5).
