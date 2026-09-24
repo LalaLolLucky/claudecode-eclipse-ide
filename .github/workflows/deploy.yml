@@ -70,6 +70,14 @@ jobs:
             runs-on: ubuntu-latest
             artifact: native-freebsd-x86_64
             binary: libclaude_eclipse_core.so
+          # cross has a Dockerfile for this target in its own source tree,
+          # but doesn't ship it as a default auto-selected image ("cross
+          # does not provide a Docker image for target aarch64-unknown-
+          # freebsd, specify a custom image in Cross.toml" -- confirmed by
+          # an actual run). Without it, cross silently built with the
+          # host's native x86_64 toolchain instead, which can't link
+          # aarch64 objects at all. claude-eclipse-core/Cross.toml points
+          # this target at cross-rs's own published image for it.
           - target: aarch64-unknown-freebsd
             runs-on: ubuntu-latest
             artifact: native-freebsd-aarch64
