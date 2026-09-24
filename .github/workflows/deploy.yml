@@ -19,86 +19,62 @@ concurrency:
 
 jobs:
   # --- Native library cross-compile matrix -----------------------------
-  # Windows and macOS compile all their targets natively/via rustup with no
-  # cross-compiler needed, same as README.md's documented recipe. Each job
-  # uploads the binaries it produces as artifacts for the assemble step
-  # below to collect.
-
-  native-windows:
-    name: native (windows x86_64 + aarch64)
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: claude-eclipse-core
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09)
-        with:
-          toolchain: stable
-          targets: aarch64-pc-windows-msvc
-      - run: cargo build --release
-      - run: cargo build --release --target aarch64-pc-windows-msvc
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-windows-x86_64
-          path: claude-eclipse-core/target/release/claude_eclipse_core.dll
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-windows-aarch64
-          path: claude-eclipse-core/target/aarch64-pc-windows-msvc/release/claude_eclipse_core.dll
-
-  native-macos:
-    name: native (macos aarch64 + x86_64)
-    runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: claude-eclipse-core
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09)
-        with:
-          toolchain: stable
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - run: cargo build --release --target aarch64-apple-darwin
-      - run: cargo build --release --target x86_64-apple-darwin
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-macos-aarch64
-          path: claude-eclipse-core/target/aarch64-apple-darwin/release/libclaude_eclipse_core.dylib
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: native-macos-x86_64
-          path: claude-eclipse-core/target/x86_64-apple-darwin/release/libclaude_eclipse_core.dylib
-
-  # Linux (aarch64, riscv64) and both FreeBSD targets go through cross-rs/cross,
-  # which already maintains a tested Docker image per target -- including
-  # solved versions of the two hardest problems here (riscv64's toolchain
-  # needing a newer binutils than Debian stable ships, and a real
-  # clang+sysroot cross-compiler for FreeBSD, aarch64 included). Linux
-  # x86_64 also runs through this action but builds natively (no cross
-  # needed for a host-matching architecture).
+  # One action across all 9 targets, matching actions-rust-cross's own
+  # documented usage pattern: it decides internally whether a given
+  # (runs-on, target) pair needs cross-rs/cross or can just run cargo
+  # directly (Windows, macOS, and Linux x86_64 all fall in the latter
+  # case). Linux aarch64/riscv64 and both FreeBSD targets go through
+  # cross-rs/cross, which maintains a tested Docker image per target --
+  # including solved versions of the two hardest problems here (riscv64's
+  # toolchain needing a newer binutils than Debian stable ships, and a real
+  # clang+sysroot cross-compiler for FreeBSD, aarch64 included).
   #
-  # Explicit -gnu targets, not the action's own example (which uses musl):
-  # the existing binaries are glibc-linked, and switching libc would be a
-  # compatibility change worth making deliberately, not as a side effect of
-  # copying an example.
-  native-cross:
+  # Explicit -gnu targets on Linux, not the action's own example (which
+  # uses musl): the existing binaries are glibc-linked, and switching libc
+  # should be a deliberate choice, not a side effect of copying an example.
+  native:
     name: native (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
         include:
+          - target: x86_64-pc-windows-msvc
+            runs-on: windows-latest
+            artifact: native-windows-x86_64
+            binary: claude_eclipse_core.dll
+          - target: aarch64-pc-windows-msvc
+            runs-on: windows-latest
+            artifact: native-windows-aarch64
+            binary: claude_eclipse_core.dll
+          - target: aarch64-apple-darwin
+            runs-on: macos-latest
+            artifact: native-macos-aarch64
+            binary: libclaude_eclipse_core.dylib
+          - target: x86_64-apple-darwin
+            runs-on: macos-latest
+            artifact: native-macos-x86_64
+            binary: libclaude_eclipse_core.dylib
           - target: x86_64-unknown-linux-gnu
+            runs-on: ubuntu-latest
             artifact: native-linux-x86_64
+            binary: libclaude_eclipse_core.so
           - target: aarch64-unknown-linux-gnu
+            runs-on: ubuntu-latest
             artifact: native-linux-aarch64
+            binary: libclaude_eclipse_core.so
           - target: riscv64gc-unknown-linux-gnu
+            runs-on: ubuntu-latest
             artifact: native-linux-riscv64
+            binary: libclaude_eclipse_core.so
           - target: x86_64-unknown-freebsd
+            runs-on: ubuntu-latest
             artifact: native-freebsd-x86_64
+            binary: libclaude_eclipse_core.so
           - target: aarch64-unknown-freebsd
+            runs-on: ubuntu-latest
             artifact: native-freebsd-aarch64
-    runs-on: ubuntu-latest
+            binary: libclaude_eclipse_core.so
+    runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8 # v1.0.8
@@ -111,16 +87,13 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact }}
-          path: claude-eclipse-core/target/${{ matrix.target }}/release/libclaude_eclipse_core.so
+          path: claude-eclipse-core/target/${{ matrix.target }}/release/${{ matrix.binary }}
 
   # --- Build + publish ---------------------------------------------------
 
   build:
     name: Build p2 site with Tycho
-    needs:
-      - native-windows
-      - native-macos
-      - native-cross
+    needs: native
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
