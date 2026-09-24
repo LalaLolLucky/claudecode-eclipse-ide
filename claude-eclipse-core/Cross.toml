@@ -1,0 +1,7 @@
+# cross has a Dockerfile for aarch64-unknown-freebsd in its own source tree,
+# but doesn't auto-select it as a default image -- without this, `cross
+# build` warns "does not provide a Docker image for target
+# aarch64-unknown-freebsd" and silently falls back to the host's native
+# x86_64 toolchain, which can't link aarch64 objects at all.
+[target.aarch64-unknown-freebsd]
+image = "ghcr.io/cross-rs/aarch64-unknown-freebsd:main"

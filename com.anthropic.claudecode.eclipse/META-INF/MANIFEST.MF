@@ -35,6 +35,10 @@ Require-Bundle: org.eclipse.ui,
  org.eclipse.e4.ui.workbench,
  org.eclipse.e4.ui.model.workbench,
  com.google.gson
+Import-Package: org.junit.jupiter.api;resolution:=optional,
+ org.junit.jupiter.api.extension;resolution:=optional,
+ org.junit.jupiter.params;resolution:=optional,
+ org.junit.jupiter.params.provider;resolution:=optional
 Bundle-ClassPath: .
 Bundle-NativeCode: native/windows/x86_64/claude_eclipse_core.dll;
  osname=Win32;processor=x86-64,

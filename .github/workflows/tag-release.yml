@@ -1,0 +1,50 @@
+name: Tag release
+
+# Fires on every push to master, but is a no-op unless MANIFEST.MF's
+# version changed to something not already tagged -- which in practice
+# only happens right after a prepare-release.yml PR (or an equivalent
+# manual version bump) gets merged. Idempotent by design: safe to fire on
+# every push rather than trying to detect "was this a release merge" from
+# a commit message or branch name.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "com.anthropic.claudecode.eclipse/META-INF/MANIFEST.MF"
+
+permissions:
+  contents: write
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # need existing tags to check whether this version is new
+
+      - name: Tag and create a release if this version isn't tagged yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          VERSION=$(grep -oE 'Bundle-Version: [0-9]+\.[0-9]+\.[0-9]+' com.anthropic.claudecode.eclipse/META-INF/MANIFEST.MF | cut -d' ' -f2)
+          TAG="v${VERSION}"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists, nothing to do."
+            exit 0
+          fi
+
+          # The release body is this version's CHANGELOG.md entry verbatim,
+          # matching every past manual release exactly: from its "## ["
+          # header up to (not including) the next "---" divider.
+          NOTES=$(awk -v ver="## [$VERSION]" '
+            index($0, ver) == 1 { found=1 }
+            found && /^---/ { exit }
+            found { print }
+          ' CHANGELOG.md)
+
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --title "$TAG" --notes "$NOTES"
