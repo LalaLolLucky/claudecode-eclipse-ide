@@ -77,7 +77,10 @@
 /* ---- the @ list (mentions.js) ----
    Spans the input box and sits just above it (joebiden2): file or folder icon, the
    name, then the folder it is in, right-aligned and cut from the left when long. */
+/* max-width + auto margins match #input-wrap's cap (layout.css); with left and right both
+   set, the auto margins split the leftover space, so the list centers over the box. */
 #mention-menu { display: none; position: absolute; left: 14px; right: 14px; bottom: 100%; z-index: 45;
+  max-width: 700px; margin: 0 auto;
   background: var(--menu-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 #mention-menu.open { display: flex; flex-direction: column; }
 #mention-menu .mention-list { overflow-y: auto; max-height: 300px; padding: 2px; }
