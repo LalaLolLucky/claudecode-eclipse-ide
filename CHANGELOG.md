@@ -4,7 +4,14 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.7] — 2026-09-24 *(current)*
+## [3.2.8] — 2026-09-25 *(current)*
+
+### Fixed
+- Minor UI fixes.
+
+---
+
+## [3.2.7] — 2026-09-24
 
 ### Added
 - On FreeBSD, a setup guide appears when Claude Code isn't installed.
