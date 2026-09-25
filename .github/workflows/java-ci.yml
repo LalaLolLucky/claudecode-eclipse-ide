@@ -1,0 +1,37 @@
+name: Java CI
+
+on:
+  # Every PR, so the build & test checks can be required without leaving a
+  # PR that touches no Java code waiting on a check that never runs.
+  pull_request:
+  push:
+    branches: [master, dev]
+    paths:
+      - "com.anthropic.claudecode.eclipse/**"
+      - "com.anthropic.claudecode.eclipse.feature/**"
+      - "com.anthropic.claudecode.eclipse.site/**"
+      - "pom.xml"
+      - "claudecode.target"
+      - ".mvn/**"
+      - ".github/workflows/java-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build & test (Tycho)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # No OS matrix needed here, unlike rust-ci.yml: Java bytecode is
+      # host-independent, and claudecode.target already lists all three
+      # (os, ws, arch) environments simultaneously so the plugin compiles
+      # regardless of which one is actually running the build.
+      - run: mvn -B integration-test

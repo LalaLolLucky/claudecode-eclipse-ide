@@ -1,0 +1,166 @@
+name: Deploy update site
+
+# Cross-compiles the native library for all 9 platform/arch combinations,
+# builds the plugin/feature/site with Tycho against those freshly-built
+# binaries, and publishes straight to GitHub Pages as a build artifact --
+# no git commit involved anywhere in this pipeline.
+#
+# Manual only: nothing publishes without someone with write access
+# explicitly clicking "Run workflow".
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  # --- Native library cross-compile matrix -----------------------------
+  # One action across all 9 targets, matching actions-rust-cross's own
+  # documented usage pattern: it decides internally whether a given
+  # (runs-on, target) pair needs cross-rs/cross or can just run cargo
+  # directly (Windows, macOS, and Linux x86_64 all fall in the latter
+  # case). Linux aarch64/riscv64 and both FreeBSD targets go through
+  # cross-rs/cross, which maintains a tested Docker image per target --
+  # including solved versions of the two hardest problems here (riscv64's
+  # toolchain needing a newer binutils than Debian stable ships, and a real
+  # clang+sysroot cross-compiler for FreeBSD, aarch64 included).
+  #
+  # Explicit -gnu targets on Linux, not the action's own example (which
+  # uses musl): the existing binaries are glibc-linked, and switching libc
+  # should be a deliberate choice, not a side effect of copying an example.
+  native:
+    name: native (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runs-on: windows-latest
+            artifact: native-windows-x86_64
+            binary: claude_eclipse_core.dll
+          - target: aarch64-pc-windows-msvc
+            runs-on: windows-latest
+            artifact: native-windows-aarch64
+            binary: claude_eclipse_core.dll
+          - target: aarch64-apple-darwin
+            runs-on: macos-latest
+            artifact: native-macos-aarch64
+            binary: libclaude_eclipse_core.dylib
+          - target: x86_64-apple-darwin
+            runs-on: macos-latest
+            artifact: native-macos-x86_64
+            binary: libclaude_eclipse_core.dylib
+          - target: x86_64-unknown-linux-gnu
+            runs-on: ubuntu-latest
+            artifact: native-linux-x86_64
+            binary: libclaude_eclipse_core.so
+          - target: aarch64-unknown-linux-gnu
+            runs-on: ubuntu-latest
+            artifact: native-linux-aarch64
+            binary: libclaude_eclipse_core.so
+          - target: riscv64gc-unknown-linux-gnu
+            runs-on: ubuntu-latest
+            artifact: native-linux-riscv64
+            binary: libclaude_eclipse_core.so
+          - target: x86_64-unknown-freebsd
+            runs-on: ubuntu-latest
+            artifact: native-freebsd-x86_64
+            binary: libclaude_eclipse_core.so
+          # cross has a Dockerfile for this target in its own source tree,
+          # but doesn't ship it as a default auto-selected image ("cross
+          # does not provide a Docker image for target aarch64-unknown-
+          # freebsd, specify a custom image in Cross.toml" -- confirmed by
+          # an actual run). Without it, cross silently built with the
+          # host's native x86_64 toolchain instead, which can't link
+          # aarch64 objects at all. claude-eclipse-core/Cross.toml points
+          # this target at cross-rs's own published image for it.
+          - target: aarch64-unknown-freebsd
+            runs-on: ubuntu-latest
+            artifact: native-freebsd-aarch64
+            binary: libclaude_eclipse_core.so
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8 # v1.0.8
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release
+          working-directory: claude-eclipse-core
+          strip: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: claude-eclipse-core/target/${{ matrix.target }}/release/${{ matrix.binary }}
+
+  # --- Build + publish ---------------------------------------------------
+
+  build:
+    name: Build p2 site with Tycho
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: native-*
+          path: downloaded-natives
+
+      - name: Place native libraries
+        run: |
+          set -eu
+          base=com.anthropic.claudecode.eclipse/native
+          mkdir -p "$base"/windows/x86_64 "$base"/windows/aarch64
+          mkdir -p "$base"/linux/x86_64 "$base"/linux/aarch64 "$base"/linux/riscv64
+          mkdir -p "$base"/freebsd/x86_64 "$base"/freebsd/aarch64
+          mkdir -p "$base"/macos/aarch64 "$base"/macos/x86_64
+          cp downloaded-natives/native-windows-x86_64/claude_eclipse_core.dll "$base"/windows/x86_64/
+          cp downloaded-natives/native-windows-aarch64/claude_eclipse_core.dll "$base"/windows/aarch64/
+          cp downloaded-natives/native-linux-x86_64/libclaude_eclipse_core.so "$base"/linux/x86_64/
+          cp downloaded-natives/native-linux-aarch64/libclaude_eclipse_core.so "$base"/linux/aarch64/
+          cp downloaded-natives/native-linux-riscv64/libclaude_eclipse_core.so "$base"/linux/riscv64/
+          cp downloaded-natives/native-freebsd-x86_64/libclaude_eclipse_core.so "$base"/freebsd/x86_64/
+          cp downloaded-natives/native-freebsd-aarch64/libclaude_eclipse_core.so "$base"/freebsd/aarch64/
+          cp downloaded-natives/native-macos-aarch64/libclaude_eclipse_core.dylib "$base"/macos/aarch64/
+          cp downloaded-natives/native-macos-x86_64/libclaude_eclipse_core.dylib "$base"/macos/x86_64/
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - run: mvn -B integration-test
+
+      # Keep the published p2 site at the same path it has always lived at
+      # (.../com.anthropic.claudecode.eclipse.site/) rather than the Pages
+      # root, since every existing install's update-site URL and the
+      # README's install instructions already point there.
+      - name: Stage p2 site at its historical path
+        run: |
+          mkdir -p _site/com.anthropic.claudecode.eclipse.site
+          cp -r com.anthropic.claudecode.eclipse.site/target/repository/. _site/com.anthropic.claudecode.eclipse.site/
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Publish to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
