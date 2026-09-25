@@ -237,10 +237,12 @@ Claude CLI  <--NDJSON-->  Rust (chat.rs)  --JNI callbacks-->  Java (NativeCore �
 The plugin, feature, and p2 site can all be built headlessly from source with Maven/Tycho instead of Eclipse's PDE Export wizard:
 
 ```bash
+mkdir -p com.anthropic.claudecode.eclipse/src/core
+cp claude-eclipse-core/src/*.rs com.anthropic.claudecode.eclipse/src/core/
 mvn integration-test
 ```
 
-This compiles `com.anthropic.claudecode.eclipse`, runs its test suite, packages the feature, and regenerates the p2 update site — matching what's published under `com.anthropic.claudecode.eclipse.site/` — into `com.anthropic.claudecode.eclipse.site/target/repository/`.
+The copy puts the Rust sources where the plugin jar packages them (`src/core/`); the folder is build-time only and git-ignored. This compiles `com.anthropic.claudecode.eclipse`, runs its test suite, packages the feature, and regenerates the p2 update site — matching what's published under `com.anthropic.claudecode.eclipse.site/` — into `com.anthropic.claudecode.eclipse.site/target/repository/`.
 
 Requirements: JDK 21+ and Maven. The target platform ([claudecode.target](claudecode.target)) resolves against the Eclipse release train, CDT, JDT and Terminal from the main Eclipse p2 repository, and PyDev from its SourceForge mirror rather than `pydev.org` directly — PyDev's own site proxies artifact downloads through a GitHub Releases redirect that Eclipse's p2 transport can't follow, even though most HTTP clients handle it fine.
 

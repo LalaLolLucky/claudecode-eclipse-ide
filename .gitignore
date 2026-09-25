@@ -12,6 +12,9 @@ claude-eclipse-core/target/
 # Maven/Tycho build outputs
 target/
 
+# Rust sources copied in at build time for the plugin jar (CI does the copy)
+com.anthropic.claudecode.eclipse/src/core/
+
 # VS Code Java Language Server local artifacts (machine-specific, regenerated)
 com.anthropic.claudecode.eclipse/.settings/org.eclipse.jdt.core.prefs
 __CREATED_BY_JAVA_LANGUAGE_SERVER__/

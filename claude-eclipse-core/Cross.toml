@@ -3,5 +3,10 @@
 # build` warns "does not provide a Docker image for target
 # aarch64-unknown-freebsd" and silently falls back to the host's native
 # x86_64 toolchain, which can't link aarch64 objects at all.
+#
+# Pinned by digest, not :main, which cross-rs moves with every image they
+# publish -- the toolchain and FreeBSD sysroot must not change between two
+# deploys of the same commit. This is the image :main pointed at on
+# 2026-09-25, the one the first verified CI build used.
 [target.aarch64-unknown-freebsd]
-image = "ghcr.io/cross-rs/aarch64-unknown-freebsd:main"
+image = "ghcr.io/cross-rs/aarch64-unknown-freebsd@sha256:317107ff710735ba2ab91d71185e32a5781870238aa93d9c2e0399b986668fb1"

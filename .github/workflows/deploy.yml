@@ -124,6 +124,16 @@ jobs:
             echo "::error::${{ matrix.target }} needs $got, newer than $max"
             exit 1
           fi
+      # The linker only ad-hoc signs arm64 output, and stripping can void a
+      # signature, so re-sign both macOS dylibs the way the Mac-built ones
+      # have always shipped (a signature with no identity behind it).
+      - name: Ad-hoc sign the macOS dylib
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          f=claude-eclipse-core/target/${{ matrix.target }}/release/${{ matrix.binary }}
+          codesign --force --sign - "$f"
+          codesign --verify --verbose "$f"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact }}
@@ -165,6 +175,15 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+
+      # The plugin jar carries the Rust sources under src/core/ (see
+      # bin.includes in build.properties). They are copied in at build
+      # time only and never committed -- .gitignore excludes the folder.
+      - name: Copy the Rust sources into src/core
+        run: |
+          set -eu
+          mkdir -p com.anthropic.claudecode.eclipse/src/core
+          cp claude-eclipse-core/src/*.rs com.anthropic.claudecode.eclipse/src/core/
 
       - run: mvn -B integration-test
 

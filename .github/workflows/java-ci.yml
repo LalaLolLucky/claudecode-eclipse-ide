@@ -34,4 +34,13 @@ jobs:
       # host-independent, and claudecode.target already lists all three
       # (os, ws, arch) environments simultaneously so the plugin compiles
       # regardless of which one is actually running the build.
+      #
+      # src/core/ is in bin.includes, so the Rust sources must be copied in
+      # first, exactly as deploy.yml does; Tycho fails on a missing entry.
+      - name: Copy the Rust sources into src/core
+        run: |
+          set -eu
+          mkdir -p com.anthropic.claudecode.eclipse/src/core
+          cp claude-eclipse-core/src/*.rs com.anthropic.claudecode.eclipse/src/core/
+
       - run: mvn -B integration-test

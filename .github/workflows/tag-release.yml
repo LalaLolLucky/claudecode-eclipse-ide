@@ -48,3 +48,11 @@ jobs:
           git tag "$TAG"
           git push origin "$TAG"
           gh release create "$TAG" --title "$TAG" --notes "$NOTES"
+
+          # Only the newest release says *(current)*. The release before this
+          # one still has it on its header line (line 1 of its notes).
+          PREV=$(gh release list --exclude-drafts --limit 2 --json tagName --jq '.[1].tagName // empty')
+          if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
+            gh release view "$PREV" --json body --jq .body | sed '1s/ \*(current)\*//' > prev-notes.md
+            gh release edit "$PREV" --notes-file prev-notes.md
+          fi

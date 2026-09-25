@@ -81,8 +81,15 @@ jobs:
           import os
 
           version = os.environ["VERSION"]
-          body = os.environ["BODY"].strip()
+          # The Run workflow form only takes one line, so line breaks are
+          # typed as a literal \n; turn them back into real newlines.
+          body = os.environ["BODY"].replace("\\n", "\n").strip()
           today = datetime.date.today().isoformat()
+
+          # The PR body gets the same converted text.
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "release-pr-body.md"), "w") as f:
+              f.write(f"Version bump and changelog entry for v{version}, "
+                      f"prepared via workflow_dispatch.\n\n{body}\n")
 
           with open("CHANGELOG.md") as f:
               content = f.read()
@@ -108,7 +115,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
-          CHANGELOG_BODY: ${{ inputs.changelog_body }}
         run: |
           set -eu
           BRANCH="release/${VERSION}"
@@ -122,9 +128,7 @@ jobs:
             --base dev \
             --head "$BRANCH" \
             --title "Release v${VERSION}" \
-            --body "Version bump and changelog entry for v${VERSION}, prepared via workflow_dispatch.
-
-          ${CHANGELOG_BODY}"
+            --body-file "$RUNNER_TEMP/release-pr-body.md"
 
   delete-release-branch:
     if: >
