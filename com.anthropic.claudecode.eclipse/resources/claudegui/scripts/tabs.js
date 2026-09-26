@@ -101,7 +101,7 @@ function syncComposer() {
                     : (s ? 'Queue another message…' : 'Message Claude…');
 }
 function WELCOME_HTML() {
-  return '<div class="welcome"><div class="wc-logo">' + ICONS.SUNBURST + '</div>' +
+  return '<div class="welcome"><div class="wc-logo">' + ICONS.CLAUDELOGO + '</div>' +
     '<div class="wc-h">Claude Code</div>' +
     '<div class="wc-p">Ask anything about your workspace. Type <code class="ic">/</code> for commands.</div></div>';
 }
@@ -169,6 +169,7 @@ function switchTab(id) {
   if (typeof renderBrowserBanner === 'function') renderBrowserBanner();  // this tab's browser connection
   if (typeof syncComposer === 'function') syncComposer();           // send/stop reflects THIS tab
   if (typeof updateAgentsBtn === 'function') updateAgentsBtn();     // toolbar pill reflects THIS tab's agents
+  if (typeof switchToContextRing === 'function') switchToContextRing(id);  // ring reflects THIS tab's context
   // The root rides along: Java scopes session history, rewind and the status bar to
   // the conversation's own folder, not to the workspace root.
   try { if (window._activeTab) window._activeTab(id, rootPathOf(t)); } catch (e) {} // status bar follows active tab
@@ -330,7 +331,7 @@ function renderTabs() {
     // just be siblings of the title.
     // The FreeBSD setup guide's tab (cliversion.js) can be neither renamed nor closed,
     // so it gets no actions at all, not even on hover.
-    el.innerHTML = '<span class="ti">' + ICONS.SUNBURST + '</span><span class="tt"></span>'
+    el.innerHTML = '<span class="ti">' + ICONS.CLAUDELOGO + '</span><span class="tt"></span>'
       + (t.setupGuide ? '' :
           '<span class="tab-actions">'
         +   '<span class="tab-edit" title="Rename">' + ICONS.PENCIL + '</span>'
