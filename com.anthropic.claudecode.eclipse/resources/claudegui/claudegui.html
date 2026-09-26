@@ -108,10 +108,20 @@
         <div class="cb-left">
           <span class="pill" id="plus-btn" title="Add" onclick="openPlusMenu(this)">__PLUS__</span>
           <span class="pill" id="slash-btn" title="Commands" onclick="toggleMenu('actions-menu', this)">__SLASH__</span>
+          <span class="pill ctx-ring" id="ctx-ring-btn" onclick="sendCompact()" onmouseenter="showCtxRingTip()" onmouseleave="hideCtxRingTip()" style="display:none">
+            <svg viewBox="0 0 20 20" width="16" height="16">
+              <circle class="ctx-ring-track" cx="10" cy="10" r="8"></circle>
+              <circle class="ctx-ring-fill" cx="10" cy="10" r="8"></circle>
+            </svg>
+          </span>
           <span class="agents-pill" id="agents-btn" title="Agents" onclick="toggleAgentsPanel()" style="display:none">
             <span class="agents-dot" id="agents-dot"></span> <span id="agents-count"></span>
           </span>
-          <span class="file-chip empty" id="ctx-chip" title="Toggle file context" onclick="toggleContext()"><span id="ctx-ic">__FILEICON__</span> <span id="ctx-label">No file open</span></span>
+          <span class="agents-pill" id="model-btn" title="Model" onclick="openModelChooser(event)">
+            <span id="model-pill-lbl">Default</span> <span id="model-pill-effort" style="color:var(--fg-dim)">High</span>
+          </span>
+          <span class="cb-divider"></span>
+          <span class="file-chip empty" id="ctx-chip" title="Toggle file context" onclick="toggleContext()"><span id="ctx-ic">__FILEICON__</span> <span id="ctx-label">No file open</span><span class="ctx-x" id="ctx-x" title="Remove" onclick="dismissContext(event)">__X__</span></span>
         </div>
         <div class="cb-right">
           <span class="modes-btn" id="modes-btn" onclick="toggleMenu('modes-menu', this)"><span id="modes-ic">__HAND__</span> <span id="modes-lbl">Manual</span></span>
@@ -141,14 +151,15 @@
     <div class="item" data-mode="acceptEdits" data-icon="PENCIL" onclick="selectMode(this)"><span class="ic">__PENCIL__</span><div class="txt"><span class="lbl">Edit automatically</span><span class="desc">Claude applies edits without asking</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
     <div class="item" data-mode="plan" data-icon="MAP" onclick="selectMode(this)"><span class="ic">__MAP__</span><div class="txt"><span class="lbl">Plan</span><span class="desc">Claude explores and presents a plan before editing</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
     <div class="item" data-mode="auto" data-icon="BOLT" onclick="selectMode(this)"><span class="ic">__BOLT__</span><div class="txt"><span class="lbl">Auto</span><span class="desc">Claude will approve actions that pass a safety check and pause for anything risky</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
-    <div class="item" id="mode-bypass" data-mode="bypassPermissions" data-icon="EYEOFF" onclick="selectMode(this)"><span class="ic">__EYEOFF__</span><div class="txt"><span class="lbl">Bypass permissions</span><span class="desc">Claude will not ask for approval before running potentially dangerous commands</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
+    <div class="item" id="mode-bypass" data-mode="bypassPermissions" data-icon="BYPASS" onclick="selectMode(this)"><span class="ic">__BYPASS__</span><div class="txt"><span class="lbl">Bypass permissions</span><span class="desc">Claude will not ask for approval before running potentially dangerous commands</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
     <div class="sep"></div>
     <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span>Effort <span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span>
       <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
   </div>
 
   <!-- actions menu (the / button): Context + Model sections + Slash Commands -->
-  <div class="menu" id="actions-menu" style="min-width:284px">
+  <div class="menu" id="actions-menu">
+    <input id="actions-slash-filter" type="text" placeholder="Filter commands…" oninput="filterActionsSlash(this.value)">
     <div class="head"><span class="h">Context</span></div>
     <div class="item" onclick="openRewindDialog()"><span class="ic">__REWIND__</span><div class="txt"><span class="lbl">Rewind</span></div></div>
     <div class="sep"></div>
@@ -163,7 +174,6 @@
     <div class="item" onclick="openMcpServers()"><span class="ic">__PLUG__</span><div class="txt"><span class="lbl">MCP servers</span></div></div>
     <div class="sep"></div>
     <div class="head"><span class="h">Slash Commands</span></div>
-    <input id="actions-slash-filter" type="text" placeholder="Filter commands…" oninput="filterActionsSlash(this.value)">
     <div id="actions-slash"></div>
     <div class="sep"></div>
     <div class="head"><span class="h">Appearance</span></div>
@@ -172,7 +182,13 @@
   </div>
 
   <!-- model chooser -->
-  <div class="menu" id="model-menu" style="min-width:320px"><div class="head"><span class="h">Select a model</span></div><div id="model-list"></div></div>
+  <div class="menu" id="model-menu">
+    <div class="head"><span class="h">Select a model</span></div>
+    <div id="model-list"></div>
+    <div class="sep"></div>
+    <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span>Effort <span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span>
+      <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
+  </div>
 
   <!-- account & usage window -->
   <div id="account-overlay"><div id="account-win"></div></div>
@@ -202,6 +218,12 @@
 
   <!-- slash command menu -->
   <div class="menu" id="slash-menu"></div>
+
+  <!-- context-usage ring's hover popover (controls.js) -->
+  <div id="ctx-ring-tip">
+    <div class="crt-line" id="ctx-ring-tip-remaining"></div>
+    <div class="crt-line crt-dim">Click to compact now.</div>
+  </div>
 
   <!-- per-message actions menu (hover a sent bubble → undo badge) -->
   <div class="menu" id="msg-menu"></div>
