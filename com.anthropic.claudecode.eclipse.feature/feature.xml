@@ -53,9 +53,9 @@ SOFTWARE.
    </url>
 
    <requires>
-      <import plugin="org.eclipse.terminal.control" version="1.1.0" match="compatible"/>
-      <import plugin="org.eclipse.terminal.connector.process" version="1.1.0" match="compatible"/>
-      <import plugin="org.eclipse.terminal.connector.local" version="1.1.0" match="compatible"/>
+      <import plugin="org.eclipse.terminal.control" version="1.0.0" match="compatible"/>
+      <import plugin="org.eclipse.terminal.connector.process" version="1.0.0" match="compatible"/>
+      <import plugin="org.eclipse.terminal.connector.local" version="1.0.0" match="compatible"/>
    </requires>
 
    <plugin

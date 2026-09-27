@@ -225,26 +225,35 @@ fn redacted(args: &[String]) -> String {
 /// Project server's `.mcp.json` goes. **Blocking**, up to [`CONFIG_TIMEOUT`].
 ///
 /// Returns `{"token","ok":true}` or `{"token","ok":false,"error"}`, the error being
-/// what the CLI said.
+/// what the CLI said. In Debug mode it also carries `"log"`: the redacted lines for
+/// the server view, which Java writes there and strips before the page sees it. A
+/// static call has no callbacks to reach the view with, so the lines ride back here.
 pub fn edit_config(claude_cmd: &str, cwd: &str, token: &str, op_json: &str) -> String {
+    let (mut json, log) = edit_config_logged(claude_cmd, cwd, token, op_json);
+    if crate::is_debug() && !log.is_empty() {
+        json["log"] = serde_json::json!(log);
+    }
+    json.to_string()
+}
+
+fn edit_config_logged(claude_cmd: &str, cwd: &str, token: &str, op_json: &str) -> (serde_json::Value, Vec<String>) {
+    let mut log = Vec::new();
     let result = serde_json::from_str::<serde_json::Value>(op_json)
         .map_err(|_| "Invalid request.".to_string())
         .and_then(|op| config_args(&op))
-        .and_then(|args| run_claude(claude_cmd, cwd, &args));
-    match result {
+        .and_then(|args| run_claude(claude_cmd, cwd, &args, &mut log));
+    let json = match result {
         Ok(()) => serde_json::json!({ "token": token, "ok": true }),
         Err(e) => serde_json::json!({ "token": token, "ok": false, "error": e }),
-    }
-    .to_string()
+    };
+    (json, log)
 }
 
-fn run_claude(claude_cmd: &str, cwd: &str, args: &[String]) -> Result<(), String> {
+fn run_claude(claude_cmd: &str, cwd: &str, args: &[String], log: &mut Vec<String>) -> Result<(), String> {
     if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
         return Err(format!("Working directory not found: {cwd}"));
     }
-    if crate::is_debug() {
-        eprintln!("[mcp] claude {} (in {cwd})", redacted(args));
-    }
+    log.push(format!("[mcp] claude {} (in {cwd})", redacted(args)));
     let mut cmd = crate::launch::claude_command(claude_cmd, args);
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
@@ -290,9 +299,7 @@ fn run_claude(claude_cmd: &str, cwd: &str, args: &[String]) -> Result<(), String
     if status.success() {
         return Ok(());
     }
-    if crate::is_debug() {
-        eprintln!("[mcp] claude mcp failed ({status})");
-    }
+    log.push(format!("[mcp] claude mcp failed ({status})"));
     let said = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
     Err(if said.is_empty() { format!("Claude Code exited with {status}.") } else { said.to_string() })
 }
@@ -390,5 +397,18 @@ mod tests {
             "transport":"http","url":"https://u","headers":["Authorization: Bearer s3cret"]}}))
         .unwrap();
         assert_eq!(redacted(&h), "mcp add --scope local --transport http --header Authorization: <redacted> -- n …");
+    }
+
+    #[test]
+    fn the_server_view_log_is_redacted() {
+        let op = json!({"op":"add","name":"n","scope":"local","config":{
+            "transport":"stdio","command":"run","args":["s3cret"],"env":["KEY=s3cret"]}});
+        let cwd = std::env::temp_dir();
+        let (res, log) = edit_config_logged("no-such-claude-cli-x7", cwd.to_str().unwrap(), "t", &op.to_string());
+        assert_eq!(res["ok"], false);
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(log[0].starts_with("[mcp] claude mcp add --scope local --transport stdio --env KEY=<redacted> -- n …"),
+                "{}", log[0]);
+        assert!(!log.concat().contains("s3cret"));
     }
 }

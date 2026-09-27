@@ -15,10 +15,10 @@ An Eclipse IDE plugin that integrates [Claude Code](https://claude.ai/code) — 
 
 ## Prerequisites
 
-- Eclipse IDE (tested with Eclipse 2023-12+)
+- Eclipse IDE 2025-09 or later
 - Java 21 or later
 - [Claude Code CLI](https://claude.ai/code) installed and available on your PATH
-- A valid Anthropic API key
+- An Anthropic account, or an Anthropic API key
 - **Windows:** x86_64 and aarch64 (ARM64)
 - **Linux:** x86_64, aarch64 (ARM64) and riscv64 (RISC-V)
 - **macOS:** aarch64 (Apple Silicon) and x86_64 (Intel)
@@ -26,7 +26,7 @@ An Eclipse IDE plugin that integrates [Claude Code](https://claude.ai/code) — 
 
 ### Required Eclipse Terminal bundles
 
-The **Claude Terminal** view embeds the Eclipse Terminal, so these bundles must be present (version **1.1.0 or newer**, within the `1.x` range):
+The **Claude Terminal** view embeds the Eclipse Terminal, so these bundles must be present (version **1.0.0 or newer**, within the `1.x` range):
 
 - `org.eclipse.terminal.control`
 - `org.eclipse.terminal.connector.process`
@@ -34,7 +34,7 @@ The **Claude Terminal** view embeds the Eclipse Terminal, so these bundles must 
 
 …plus their transitive dependencies (notably CDT's native PTY support, `org.eclipse.cdt.core.native`), which p2 resolves automatically.
 
-These bundles ship with most Eclipse packages (Eclipse IDE for C/C++ Developers, for Committers, for Enterprise Java Developers, and the full SDK), and the plugin's feature declares them, so p2 normally pulls them in during installation. If you're on the minimal **Eclipse IDE for Java Developers** and installation reports them as missing, install them first via **Help → Install New Software** from the main Eclipse release update site (search for *Terminal*). A reasonably recent Eclipse release is required, since Terminal `1.1+` ships only in newer versions.
+These bundles ship with most Eclipse packages (Eclipse IDE for C/C++ Developers, for Committers, for Enterprise Java Developers, and the full SDK), and the plugin's feature declares them, so p2 normally pulls them in during installation. If you're on the minimal **Eclipse IDE for Java Developers** and installation reports them as missing, install them first via **Help → Install New Software** from the main Eclipse release update site (search for *Terminal*). Eclipse 2025-09 or later is required, since these bundles first ship there.
 
 ### Setting Up Claude Code CLI
 
@@ -49,15 +49,15 @@ These bundles ship with most Eclipse packages (Eclipse IDE for C/C++ Developers,
    ```
    You should see a version number. If the command is not found, ensure your npm global bin directory is on your PATH.
 
-### Setting Up Your Anthropic API Key
+### Signing In
 
-Claude Code CLI requires an Anthropic API key to function. You have two options:
+Claude Code CLI needs to be signed in to an Anthropic account, or given an API key. You have two options:
 
-**Option A — Interactive login (recommended):**
+**Option A — Sign in (recommended):**
 ```bash
-claude auth
+claude auth login
 ```
-Follow the prompts to log in. Your credentials are stored securely and reused automatically.
+Follow the prompts to sign in with your Anthropic account. Your credentials are stored securely and reused automatically; `claude auth status` shows who you're signed in as.
 
 **Option B — Environment variable:**
 
@@ -76,7 +76,7 @@ Set `ANTHROPIC_API_KEY` in your environment before launching Eclipse:
 ### Opening the Views
 
 Go to **Window → Show View → Other → Claude Code** and open the views you want:
-- **Claude Code** — a VS Code-style graphical chat panel. A row of **directory tabs** sits on top, one per working folder, each with its own conversations and its own session history; beneath it, multiple conversation tabs run concurrently, each backed by its own Claude process. Model, reasoning effort, extended thinking and permission mode are set **per conversation**. Also: an in-panel status bar (live model, context usage, cost, session and weekly usage), inline permission / question / diff-review cards, live extended-thinking reveal, image paste, per-message fork / rewind / delete, session history, inline file diffs, Scroll Lock, and a light or dark palette that follows Eclipse's theme — the conversation tab strip samples your editor tabs' own colors, so it matches whatever theme, OS or desktop environment you run
+- **Claude Code** — a VS Code-style graphical chat panel. A row of **directory tabs** sits on top, one per working folder, each with its own conversations and its own session history; beneath it, multiple conversation tabs run concurrently, each backed by its own Claude process. Model, reasoning effort, extended thinking and permission mode are set **per conversation**. Also: an in-panel status bar (live model, context usage, cost, session and weekly usage), inline permission / question / diff-review cards, live extended-thinking reveal, image paste, per-message fork / rewind / delete, local and web session history, inline file diffs, Scroll Lock, Find in Conversation, speech-to-text dictation, an Agents panel for subagents, an MCP servers window, Remote Control (carry on a conversation from claude.ai or your phone), `@browser` to hand Claude a Chrome tab, and a light or dark palette that follows Eclipse's theme — the conversation tab strip samples your editor tabs' own colors, so it matches whatever theme, OS or desktop environment you run
 - **Claude Terminal** — dedicated interactive terminal, built on the Eclipse Terminal with full ANSI/24-bit color, scrollback, copy/paste, customizable colors, an optional Claude status line, and Ctrl/⌘-click navigation to file paths and links mentioned in Claude's answers
 
 
@@ -91,9 +91,9 @@ Go to **Window → Show View → Other → Claude Code** and open the views you 
 
 > **Open files, links, and Java references:** Claude often references file paths, URLs and Java type/member names in its answers. **Ctrl-click** (⌘-click on macOS) any such token in the **Claude Terminal** view to jump straight to it — a file opens in an editor, an `http`/`https` URL opens in your browser, and a Java reference (e.g. `java.util.List`, `com.foo.Bar:21`, `Bar#baz(int)`) opens in the Java editor (only if JDT is installed). Paths and file names containing spaces are fully supported — absolute or workspace-relative, even when the path wraps across terminal lines or a file name appears mid-sentence — clicking any segment opens the right file. You can also select text and choose **Open** from the right-click menu.
 
-> **Font customization (all platforms):** The console font can be changed in **Window → Preferences → General → Appearance → Colors and Fonts → Basic → Claude Terminal Console Font**. By default it inherits from Eclipse's "Text Font" setting. **Linux users:** If you see horizontal lines or other rendering artifacts, try setting the font to one commonly used by terminal emulators (e.g., MesloLGS NF, JetBrains Mono, or your terminal's default font).
+> **Font customization (all platforms):** The console font can be changed in **Window → Preferences → General → Appearance → Colors and Fonts → Claude Code → Claude Terminal Font**. By default it inherits from Eclipse's "Text Font" setting. **Linux users:** If you see horizontal lines or other rendering artifacts, try setting the font to one commonly used by terminal emulators (e.g., MesloLGS NF, JetBrains Mono, or your terminal's default font).
 
-> **Color customization (all platforms):** The Claude Terminal's background/foreground colors — can be set in **Window → Preferences → Claude Code** ("Claude Terminal background" and "Claude Terminal foreground"). These are independent of Eclipse's built-in Terminal colors and apply immediately without restart.
+> **Color customization (all platforms):** The Claude Terminal's background and foreground colors can be set in **Window → Preferences → General → Appearance → Colors and Fonts → Claude Code** ("Claude Terminal Background" and "Claude Terminal Foreground"). These are independent of Eclipse's built-in Terminal colors and apply immediately without restart.
 
 ### Keyboard Shortcuts
 
@@ -103,6 +103,8 @@ Go to **Window → Show View → Other → Claude Code** and open the views you 
 | `Ctrl+Alt+S` | Send current editor selection to Claude |
 | `Ctrl+Alt+A` | Add current file to Claude's context |
 | `Esc` | Dismiss the card currently awaiting an answer (`Ctrl+G` on the Emacs scheme) |
+| `Ctrl+F` | Find in Conversation, in the Claude Code view |
+| `Ctrl+D` | Start or stop dictation, in the Claude Code view (when speech-to-text is enabled) |
 
 These are also available from the **Claude Code** menu in the menu bar and from the right-click context menu in any text editor. A project's context menu carries **Open Claude Here**, holding **Claude Code** and **Claude Terminal**, and **Show In ▸ Claude Code** opens the selected folder as a directory tab.
 
@@ -112,12 +114,12 @@ In the **Claude Code** view:
 - **New Session** — opens a fresh conversation tab (multiple run concurrently)
 - **New Claude root directory** — adds a directory tab, so a conversation can run in any folder rather than only the workspace root
 - **Model picker** — sets the model, reasoning effort, and extended thinking for the current conversation
-- **Permission mode** — Manual, Edit automatically, Plan or Auto, remembered per conversation and applied immediately
+- **Permission mode** — Manual, Edit automatically, Plan or Auto (plus Bypass permissions, when allowed in the preferences), remembered per conversation and applied immediately
 - **History** — browse, resume, or delete past conversations
 - **Scroll Lock** — holds your place while Claude writes; a **Jump to latest** button appears while you're held back
 - **Clear** — clears the current conversation's display
 
-Hovering a message you sent reveals per-message actions: **Fork conversation from here**, **Rewind code to here**, **Fork conversation and rewind code**, and **Delete**, which removes that message from the conversation's history for every Claude Code client reading the project. Slash commands including `/compact`, `/rewind` and `/advisor` work from the composer, and a banner offers to run Claude Code's own updater when a newer CLI release is published.
+Hovering a message you sent reveals per-message actions: **Fork conversation from here**, **Rewind code to here**, **Fork conversation and rewind code**, and **Delete**, which removes that message from the conversation's history for every Claude Code client reading the project. Slash commands including `/compact`, `/context`, `/mcp`, `/remote-control`, `/rewind` and `/advisor` work from the composer, and a banner offers to run Claude Code's own updater when a newer CLI release is published.
 
 ### What Claude Can Do in Eclipse
 
@@ -155,10 +157,19 @@ Go to **Window → Preferences → Claude Code** to configure:
 |---|---|---|
 | Open new Claude Terminal automatically on Eclipse launch | Off | Opens a Claude Terminal tab when Eclipse starts |
 | Track editor selection in real-time | On | Continuously track cursor/selection for Claude context |
-| Claude command | `claude` | Path to the Claude CLI executable |
+| Claude command | `claude` | Path to the Claude CLI executable, or to a `.bat`/`.cmd`/`.sh` wrapper around it |
 | Arguments | *(empty)* | Additional CLI arguments (e.g., `--model claude-opus-4-7-20260418`) |
 | Port range (min/max) | 10000–65535 | Port range for the internal HTTP+SSE server |
-| Claude Terminal background / foreground | `#121314` / `#E5E5E5` | Terminal colors, independent of Eclipse's Terminal; apply immediately |
+| Enable remote control on startup, in the Claude Code view | Off | Turns on Remote Control for each conversation as it starts |
+| Enable Thinking by default | On | New conversations start with extended thinking on |
+| Allow bypass permissions mode | On | Lists Bypass permissions in the permission-mode picker. Recommended only for sandboxes with no internet access |
+| Enable Speech-to-text (STT) [Experimental] | On | Dictation in the Claude Code view |
+| Enable Speech-to-text (STT) for Mac [Experimental] | Off | macOS only: dictation there is opt-in |
+| Scroll Lock enabled by default | Off | New Claude Code and Claude Terminal tabs start with Scroll Lock on |
+| Smart Scroll Lock | Off | In the Claude Code view, still jump to the bottom for your own actions while Scroll Lock is on |
+| Persistent vertical scrollbar | On | Shown only on desktops with auto-hiding (overlay) scrollbars: keeps the Claude Terminal's scrollbar visible |
+
+The Claude Terminal's colors and font are under **Colors and Fonts** instead — see the notes under [Getting Started](#getting-started).
 
 **Claude status bar** — a status line for the Claude Terminal, assembled from the parts you choose:
 
@@ -187,6 +198,7 @@ Go to **Window → Preferences → Claude Code** to configure:
 | Show a timestamp above your own messages | Off | A small local-time line above each message you sent, in live conversations and in history loaded from disk |
 | Hide the root directories row | Off | Removes the working-folder picker, its collapsed stand-in and its toolbar toggle — for anyone who only ever works in one folder |
 | Working-indicator verb categories | *(varies)* | *deprecated*, *expansion pack one*, *expansion pack two*, *dank*, *vibecoder*, and **Use custom spinner verbs** — see [Custom Working-Indicator Verbs](#custom-working-indicator-verbs) |
+| Debug mode | Off | Shows the Claude IDE Server view, where the plugin writes diagnostic lines |
 
 ### Custom Working-Indicator Verbs
 
@@ -230,7 +242,7 @@ Claude CLI  <--NDJSON-->  Rust (chat.rs)  --JNI callbacks-->  Java (NativeCore �
 | `claude-eclipse-core` | Rust native library — HTTP+SSE server, MCP/JSON-RPC protocol, chat process manager, lock-file management. Built as a cdylib (`claude_eclipse_core.dll` / `libclaude_eclipse_core.so` / `libclaude_eclipse_core.dylib`) |
 | `com.anthropic.claudecode.eclipse` | Eclipse plugin — UI views, MCP tool implementations, JNI bridge, chat HTML/JS |
 | `com.anthropic.claudecode.eclipse.feature` | Eclipse feature definition — declares the plugin and its metadata |
-| `com.anthropic.claudecode.eclipse.site` | p2 update site — the installable artifacts hosted via GitHub Pages |
+| `com.anthropic.claudecode.eclipse.site` | p2 update site definition (`category.xml`, `site.xml`); CI builds the site from it and publishes it to GitHub Pages |
 
 ### Building the Plugin with Tycho
 
@@ -242,15 +254,15 @@ cp claude-eclipse-core/src/*.rs com.anthropic.claudecode.eclipse/src/core/
 mvn integration-test
 ```
 
-The copy puts the Rust sources where the plugin jar packages them (`src/core/`); the folder is build-time only and git-ignored. This compiles `com.anthropic.claudecode.eclipse`, runs its test suite, packages the feature, and regenerates the p2 update site — matching what's published under `com.anthropic.claudecode.eclipse.site/` — into `com.anthropic.claudecode.eclipse.site/target/repository/`.
+The copy puts the Rust sources where the plugin jar packages them (`src/core/`); the folder is build-time only and git-ignored. This compiles `com.anthropic.claudecode.eclipse`, runs its test suite, packages the feature, and builds the p2 update site into `com.anthropic.claudecode.eclipse.site/target/repository/`.
 
 Requirements: JDK 21+ and Maven. The target platform ([claudecode.target](claudecode.target)) resolves against the Eclipse release train, CDT, JDT and Terminal from the main Eclipse p2 repository, and PyDev from its SourceForge mirror rather than `pydev.org` directly — PyDev's own site proxies artifact downloads through a GitHub Releases redirect that Eclipse's p2 transport can't follow, even though most HTTP clients handle it fine.
 
-This does not build the native libraries under `native/` — those are compiled separately (see below) and are picked up as-is, whatever is currently committed.
+This does not build the native libraries under `native/`: a local build packages whatever is there. Releases work differently — the **Deploy update site** workflow ([deploy.yml](.github/workflows/deploy.yml)) cross-compiles all 9 native libraries from source, builds the site with Tycho against them, and publishes it to GitHub Pages.
 
 ### Building the Native Library
 
-The Rust library must be compiled for each target platform:
+Releases compile these in CI (above). To build one locally, compile it for its target platform:
 
 **Windows x86_64 (native build):**
 ```bash

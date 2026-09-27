@@ -1133,7 +1133,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatBrow
         &cmd,
         &message,
         |cfg| manager.enable_chrome(cfg),
-        || chrome::cli_instruction(&cmd),
+        chrome::instruction,
     );
     let json = serde_json::to_string(&blocks).unwrap_or_else(|_| "[]".to_string());
     env.new_string(json).unwrap().into_raw()

@@ -891,14 +891,19 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             // Off the UI thread — spawning a child process would otherwise freeze it.
             new Thread(() -> {
                 String err = null;
+                ClaudeCodeView.debug("[mcp] → " + mcpRequestLabel(request) + " (" + token + ")");
                 try {
                     m.setRoot(root);
-                    if (!m.mcpRequest(token, request, resumeId, permMode, effort, model, thinking))
+                    if (!m.mcpRequest(token, request, resumeId, permMode, effort, model, thinking)) {
                         err = "Claude could not be started.";
+                        ClaudeCodeView.debug("[mcp] " + token + " not sent: no live process, or the request was refused");
+                    }
                 } catch (UnsatisfiedLinkError e) {
                     err = "Not supported by this build.";   // a native library from before this window
+                    ClaudeCodeView.debug("[mcp] " + token + " not sent: " + e);
                 } catch (Throwable t) {
                     err = "Claude could not be started.";
+                    ClaudeCodeView.debug("[mcp] " + token + " not sent: " + t);
                 }
                 // Only a failure is reported from here; the answer is the CLI's reply.
                 if (err != null) pushMcp(ti, mcpError(token, err));
@@ -916,10 +921,14 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             final ChatProcessManager m = managerFor(ti);
             new Thread(() -> {
                 String res;
+                ClaudeCodeView.debug("[mcp] → " + mcpOpLabel(op) + " (" + token + ")");
                 try {
                     m.setRoot(root);
-                    res = m.mcpEditConfig(token, op);
-                } catch (Throwable t) { res = null; }
+                    res = mcpTakeLog(m.mcpEditConfig(token, op));
+                } catch (Throwable t) {
+                    ClaudeCodeView.debug("[mcp] " + token + " failed: " + t);
+                    res = null;
+                }
                 pushMcp(ti, res != null ? res : mcpError(token, "Not supported by this build."));
             }, "claude-mcp-config").start();
             return null;
@@ -3347,6 +3356,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
 
     /** An MCP servers window reply for the page, from whichever thread has it. */
     private void pushMcp(String tabId, String json) {
+        debugMcpReply(json);
         Display.getDefault().asyncExec(() -> executeJS(
                 "window.onMcp && window.onMcp('" + esc(tabId) + "','" + esc(json) + "')"));
     }
@@ -3357,6 +3367,75 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         o.addProperty("ok", false);
         o.addProperty("error", error);
         return o.toString();
+    }
+
+    // ── MCP servers window: server-view debug lines ([mcp]) ──────────────────
+    // Only what identifies a request and its outcome: a subtype, a server name, a
+    // token. Never a reply body (it can carry an OAuth URL) or an add's config (its
+    // env and headers are credentials) — the core redacts its own argv line.
+
+    /** Writes the core's redacted {@code "log"} lines for an add/remove to the server
+     *  view, and returns the result without them, for the page. */
+    private static String mcpTakeLog(String res) {
+        if (res == null) return null;
+        try {
+            com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(res).getAsJsonObject();
+            com.google.gson.JsonElement log = o.remove("log");
+            if (log == null) return res;
+            if (log.isJsonArray()) log.getAsJsonArray().forEach(l -> ClaudeCodeView.debug(l.getAsString()));
+            return o.toString();
+        } catch (Exception e) {
+            return res;
+        }
+    }
+
+    /** "mcp_toggle off github" — a window request as the server view names it. */
+    private static String mcpRequestLabel(String requestJson) {
+        try {
+            com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(requestJson).getAsJsonObject();
+            String label = mcpStr(o, "subtype");
+            if (o.has("enabled")) label += o.get("enabled").getAsBoolean() ? " on" : " off";
+            String server = mcpStr(o, "serverName");
+            return server.isEmpty() ? label : label + " " + server;
+        } catch (Exception e) {
+            return "unreadable request";
+        }
+    }
+
+    /** "add github (local)" — an add/remove as the server view names it. */
+    private static String mcpOpLabel(String opJson) {
+        try {
+            com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(opJson).getAsJsonObject();
+            return "claude mcp " + mcpStr(o, "op") + " " + mcpStr(o, "name") + " (" + mcpStr(o, "scope") + ")";
+        } catch (Exception e) {
+            return "unreadable config edit";
+        }
+    }
+
+    /** One line per outcome the page is told of: ok (with the server count for a
+     *  status read) or the error. */
+    private static void debugMcpReply(String json) {
+        if (!DebugModeUi.isDebugEnabled()) return;
+        try {
+            com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+            String token = mcpStr(o, "token");
+            if (!o.has("ok") || !o.get("ok").getAsBoolean()) {
+                ClaudeCodeView.debug("[mcp] ← " + token + " error: " + mcpStr(o, "error"));
+                return;
+            }
+            String extra = "";
+            com.google.gson.JsonElement r = o.get("response");
+            if (r != null && r.isJsonObject() && r.getAsJsonObject().get("mcpServers") instanceof com.google.gson.JsonArray a)
+                extra = ", " + a.size() + " server(s)";
+            ClaudeCodeView.debug("[mcp] ← " + token + " ok" + extra);
+        } catch (Exception e) {
+            ClaudeCodeView.debug("[mcp] unreadable reply: " + e);
+        }
+    }
+
+    private static String mcpStr(com.google.gson.JsonObject o, String key) {
+        com.google.gson.JsonElement e = o.get(key);
+        return e != null && e.isJsonPrimitive() ? e.getAsString() : "";
     }
 
     /** Transcript events land on a native worker thread; the browser is UI-thread only. */

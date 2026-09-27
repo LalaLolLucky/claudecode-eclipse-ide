@@ -258,6 +258,7 @@ dependencies = [
  "libloading",
  "portable-pty",
  "qrcode",
+ "ring",
  "rubato",
  "serde",
  "serde_json",

@@ -402,7 +402,8 @@ public final class NativeCore {
      *
      * <p><b>Blocking</b> — runs the CLI, up to 30s. Off the UI thread.
      *
-     * @return {@code {"token","ok":true}} or {@code {"token","ok":false,"error"}}.
+     * @return {@code {"token","ok":true}} or {@code {"token","ok":false,"error"}}; in
+     *         Debug mode also {@code "log"}, redacted lines for the server view.
      */
     public static native String mcpEditConfig(String claudeCmd, String cwd, String token, String opJson);
 

@@ -9,7 +9,9 @@
 //! process and prepends the text blocks the extension sends.
 
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(test)]
+use std::io::{Seek, SeekFrom};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -19,27 +21,89 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-/// How the `<browser_instruction>` text the extension sends begins and ends. The
-/// text itself is not kept here: the user's own Claude Code CLI bundles the same
-/// instruction (identical to the extension's, 4107 chars — checked against CLI
-/// 2.1.266 and extension 2.1.272), so it is read from there. These anchors find
-/// it and check what was read.
+/// How the `<browser_instruction>` text the extension sends begins and ends: checks
+/// on the text, not the text (tests only).
+#[cfg(test)]
 const INSTRUCTION_HEAD: &str = "# Claude in Chrome browser automation";
+#[cfg(test)]
 const INSTRUCTION_TAIL: &str = "call tabs_context_mcp to see what tabs are available";
+
+/// The `<browser_instruction>` text the extension sends, sealed.
+/// `.settings/com.eclipse.chrome.container` holds it encrypted as `inst_hash=`
+/// (base64 of nonce, ChaCha20-Poly1305 ciphertext and tag), compiled in and
+/// decrypted when first loaded. A constant, so a Claude Code update cannot take it
+/// away. When the extension's wording changes, re-seal it with the
+/// `seal_the_instruction` test.
+const INSTRUCTION_CONTAINER: &str = include_str!("../.settings/com.eclipse.chrome.container");
+const INSTRUCTION_KEY: [u8; 32] = [
+    0x53, 0xfa, 0xa4, 0x90, 0xad, 0xc3, 0x02, 0x35, 0xae, 0xfc, 0x75, 0x83, 0x3b, 0xe4, 0x31, 0x23,
+    0xfa, 0xb8, 0x7a, 0xb2, 0x1a, 0xaa, 0xc3, 0x5f, 0x00, 0x18, 0x1e, 0xc4, 0x39, 0x86, 0xb8, 0x5c,
+];
+/// Bound into the tag, so a value moved in from another container does not open.
+const INSTRUCTION_AAD: &[u8] = b"com.eclipse.chrome.container/inst_hash";
+
+/// The browser instruction, decrypted once. `None` only when the container is
+/// damaged, which the tests catch before a build ships.
+pub fn instruction() -> Option<String> {
+    static TEXT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    TEXT.get_or_init(|| open_instruction(INSTRUCTION_CONTAINER)).clone()
+}
+
+fn instruction_key() -> ring::aead::LessSafeKey {
+    use ring::aead::{LessSafeKey, UnboundKey, CHACHA20_POLY1305};
+    LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &INSTRUCTION_KEY).expect("a 32-byte key"))
+}
+
+/// Decrypts a container's `inst_hash=` value: the base64 after it, which may run
+/// over several lines. Whitespace inside it is ignored, so a checkout's line endings
+/// or a wrapped value change nothing.
+fn open_instruction(container: &str) -> Option<String> {
+    use base64::Engine as _;
+    use ring::aead::{Aad, Nonce, NONCE_LEN};
+    let start = container.find("inst_hash=")? + "inst_hash=".len();
+    let value: String = container[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=') || c.is_whitespace())
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let mut sealed = base64::engine::general_purpose::STANDARD.decode(value).ok()?;
+    if sealed.len() < NONCE_LEN {
+        return None;
+    }
+    let (nonce, ciphertext) = sealed.split_at_mut(NONCE_LEN);
+    let nonce = Nonce::try_assume_unique_for_key(nonce).ok()?;
+    let text = instruction_key().open_in_place(nonce, Aad::from(INSTRUCTION_AAD), ciphertext).ok()?;
+    String::from_utf8(text.to_vec()).ok()
+}
+
+// ── Reading the instruction out of an installed CLI ─────────────────────────
+// Tests only. Nothing reads the CLI at run time any more; this is how a change to
+// the CLI's own wording is noticed (installed_cli_carries_the_instruction compares
+// the two) and where the text to seal comes from.
+
 /// How far past its opening backtick the literal may run; it is about 4KB.
+#[cfg(test)]
 const INSTRUCTION_WINDOW: u64 = 64 * 1024;
+/// How far back from the literal to look for a constant one of its slots names.
+/// Minified code keeps a module's constants together: 2.1.280 defines `YL` a few
+/// hundred bytes before the literal that uses it.
+#[cfg(test)]
+const DEFINITION_WINDOW: u64 = 64 * 1024;
+#[cfg(test)]
 const SCAN_CHUNK: usize = 8 * 1024 * 1024;
 
 /// The CLI program file as `(path, size, mtime)`, so an updated CLI is read again.
+#[cfg(test)]
 type InstructionKey = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
-/// What was read from that file, a miss included: a CLI the text can't be found in
-/// is scanned once, not on every message that switches the browser on.
+/// What was read from that file, a miss included.
+#[cfg(test)]
 static INSTRUCTION_CACHE: Mutex<Option<(InstructionKey, Option<String>)>> = Mutex::new(None);
 
 /// The browser instruction, read out of the installed CLI. `None` when it can't be
 /// found there — a CLI that bundles it differently, or a wrapper script in place of
-/// the program. Blocking: the first call reads through the CLI binary (209MB on
-/// Windows, about 220ms in a release build); later calls only stat the file.
+/// the program. The first call reads through the CLI binary (237MB on Windows,
+/// about 230ms in a release build); later calls only stat the file.
+#[cfg(test)]
 pub fn cli_instruction(claude_cmd: &str) -> Option<String> {
     let path = crate::launch::claude_program_file(claude_cmd)?;
     let meta = std::fs::metadata(&path).ok()?;
@@ -57,20 +121,70 @@ pub fn cli_instruction(claude_cmd: &str) -> Option<String> {
 
 /// Finds the literal in `path` — the header straight after a template's opening
 /// backtick — evaluates it, and keeps it only if it reads as the whole instruction.
+///
+/// Every copy is tried, in file order, and the first that reads whole wins. Up to
+/// 2.1.266 there is one, its slots all string literals. From 2.1.280 there are two:
+/// first the one the CLI sends when tool search is on (its "Loading deferred tools"
+/// paragraph a constant in a `${YL}` slot, found by [`definition_before`]), then the
+/// same text without that paragraph — the fallback if the constant can't be read.
+#[cfg(test)]
 fn read_instruction(path: &std::path::Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let needle = format!("`{INSTRUCTION_HEAD}");
-    let at = find_in_reader(&mut file, needle.as_bytes(), SCAN_CHUNK)?;
-    file.seek(SeekFrom::Start(at)).ok()?;
-    let mut window = Vec::new();
-    file.take(INSTRUCTION_WINDOW).read_to_end(&mut window).ok()?;
+    let mut from = 0;
+    loop {
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let at = from + find_in_reader(&mut file, needle.as_bytes(), SCAN_CHUNK)?;
+        if let Some(text) = instruction_at(&mut file, at) {
+            return Some(text);
+        }
+        from = at + 1;
+    }
+}
+
+/// The literal whose opening backtick is at `at`, if it reads as the whole instruction.
+#[cfg(test)]
+fn instruction_at(file: &mut std::fs::File, at: u64) -> Option<String> {
+    let window = read_window(file, at, INSTRUCTION_WINDOW)?;
     // Lossy: the window runs on past the literal into whatever follows it.
-    let text = eval_template(&String::from_utf8_lossy(&window))?;
+    let text = eval_template_with(&String::from_utf8_lossy(&window), &mut |name| {
+        definition_before(file, at, name)
+    })?;
     let whole = text.starts_with(INSTRUCTION_HEAD)
         && text.ends_with(INSTRUCTION_TAIL)
         && text.len() > 1000
         && !text.contains('\u{FFFD}');
     whole.then_some(text)
+}
+
+/// The value of the template constant `name` (`name=\`…\``) nearest before `at`,
+/// within [`DEFINITION_WINDOW`]. Its own slots must be string literals: one level
+/// of constant is what the CLI uses, and anything deeper is refused, not guessed.
+#[cfg(test)]
+fn definition_before(file: &mut std::fs::File, at: u64, name: &str) -> Option<String> {
+    let start = at.saturating_sub(DEFINITION_WINDOW);
+    let before = read_window(file, start, at - start)?;
+    let needle = format!("{name}=`");
+    let pos = (0..before.len().saturating_sub(needle.len() - 1))
+        .rev()
+        .filter(|&i| before[i..].starts_with(needle.as_bytes()))
+        // The whole name, not the end of a longer one (`aYL=`).
+        .find(|&i| i == 0 || !is_ident_byte(before[i - 1]))?;
+    let value = read_window(file, start + (pos + name.len() + 1) as u64, INSTRUCTION_WINDOW)?;
+    eval_template(&String::from_utf8_lossy(&value)).filter(|v| !v.contains('\u{FFFD}'))
+}
+
+#[cfg(test)]
+fn read_window(file: &mut std::fs::File, at: u64, len: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(at)).ok()?;
+    let mut window = Vec::new();
+    file.take(len).read_to_end(&mut window).ok()?;
+    Some(window)
+}
+
+#[cfg(test)]
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
 /// The offset of the first `needle` in `reader`, read `chunk` bytes at a time with
@@ -112,6 +226,7 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
     None
 }
 
+#[cfg(test)]
 type Chars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
 
 /// Evaluates the JS template literal `src` starts with: its text with JS escapes
@@ -119,7 +234,15 @@ type Chars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
 /// the instruction's ToolSearch line that way). `None` for anything else — a
 /// computed slot, a malformed escape, no closing backtick — so a wrong instruction
 /// never reaches the model.
+#[cfg(test)]
 fn eval_template(src: &str) -> Option<String> {
+    eval_template_with(src, &mut |_| None)
+}
+
+/// [`eval_template`], where a slot may also name a constant (`${YL}`), whose value
+/// `resolve` supplies — `None` refuses the whole literal.
+#[cfg(test)]
+fn eval_template_with(src: &str, resolve: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
     let mut chars = src.chars().peekable();
     if chars.next()? != '`' {
         return None;
@@ -132,11 +255,18 @@ fn eval_template(src: &str) -> Option<String> {
             '$' if chars.peek() == Some(&'{') => {
                 chars.next();
                 skip_space(&mut chars);
-                let quote = chars.next()?;
-                if quote != '"' && quote != '\'' {
-                    return None;
+                match chars.next()? {
+                    quote @ ('"' | '\'') => string_literal(&mut chars, quote, &mut out)?,
+                    c if c.is_ascii_alphabetic() || c == '_' || c == '$' => {
+                        let mut name = String::from(c);
+                        while let Some(&c) = chars.peek().filter(|c| c.is_ascii_alphanumeric() || **c == '_' || **c == '$') {
+                            name.push(c);
+                            chars.next();
+                        }
+                        out.push_str(&resolve(&name)?);
+                    }
+                    _ => return None,
                 }
-                string_literal(&mut chars, quote, &mut out)?;
                 skip_space(&mut chars);
                 if chars.next()? != '}' {
                     return None;
@@ -154,6 +284,7 @@ fn eval_template(src: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn skip_space(chars: &mut Chars<'_>) {
     while chars.peek().is_some_and(|c| c.is_whitespace()) {
         chars.next();
@@ -161,6 +292,7 @@ fn skip_space(chars: &mut Chars<'_>) {
 }
 
 /// The rest of a quoted string literal, its opening `quote` already taken.
+#[cfg(test)]
 fn string_literal(chars: &mut Chars<'_>, quote: char, out: &mut String) -> Option<()> {
     loop {
         match chars.next()? {
@@ -173,6 +305,7 @@ fn string_literal(chars: &mut Chars<'_>, quote: char, out: &mut String) -> Optio
 }
 
 /// One JS escape sequence, its backslash already taken.
+#[cfg(test)]
 fn unescape(chars: &mut Chars<'_>, out: &mut String) -> Option<()> {
     let decoded = match chars.next()? {
         'n' => '\n',
@@ -216,6 +349,7 @@ fn unescape(chars: &mut Chars<'_>, out: &mut String) -> Option<()> {
 }
 
 /// The digits of a `\u` escape: four hex digits, or `{…}` around one to six.
+#[cfg(test)]
 fn code_point(chars: &mut Chars<'_>) -> Option<u32> {
     if chars.peek() != Some(&'{') {
         return hex(chars, 4);
@@ -234,6 +368,7 @@ fn code_point(chars: &mut Chars<'_>) -> Option<u32> {
     (digits > 0 && value <= 0x10FFFF).then_some(value)
 }
 
+#[cfg(test)]
 fn hex(chars: &mut Chars<'_>, digits: usize) -> Option<u32> {
     (0..digits).try_fold(0u32, |value, _| Some(value * 16 + chars.next()?.to_digit(16)?))
 }
@@ -735,6 +870,53 @@ ${'ToolSearch with query "select:a,b"'} and ${ "xA\"" } — \`tick\` \${kept} \u
         assert_eq!(too_short, None, "a fragment is not the instruction");
     }
 
+    #[test]
+    fn a_slot_may_name_a_constant() {
+        let mut consts = |name: &str| (name == "YL").then(|| "## Loaded".to_string());
+        assert_eq!(eval_template_with("`a ${YL} b ${ YL } c`", &mut consts).as_deref(), Some("a ## Loaded b ## Loaded c"));
+        // An unknown name, or an expression, refuses the whole literal.
+        assert_eq!(eval_template_with("`a ${ZZ} b`", &mut consts), None);
+        assert_eq!(eval_template_with("`a ${YL+1} b`", &mut consts), None);
+        assert_eq!(eval_template_with("`a ${YL.x} b`", &mut consts), None);
+    }
+
+    /// The 2.1.280 layout: a constant `YL`, the instruction with `${YL}` in it, and the
+    /// same instruction without it, chosen between by `j7e`.
+    fn layout_2_1_280(yl_definition: &str) -> Vec<u8> {
+        let body = "call tabs_context_mcp first. ".repeat(60);
+        let mut file = vec![0xFFu8, 0x00, 0xC3, 0x28];
+        file.extend_from_slice(
+            format!(
+                "{yl_definition};var qL=`{INSTRUCTION_HEAD}\n{body}\n${{YL}}\n{INSTRUCTION_TAIL}`;\
+                 function j7e(e){{return e?qL:`{INSTRUCTION_HEAD}\n{body}\n{INSTRUCTION_TAIL}`}}"
+            )
+            .as_bytes(),
+        );
+        file.extend_from_slice(&[0xFE, 0xFF]);
+        file
+    }
+
+    #[test]
+    fn the_tool_search_version_is_read_with_its_constant() {
+        let path = std::env::temp_dir().join("claude-eclipse-instruction-2_1_280.bin");
+        let body = "call tabs_context_mcp first. ".repeat(60);
+
+        std::fs::write(&path, layout_2_1_280(r#"var aYL=`wrong`,YL=`## Loading deferred tools ${'select:a,b'} — done`"#)).unwrap();
+        let full = read_instruction(&path);
+        // No definition to be found: the version without the paragraph.
+        std::fs::write(&path, layout_2_1_280("var ZZ=1")).unwrap();
+        let without_constant = read_instruction(&path);
+        // A constant with a name of its own inside: refused, not guessed at.
+        std::fs::write(&path, layout_2_1_280("var YL=`deeper ${XX}`")).unwrap();
+        let nested = read_instruction(&path);
+        let _ = std::fs::remove_file(&path);
+
+        let plain = format!("{INSTRUCTION_HEAD}\n{body}\n{INSTRUCTION_TAIL}");
+        assert_eq!(full, Some(format!("{INSTRUCTION_HEAD}\n{body}\n## Loading deferred tools select:a,b \u{2014} done\n{INSTRUCTION_TAIL}")));
+        assert_eq!(without_constant.as_deref(), Some(plain.as_str()));
+        assert_eq!(nested.as_deref(), Some(plain.as_str()));
+    }
+
     /// Opt-in: reads the Claude Code CLI installed on this machine. Run with
     /// `cargo test --release -- --ignored installed_cli`.
     #[test]
@@ -750,5 +932,80 @@ ${'ToolSearch with query "select:a,b"'} and ${ "xA\"" } — \`tick\` \${kept} \u
         let cached = std::time::Instant::now();
         assert_eq!(cli_instruction("claude").as_deref(), Some(text.as_str()));
         eprintln!("cached: {:?}", cached.elapsed());
+        // A failure here means the CLI's wording has moved on from the sealed copy:
+        // re-seal from the dump above (seal_the_instruction).
+        assert!(instruction().as_deref() == Some(text.as_str()), "the installed CLI's wording differs from the sealed copy");
+    }
+
+    #[test]
+    fn the_sealed_instruction_opens() {
+        let text = instruction().expect("the container did not open");
+        assert!(text.starts_with(INSTRUCTION_HEAD));
+        assert!(text.ends_with(INSTRUCTION_TAIL));
+        assert!(text.chars().count() > 1000 && !text.contains('\u{FFFD}'));
+        // A checkout's line endings, or a wrapped value, change nothing.
+        let value = INSTRUCTION_CONTAINER.lines().find_map(|l| l.trim().strip_prefix("inst_hash=")).unwrap();
+        let (a, b) = value.split_at(value.len() / 2);
+        let wrapped = format!("# comment\r\ninst_hash={a}\r\n  {b}\r\n");
+        assert_eq!(open_instruction(&wrapped).as_deref(), Some(text.as_str()));
+    }
+
+    #[test]
+    fn a_damaged_container_does_not_open() {
+        use base64::Engine as _;
+        let value = INSTRUCTION_CONTAINER.lines().find_map(|l| l.trim().strip_prefix("inst_hash=")).unwrap();
+        let mut bytes = base64::engine::general_purpose::STANDARD.decode(value.trim()).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        let tampered = format!("inst_hash={}", base64::engine::general_purpose::STANDARD.encode(&bytes));
+        assert_eq!(open_instruction(&tampered), None);
+        assert_eq!(open_instruction("inst_hash="), None);
+        assert_eq!(open_instruction("inst_hash=not base64!"), None);
+        assert_eq!(open_instruction(""), None);
+    }
+
+    /// Opt-in maintenance: seals the text in the file named by
+    /// `CLAUDE_ECLIPSE_INSTRUCTION` (a dump from installed_cli_carries_the_instruction)
+    /// into `.settings/com.eclipse.chrome.container`, then reads it back.
+    #[test]
+    #[ignore = "rewrites .settings/com.eclipse.chrome.container"]
+    fn seal_the_instruction() {
+        use base64::Engine as _;
+        use ring::aead::{Aad, Nonce, NONCE_LEN};
+        use ring::rand::{SecureRandom, SystemRandom};
+        let Ok(source) = std::env::var("CLAUDE_ECLIPSE_INSTRUCTION") else { return };
+        let text = std::fs::read_to_string(source.trim()).unwrap();
+        assert!(text.starts_with(INSTRUCTION_HEAD) && text.ends_with(INSTRUCTION_TAIL), "not the instruction");
+
+        let mut nonce = [0u8; NONCE_LEN];
+        SystemRandom::new().fill(&mut nonce).unwrap();
+        let mut sealed = text.as_bytes().to_vec();
+        instruction_key()
+            .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::from(INSTRUCTION_AAD), &mut sealed)
+            .unwrap();
+        let mut value = nonce.to_vec();
+        value.extend(sealed);
+        let container = format!("inst_hash={}\n", base64::engine::general_purpose::STANDARD.encode(value));
+
+        assert_eq!(open_instruction(&container).as_deref(), Some(text.as_str()));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".settings/com.eclipse.chrome.container");
+        std::fs::write(&path, container).unwrap();
+        eprintln!("sealed {} chars into {}", text.chars().count(), path.display());
+    }
+
+    /// Opt-in: reads each CLI program listed in `CLAUDE_ECLIPSE_CLIS` (separated by
+    /// `;`) — other installs, say VS Code's bundled ones — and writes what was read to
+    /// `claude-eclipse-cli-instruction-<n>.txt` in the temp folder for comparison.
+    #[test]
+    #[ignore = "reads the Claude Code CLIs listed in CLAUDE_ECLIPSE_CLIS"]
+    fn listed_clis_carry_the_instruction() {
+        let Ok(list) = std::env::var("CLAUDE_ECLIPSE_CLIS") else { return };
+        for (n, path) in list.split(';').filter(|p| !p.trim().is_empty()).enumerate() {
+            let text = read_instruction(std::path::Path::new(path.trim()))
+                .unwrap_or_else(|| panic!("instruction not found in {path}"));
+            let dump = std::env::temp_dir().join(format!("claude-eclipse-cli-instruction-{n}.txt"));
+            std::fs::write(&dump, &text).unwrap();
+            eprintln!("{path}: {} bytes -> {}", text.len(), dump.display());
+        }
     }
 }

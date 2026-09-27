@@ -12,23 +12,15 @@
 //!      fails with `CreateProcess error=2` even though `where claude` works in
 //!      a shell. We resolve the name against PATH + PATHEXT ourselves.
 //!
-//!   2. **`.cmd`/`.bat` argument mangling.** A batch file can't be executed by
-//!      `CreateProcess` directly, so Rust routes it through `cmd.exe /c` and —
-//!      since 1.77, for CVE-2024-24576 (BatBadBut) — applies *batch-specific*
-//!      escaping that doubles every `"` into `""`. That's correct for a script
-//!      that reads args via `%~1`, but the npm `claude.cmd` shim forwards the
-//!      RAW tail (`... claude.exe %*`). cmd.exe collapses the doubled quotes,
-//!      so `claude.exe` receives corrupted JSON for `--mcp-config`:
-//!          {"mcpServers":{...}}  →  {mcpServers:{...}}
-//!      Claude then can't parse it as inline JSON and falls back to treating
-//!      the value as a FILE PATH (relative to the workspace), producing
-//!      "MCP config file not found: C:\ws\{mcpServers:...".
+//!   2. **`.cmd`/`.bat` wrappers.** A batch file can't be executed by
+//!      `CreateProcess` directly; it runs through `cmd.exe /c`, which parses the
+//!      line, and parses it again wherever the wrapper forwards `%*`.
 //!
-//! Fix: when the resolved command is a `.cmd`/`.bat`, we invoke `cmd.exe /c`
-//! OURSELVES and pass the whole command line via `raw_arg`, quoting each token
-//! with the standard MSVCRT convention that `claude.exe` un-escapes — so the
-//! shim's `%*` forwards intact JSON. `.exe` targets spawn directly (Rust's
-//! default escaping is correct there).
+//! npm's own `claude.cmd` only forwards to a `claude.exe`, so that exe is started
+//! directly. Any other batch file — a hand-written wrapper, or npm's shim with lines
+//! added — runs through `cmd.exe` with every argument quoted to survive both passes
+//! (`quote_batch_arg`). `--mcp-config` still goes by temp file on Windows
+//! (`chat::mcp_config_value`): that fix predates this quoting and stays.
 
 use std::process::Command;
 
@@ -155,7 +147,7 @@ fn wrapped_program(_wrapper: &std::path::Path) -> Option<std::path::PathBuf> {
 pub fn claude_program_file(claude_cmd: &str) -> Option<std::path::PathBuf> {
     program_candidates(claude_cmd).into_iter().find_map(|name| {
         let resolved = resolve_windows(&name);
-        let file = if is_batch(&resolved) { npm_shim_target(&resolved)? } else { resolved };
+        let file = if is_batch(&resolved) { shim_forward_target(&resolved)? } else { resolved };
         usable_program(std::path::Path::new(&file))
     })
 }
@@ -299,9 +291,40 @@ fn is_batch(path: &str) -> bool {
 }
 
 /// The executable an npm-generated `.cmd` shim forwards to — the quoted
-/// `"%dp0%\…\claude.exe"` on its command line — when that file exists.
+/// `"%dp0%\…\claude.exe"` on its last line — when the file is exactly that shim
+/// and the exe exists. A copy someone has added to (a `SET HTTPS_PROXY=…`, say) is
+/// their wrapper, not npm's: going straight to the exe would drop what they added,
+/// so it runs through cmd.exe like any other wrapper.
 #[cfg(windows)]
 fn npm_shim_target(shim: &str) -> Option<String> {
+    // Every line npm's cmd-shim writes before the forwarding one, in order.
+    const PREAMBLE: [&str; 8] = [
+        "@echo off", "goto start", ":find_dp0", "set dp0=%~dp0",
+        "exit /b", ":start", "setlocal", "call :find_dp0",
+    ];
+    const DP0: &str = "\"%dp0%\\";
+    let text = std::fs::read_to_string(shim).ok()?;
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let (last, preamble) = lines.split_last()?;
+    if preamble.len() != PREAMBLE.len()
+        || !preamble.iter().zip(PREAMBLE).all(|(l, p)| l.eq_ignore_ascii_case(p))
+    {
+        return None;
+    }
+    let (rel, tail) = last.strip_prefix(DP0)?.split_once('"')?;
+    if tail.trim() != "%*" || !rel.to_ascii_lowercase().ends_with(".exe") {
+        return None;
+    }
+    let exe = std::path::Path::new(shim).parent()?.join(rel);
+    exe.is_file().then(|| exe.to_string_lossy().into_owned())
+}
+
+/// The exe a shim forwards to (`"%dp0%\…\claude.exe"`), whatever else the file
+/// holds. Only for READING the CLI ([`claude_program_file`]): a line someone added
+/// to npm's shim changes how it runs, not which program it is — so it is still the
+/// file to read, where [`npm_shim_target`] would refuse to run it.
+#[cfg(windows)]
+fn shim_forward_target(shim: &str) -> Option<String> {
     const DP0: &str = "\"%dp0%\\";
     let text = std::fs::read_to_string(shim).ok()?;
     let start = text.find(DP0)? + DP0.len();
@@ -340,16 +363,22 @@ fn build_windows(requested: &str, args: &[String]) -> Command {
         return cmd;
     }
 
-    // Batch shim: drive cmd.exe ourselves so Rust's BatBadBut `"`-doubling
-    // never touches our args. We build the tail with MSVCRT quoting, which is
-    // exactly what the `%*`-forwarded `claude.exe` un-escapes.
+    // Any other batch file is someone's wrapper, and the only way to run one is
+    // cmd.exe — which parses the line once here, and again wherever the wrapper
+    // forwards `%*`. Every argument is written to survive both passes
+    // (quote_batch_arg), and the whole command sits inside one more pair of
+    // quotes: `cmd /c` strips the first and last `"` of a line that starts with
+    // one, which otherwise ate the quotes round a wrapper path with a space in it.
+    // /d: no AutoRun commands. /e:on: the `%` escape needs command extensions.
+    // /v:off: `!` stays literal.
     let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
-    let mut line = String::from("/c ");
-    line.push_str(&quote_cmd_program(&resolved));
+    let mut line = String::from("/d /e:on /v:off /c \"");
+    line.push_str(&quote_batch_arg(&resolved));
     for arg in args {
         line.push(' ');
-        line.push_str(&quote_msvcrt(arg));
+        line.push_str(&quote_batch_arg(arg));
     }
+    line.push('"');
 
     let mut cmd = Command::new(comspec);
     // raw_arg bypasses Rust's per-arg escaping entirely — we hand cmd.exe the
@@ -426,57 +455,40 @@ fn resolve_windows(requested: &str) -> String {
     requested.to_string()
 }
 
-/// Quotes the program (the `.cmd` path) for a `cmd.exe /c` line. cmd.exe parses
-/// the program with its own rules, not MSVCRT: wrap in double quotes when it
-/// contains spaces or cmd metacharacters; there is no in-value quote to escape
-/// for a real filesystem path (Windows filenames can't contain `"`).
+/// Quotes one argument (or the wrapper's own path) for a `cmd.exe /c` line that
+/// runs a batch wrapper, as Rust's standard library does for batch files:
+///
+/// * always inside `"…"`, so cmd.exe's `& | < > ^ ( )` are inert in every pass;
+/// * an inner `"` doubled to `""`, which keeps cmd.exe's quote-tracking in step and
+///   which `claude.exe` reads back as one `"` (checked against 2.1.280, 2026-09-28);
+/// * the run of backslashes before a `"` or the closing quote doubled, as MSVCRT
+///   parsing expects;
+/// * each `%` written `%%cd:~,%`, which cmd.exe turns back into a bare `%` rather
+///   than expanding `%NAME%`.
+///
+/// A line break cannot be carried through cmd.exe at all. No caller passes one:
+/// the MCP window splits its fields into lines first.
 #[cfg(windows)]
-fn quote_cmd_program(path: &str) -> String {
-    let needs_quotes = path.is_empty()
-        || path.chars().any(|c| " \t&()[]{}^=;!'+,`~".contains(c));
-    if needs_quotes {
-        format!("\"{}\"", path)
-    } else {
-        path.to_string()
-    }
-}
-
-/// Quotes one argument using the standard MSVCRT `CommandLineToArgvW`
-/// convention that `claude.exe` (a normal C-runtime program) un-escapes:
-/// wrap in double quotes and backslash-escape any embedded `"`, doubling the
-/// run of backslashes that immediately precedes a `"` (or the closing quote).
-/// The npm `claude.cmd` shim forwards this tail verbatim via `%*`, so what we
-/// write here is exactly what the CLI sees.
-#[cfg(windows)]
-fn quote_msvcrt(arg: &str) -> String {
-    // Unquoted is safe only for a non-empty arg with no whitespace or quotes.
-    if !arg.is_empty() && !arg.chars().any(|c| c == ' ' || c == '\t' || c == '"') {
-        return arg.to_string();
-    }
-
+fn quote_batch_arg(arg: &str) -> String {
     let mut out = String::with_capacity(arg.len() + 2);
     out.push('"');
     let mut backslashes = 0usize;
     for c in arg.chars() {
-        match c {
-            '\\' => {
-                backslashes += 1;
-            }
-            '"' => {
-                // Escape the backslash run (double it) then escape the quote.
-                out.extend(std::iter::repeat('\\').take(backslashes * 2 + 1));
-                out.push('"');
-                backslashes = 0;
-            }
-            _ => {
-                out.extend(std::iter::repeat('\\').take(backslashes));
-                out.push(c);
-                backslashes = 0;
-            }
+        if c == '\\' {
+            backslashes += 1;
+            out.push(c);
+            continue;
         }
+        if c == '"' {
+            out.extend(std::iter::repeat('\\').take(backslashes));
+            out.push('"');
+        } else if c == '%' {
+            out.push_str("%%cd:~,");
+        }
+        backslashes = 0;
+        out.push(c);
     }
-    // Trailing backslashes precede the closing quote → double them.
-    out.extend(std::iter::repeat('\\').take(backslashes * 2));
+    out.extend(std::iter::repeat('\\').take(backslashes));
     out.push('"');
     out
 }
@@ -486,36 +498,137 @@ mod tests {
     use super::*;
 
     #[test]
-    fn json_arg_quoted_for_msvcrt() {
-        // The exact --mcp-config value from the bug report.
-        let cfg = r#"{"mcpServers":{"eclipse":{"type":"sse","url":"http://127.0.0.1:10002/sse"}}}"#;
-        let q = quote_msvcrt(cfg);
-        // Wrapped in quotes; every inner `"` backslash-escaped, NOT doubled.
-        assert!(q.starts_with('"') && q.ends_with('"'));
-        assert!(q.contains(r#"\"mcpServers\""#), "inner quotes escaped: {q}");
-        assert!(!q.contains(r#""""#), "must NOT double-quote (BatBadBut bug): {q}");
+    fn batch_args_are_always_quoted() {
+        assert_eq!(quote_batch_arg("--verbose"), r#""--verbose""#);
+        assert_eq!(quote_batch_arg("https://h/mcp?a=1&b=2"), r#""https://h/mcp?a=1&b=2""#);
+        assert_eq!(quote_batch_arg(""), r#""""#);
     }
 
     #[test]
-    fn plain_arg_unquoted() {
-        assert_eq!(quote_msvcrt("--verbose"), "--verbose");
-        assert_eq!(quote_msvcrt("mcp__ide__openDiff"), "mcp__ide__openDiff");
+    fn batch_arg_quotes_double_and_percent_is_broken_up() {
+        assert_eq!(quote_batch_arg(r#"say "hi""#), r#""say ""hi""""#);
+        assert_eq!(quote_batch_arg("%PATH%"), r#""%%cd:~,%PATH%%cd:~,%""#);
     }
 
     #[test]
-    fn arg_with_space_quoted() {
-        assert_eq!(quote_msvcrt("hello world"), r#""hello world""#);
+    fn batch_arg_backslashes_doubled_only_before_a_quote() {
+        assert_eq!(quote_batch_arg(r"C:\x y\"), r#""C:\x y\\""#);
+        assert_eq!(quote_batch_arg(r#"a\"b"#), r#""a\\""b""#);
+        assert_eq!(quote_batch_arg(r"a\b"), r#""a\b""#);
     }
 
     #[test]
-    fn empty_arg_becomes_empty_quotes() {
-        assert_eq!(quote_msvcrt(""), r#""""#);
+    fn a_wrapper_line_is_quoted_whole() {
+        let cmd = claude_command(r"C:\nowhere-claude-eclipse\my wrapper.cmd", &["a&b".to_string()]);
+        let line: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(line, [r#"/d /e:on /v:off /c ""C:\nowhere-claude-eclipse\my wrapper.cmd" "a&b"""#]);
     }
 
     #[test]
-    fn trailing_backslashes_doubled_before_close() {
-        // A path-like value ending in a backslash inside a quoted arg.
-        assert_eq!(quote_msvcrt(r"a b\"), r#""a b\\""#);
+    fn an_added_to_npm_shim_is_a_wrapper() {
+        // npm's shim with one line of the user's own: going straight to the exe would
+        // drop that line, so it has to run through cmd.exe.
+        let dir = std::env::temp_dir().join("claude-eclipse-edited shim");
+        let _ = std::fs::remove_dir_all(&dir);
+        let exe = dir.join(r"node_modules\@anthropic-ai\claude-code\bin\claude.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+        let shim = dir.join("claude.cmd");
+        std::fs::write(&shim, "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\nSET HTTPS_PROXY=http://proxy:8080\r\n\"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*\r\n").unwrap();
+
+        let target = npm_shim_target(&shim.to_string_lossy());
+        let cmd = claude_command(&shim.to_string_lossy(), &["--x".to_string()]);
+        let read = claude_program_file(&shim.to_string_lossy());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(target.is_none());
+        assert!(cmd.get_program().to_string_lossy().to_ascii_lowercase().ends_with("cmd.exe"));
+        // Still the program to READ (flag support, bundled text): the added line
+        // changes how it runs, not what it is.
+        assert_eq!(read.as_deref(), Some(exe.as_path()));
+    }
+
+    /// Every form the Claude-command preference can take reaches the installed CLI:
+    /// blank, the bare name, `claude.cmd`, the shim's full path, the exe's full path,
+    /// and a hand-written wrapper in a folder with a space. The npm forms must start
+    /// `claude.exe` itself (no cmd.exe in between). Needs an npm install of Claude
+    /// Code on PATH, so it only runs when asked: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn every_command_form_reaches_the_installed_cli() {
+        let shim = resolve_windows("claude");
+        let Some(exe) = npm_shim_target(&shim) else { return };   // not an npm install
+        let dir = std::env::temp_dir().join("claude-eclipse my wrapper");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wrapper = dir.join("claude-wrap.cmd");
+        std::fs::write(&wrapper, format!("@echo off\r\nsetlocal\r\nset CLAUDE_ECLIPSE_WRAPPED=1\r\n\"{shim}\" %*\r\n")).unwrap();
+
+        let forms = ["", "claude", "claude.cmd", shim.as_str(), exe.as_str(), &wrapper.to_string_lossy()];
+        let mut failures = Vec::new();
+        for (i, form) in forms.iter().enumerate() {
+            let mut cmd = claude_command(form, &["--version".to_string()]);
+            let direct = std::path::Path::new(cmd.get_program()) == std::path::Path::new(&exe);
+            if i < 5 && !direct {
+                failures.push(format!("{form:?}: not started as claude.exe ({:?})", cmd.get_program()));
+            }
+            match cmd.output() {
+                Ok(o) if String::from_utf8_lossy(&o.stdout).contains("(Claude Code)") => {}
+                Ok(o) => failures.push(format!("{form:?}: {} / {}", String::from_utf8_lossy(&o.stdout).trim(),
+                                               String::from_utf8_lossy(&o.stderr).trim())),
+                Err(e) => failures.push(format!("{form:?}: {e}")),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// End to end through a real wrapper that forwards `%*`, in a folder whose name
+    /// has a space, a `%` and a `&`. Needs `python` on PATH to print what arrives,
+    /// so it only runs when asked: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn a_wrapper_receives_every_argument_exactly() {
+        let python = match std::process::Command::new("where").arg("python").output() {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string(),
+            _ => return,
+        };
+        let dir = std::env::temp_dir().join("claude-eclipse wrap 100%&co");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("argv.py"), "import sys, json\nfor a in sys.argv[1:]:\n    print(json.dumps(a))\n").unwrap();
+        let wrapper = dir.join("claude wrap.cmd");
+        std::fs::write(&wrapper, format!("@echo off\r\nsetlocal\r\n\"{python}\" \"%~dp0argv.py\" %*\r\n")).unwrap();
+
+        let inputs: Vec<String> = [
+            r#"{"mcpServers":{"x":{"type":"http","url":"https://h/?a=1&b=2"}}}"#,
+            "https://api.example.com/mcp?team=a&key=%USERNAME%",
+            r#"say "hi" & echo PWNED"#,
+            "a|b<c>d^e (x)",
+            "x!y!z",
+            "100%",
+            r#"a\"b"#,
+            r"C:\x y\",
+            "",
+            "Authorization: Bearer tok&%PATH%",
+            "caf\u{e9} \u{2014} dash",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let out = claude_command(&wrapper.to_string_lossy(), &inputs)
+            .env("PYTHONIOENCODING", "utf-8")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let got: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(got, inputs, "stderr: {}", String::from_utf8_lossy(&out.stderr));
     }
 
     #[test]
