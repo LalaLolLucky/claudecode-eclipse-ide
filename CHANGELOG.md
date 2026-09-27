@@ -4,7 +4,18 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.8] — 2026-09-25 *(current)*
+## [3.2.9] — 2026-09-27 *(current)*
+
+### Added
+- /mcp opens an MCP servers window: see each server's status and tools, reconnect, enable or disable, sign in, and add or remove servers.
+
+### Fixed
+- The required Eclipse Terminal version is lowered to 1.0.0 (#148).
+- A .bat or .cmd wrapper set as the Claude command now works, even in a folder with spaces.
+
+---
+
+## [3.2.8] — 2026-09-25
 
 ### Fixed
 - Minor UI fixes.
