@@ -193,8 +193,16 @@ window.__ccFetchedImages = () => {
 };
 /* Tells the host the four entry points above exist. It won't take these keys over
    until we do, so a script that fails to load leaves the browser's own defaults
-   in place instead of making copy/paste do nothing at all. */
-if (window._editOpsReady) _editOpsReady();
+   in place instead of making copy/paste do nothing at all. Here, as the page is read;
+   on WebKitGTK the host's functions are not there yet, and ccBoot (init.js) tells it
+   once they are. */
+let editOpsAnnounced = false;
+function announceEditOps() {
+  if (editOpsAnnounced || !window._editOpsReady) return;
+  editOpsAnnounced = true;
+  _editOpsReady();
+}
+announceEditOps();
 
 /* Menu accelerator labels. These defaults are the standard scheme's; the host
    overwrites them with the user's ACTUAL bindings once the page is up. It has to:

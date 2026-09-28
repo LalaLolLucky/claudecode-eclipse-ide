@@ -125,7 +125,15 @@ window.onContextChanged = function(c) {
   }
   updateCtxChip();
 };
-try { ctxData = JSON.parse(window._currentContext()); } catch (e) {}
+/* The editor context the page opens with. Here, as the page is read; on WebKitGTK the
+   host's functions are not there yet, and ccBoot (init.js) reads it once they are. */
+let ctxRead = false;
+function readInitialContext() {
+  if (ctxRead || !window._currentContext) return;
+  ctxRead = true;
+  try { ctxData = JSON.parse(window._currentContext()); } catch (e) {}
+}
+readInitialContext();
 function ctxBaseName() {
   return ctxData && ctxData.fileName ? ctxData.fileName.split(/[\\/]/).pop() : '';
 }

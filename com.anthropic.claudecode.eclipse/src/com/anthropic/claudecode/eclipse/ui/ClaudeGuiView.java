@@ -70,6 +70,22 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private Composite root;   // the view's root composite — its themed background drives light/dark detection
     private long browserHwnd = 0;
     private boolean pageLoaded = false;
+    /**
+     * The page's boot (init.js, ccBoot) has run — it says so through {@code _pageBooted}.
+     * Edge and macOS WebKit define our functions before the page's scripts run, so it boots
+     * as it is read, before the load completes. WebKitGTK defines them only later, so there
+     * the page waits and {@link #bootPage} has it boot once they are all there.
+     */
+    private boolean pageBooted = false;
+    /** The browser has reported the current page as loaded (the progress "completed" event). */
+    private boolean pageLoadCompleted = false;
+    /** Bumped by each {@link #loadPage}, so a boot retry left over from an earlier page stops. */
+    private int pageLoadGeneration = 0;
+    /** Every function made for the page, by name — what {@code _pageFunctions} reports. */
+    private final List<String> pageFunctionNames = new java.util.ArrayList<>();
+    /** How long {@link #bootPage} waits for the functions before booting the page without them. */
+    private static final int BOOT_RETRY_MS = 50;
+    private static final int BOOT_TIMEOUT_MS = 10_000;
     /** View-toolbar Scroll Lock toggle; see {@link #createToolBar()}. */
     private Action scrollLockAction;
     // Disabled while the FreeBSD setup guide is showing (no claude to start or resume).
@@ -178,6 +194,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction answerQuestionFn;
     @SuppressWarnings("unused") private BrowserFunction overlayOpenFn;
     @SuppressWarnings("unused") private BrowserFunction debugLogFn;
+    @SuppressWarnings("unused") private BrowserFunction pageBootedFn;
+    @SuppressWarnings("unused") private BrowserFunction pageFunctionsFn;
     @SuppressWarnings("unused") private BrowserFunction modelConfigFn;
     @SuppressWarnings("unused") private BrowserFunction accountInfoFn;
     @SuppressWarnings("unused") private BrowserFunction defaultRootFn;
@@ -1580,6 +1598,25 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             if (a.length > 0 && a[0] instanceof String s) ClaudeCodeView.debug(s);
             return null;
         });
+        // The page's boot has run (init.js, ccBoot). Before the load completes on Edge and
+        // macOS WebKit; on WebKitGTK from inside bootPage's call, after it. The load's own
+        // work (pageReady) waits for this, so the page is never pushed to before it booted.
+        pageBootedFn = new SimpleFunction(browser, "_pageBooted", a -> {
+            pageBooted = true;
+            if (pageLoadCompleted && !pageLoaded) {
+                // Not inside the page's call: pageReady pushes to the page and evaluates in it.
+                int generation = pageLoadGeneration;
+                browser.getDisplay().asyncExec(() -> {
+                    if (browser.isDisposed() || generation != pageLoadGeneration || pageLoaded) return;
+                    pageReady();
+                });
+            }
+            return null;
+        });
+        // Every function made for the page, by name: the page boots only once all of them
+        // exist (init.js, ccBootIfReady). Made last, so the list is complete.
+        pageFunctionsFn = new SimpleFunction(browser, "_pageFunctions", a ->
+                new Gson().toJson(pageFunctionNames));
 
         // Backstop for what the JS handler can't cancel — a window.open/target=_blank
         // that WebView2 turns into a top-level load, or a meta refresh. (Keyboard
@@ -1597,45 +1634,13 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             openExternal(url);
         }));
 
+        // The page has loaded. Where it has already booted (Edge, macOS WebKit) its load-time
+        // work runs now; on WebKitGTK the page is first made to boot (bootPage), and that
+        // work follows it — the same order either way.
         browser.addProgressListener(org.eclipse.swt.browser.ProgressListener.completedAdapter(e -> {
-            pageLoaded = true;
-            // WebView2 init is async — retry here where the webview provably exists.
-            disableDevTools();
-            disableZoom();
-            pushTheme();             // apply the current Eclipse light/dark theme
-            pushCancelHint(this);    // …and the current dismiss key, before any card exists
-            hookBindingChanges();    // keep it live if the user switches scheme later
-            pushAvailableModels();   // in case the model list arrived before the page loaded
-            pushCliVersion();        // ditto for the CLI update banner
-            pushCliModels();         // ditto for the installed binary's model support
-            pushEditKeyHints();      // label the right-click menu with the user's real keys
-            pushDebugMode();         // let the page report its keys while Debug mode is on
-            pushDictationAvailability(); // no dictation on macOS, or without ALSA on Linux/FreeBSD
-            pushHistoryShowTimestamps(); // whether to show a timestamp above your own messages
-            pushHideRootDirectoriesRow(); // whether the root directories row is hidden entirely
-            pushHideBeforeCompaction(); // whether what was said above a compaction is hidden or only folded
-            pushSpinnerVerbs();      // which gerund categories the working indicator cycles
-            // An "Open Claude Code Here" that arrived while the view was still loading.
-            String queuedRoot = pendingRootPath;
-            if (queuedRoot != null) { pendingRootPath = null; openRootDirectory(queuedRoot); }
-            pushScrollLock();        // the toolbar toggle outlives the page — re-apply it
-            pushSmartScrollLock();   // ditto for the Smart Scroll Lock preference
-            for (int ms : new int[]{50, 200, 500, 1000, 1500}) {
-                Display.getCurrent().timerExec(ms, this::activateInput);
-                // Re-push the theme too: the root composite's CSS-themed background may not
-                // be resolved at the instant `completed` fires, so settle it a few times.
-                Display.getCurrent().timerExec(ms, this::pushTheme);
-                Display.getCurrent().timerExec(ms, this::verifyEditOps);
-            }
-            // What the page asked for as it loaded, answered before it had finished. After
-            // the pushes above: the page takes these as it would have a moment later. Last,
-            // and each on its own: one that fails loses only itself.
-            List<Runnable> answers = new java.util.ArrayList<>(answersForLoadedPage);
-            answersForLoadedPage.clear();
-            for (Runnable answer : answers) {
-                try { answer.run(); }
-                catch (RuntimeException ex) { Activator.logError("Failed to hand the page an answer it asked for while loading", ex); }
-            }
+            pageLoadCompleted = true;
+            if (pageBooted) pageReady();
+            else bootPage(pageLoadGeneration, System.currentTimeMillis());
         }));
 
         loadPage();
@@ -1654,6 +1659,76 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // model ids compiled into it. More reliable than the version number, which
         // a failed self-update can leave misreporting.
         scanCliModelsAsync();
+    }
+
+    /**
+     * What a loaded page needs from us, once it has booted: the theme, the preferences and
+     * the rest it is shown with, and the answers to what it asked for while loading. Runs
+     * when the load completes — on Edge and macOS WebKit the page has booted by then — or,
+     * on WebKitGTK, right after {@link #bootPage} has had it boot. UI thread.
+     */
+    private void pageReady() {
+        pageLoaded = true;
+        // WebView2 init is async — retry here where the webview provably exists.
+        disableDevTools();
+        disableZoom();
+        pushTheme();             // apply the current Eclipse light/dark theme
+        pushCancelHint(this);    // …and the current dismiss key, before any card exists
+        hookBindingChanges();    // keep it live if the user switches scheme later
+        pushAvailableModels();   // in case the model list arrived before the page loaded
+        pushCliVersion();        // ditto for the CLI update banner
+        pushCliModels();         // ditto for the installed binary's model support
+        pushEditKeyHints();      // label the right-click menu with the user's real keys
+        pushDebugMode();         // let the page report its keys while Debug mode is on
+        pushDictationAvailability(); // no dictation on macOS, or without ALSA on Linux/FreeBSD
+        pushHistoryShowTimestamps(); // whether to show a timestamp above your own messages
+        pushHideRootDirectoriesRow(); // whether the root directories row is hidden entirely
+        pushHideBeforeCompaction(); // whether what was said above a compaction is hidden or only folded
+        pushSpinnerVerbs();      // which gerund categories the working indicator cycles
+        // An "Open Claude Code Here" that arrived while the view was still loading.
+        String queuedRoot = pendingRootPath;
+        if (queuedRoot != null) { pendingRootPath = null; openRootDirectory(queuedRoot); }
+        pushScrollLock();        // the toolbar toggle outlives the page — re-apply it
+        pushSmartScrollLock();   // ditto for the Smart Scroll Lock preference
+        for (int ms : new int[]{50, 200, 500, 1000, 1500}) {
+            Display.getCurrent().timerExec(ms, this::activateInput);
+            // Re-push the theme too: the root composite's CSS-themed background may not
+            // be resolved at the instant `completed` fires, so settle it a few times.
+            Display.getCurrent().timerExec(ms, this::pushTheme);
+            Display.getCurrent().timerExec(ms, this::verifyEditOps);
+        }
+        // What the page asked for as it loaded, answered before it had finished. After
+        // the pushes above: the page takes these as it would have a moment later. Last,
+        // and each on its own: one that fails loses only itself.
+        List<Runnable> answers = new java.util.ArrayList<>(answersForLoadedPage);
+        answersForLoadedPage.clear();
+        for (Runnable answer : answers) {
+            try { answer.run(); }
+            catch (RuntimeException ex) { Activator.logError("Failed to hand the page an answer it asked for while loading", ex); }
+        }
+    }
+
+    /**
+     * Has the page boot once every function made for it exists (init.js, ccBootIfReady).
+     * Only reached where it has not booted by the time the load completes, which is
+     * WebKitGTK: it defines our functions after the page has been read, and a page that
+     * booted without them would have lost what it asked for — the tabs to restore, the
+     * workspace root, the bookmarks — for good. Asks again every {@link #BOOT_RETRY_MS} ms;
+     * after {@link #BOOT_TIMEOUT_MS} it boots the page as it is, which is how every page
+     * booted before this, rather than leave the view empty. UI thread.
+     */
+    private void bootPage(int generation, long startedAt) {
+        if (browser == null || browser.isDisposed() || generation != pageLoadGeneration || pageBooted) return;
+        browser.execute("window.ccBootIfReady && window.ccBootIfReady()");
+        if (pageBooted) return;   // it booted inside that call; _pageBooted has queued pageReady
+        if (System.currentTimeMillis() - startedAt < BOOT_TIMEOUT_MS) {
+            browser.getDisplay().timerExec(BOOT_RETRY_MS, () -> bootPage(generation, startedAt));
+            return;
+        }
+        Activator.logError("The Claude Code page did not get its functions within "
+                + BOOT_TIMEOUT_MS + " ms; starting it without them", null);
+        browser.execute("window.ccBoot && window.ccBoot()");
+        if (!pageBooted && !pageLoaded) pageReady();   // a page with no boot at all
     }
 
     /** Reads the newest model per family out of the CLI binary, then pushes it. */
@@ -3296,6 +3371,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // session asks for its conversation while the page is still loading.
         openedSessions.clear();
         answersForLoadedPage.clear();
+        // A new page has not booted, nor loaded; a boot retry for the old one stops.
+        pageBooted = false;
+        pageLoadCompleted = false;
+        pageLoadGeneration++;
         try {
             // Resolve the whole claudegui/ DIRECTORY, not just the html: the page now
             // references sibling styles/*.css and scripts/*.js, and toFileURL on a
@@ -4849,11 +4928,12 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     // --- BrowserFunction helpers ---------------------------------------------
 
     /** Generic BrowserFunction backed by a lambda. */
-    private static class SimpleFunction extends BrowserFunction {
+    private class SimpleFunction extends BrowserFunction {
         private final java.util.function.Function<Object[], Object> impl;
         SimpleFunction(Browser browser, String name, java.util.function.Function<Object[], Object> impl) {
             super(browser, name);
             this.impl = impl;
+            pageFunctionNames.add(name);
         }
         @Override public Object function(Object[] arguments) {
             try { return impl.apply(arguments); } catch (Exception e) { return null; }
