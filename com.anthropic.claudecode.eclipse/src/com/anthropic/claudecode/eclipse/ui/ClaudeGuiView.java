@@ -907,7 +907,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         loadSessionPrefsFn = new SimpleFunction(browser, "_loadSessionPrefs", a ->
             (a.length > 0 && a[0] instanceof String id) ? SessionPrefsStore.load(id) : "{}");
         // Runs `claude update` — the CLI's own updater, so it works whichever way
-        // the binary was installed (npm / native / Homebrew). USER-TRIGGERED ONLY,
+        // the binary was installed (npm / native / Homebrew); claude-freebsd installs
+        // go through `sudo claude-freebsd --update` instead. USER-TRIGGERED ONLY,
         // from the update banner's button; the version check never calls it.
         updateCliFn = new SimpleFunction(browser, "_updateCli", a -> {
             CliUpdateService.updateAsync(configuredClaudeCmd(), res ->

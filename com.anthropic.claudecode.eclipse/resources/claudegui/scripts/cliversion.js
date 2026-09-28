@@ -87,8 +87,8 @@ function dismissUpdateBanner() {
    will actually run (CliUpdateService); nothing here is passed back to it. */
 let pendingManagedCommand = null;
 
-/** Runs `claude update` (the CLI's own updater — install-method agnostic), or, once a
- *  prior run deferred to a package manager, that manager's own update command instead. */
+/** Runs the CLI update (`claude update`, or claude-freebsd on FreeBSD — see CliUpdateService),
+ *  or, once a prior run deferred to a package manager, that manager's own update command instead. */
 function runCliUpdate() {
   const bar = document.getElementById('update-banner');
   if (!bar) return;
@@ -103,7 +103,7 @@ function runCliUpdate() {
     return;
   }
   if (btn) { btn.classList.add('busy'); btn.textContent = 'Updating…'; }
-  if (txt) txt.textContent = 'Running claude update — this can take a minute.';
+  if (txt) txt.textContent = 'Updating Claude Code — this can take a minute.';
   try { if (window._updateCli) window._updateCli(); } catch (e) {}
 }
 
@@ -145,14 +145,16 @@ window.onCliUpdateDone = function (json) {
     // flash past when the follow-up version check says "up to date".
     updateRunState = 'done';
     if (btn) { btn.classList.remove('busy'); btn.style.display = 'none'; }
-    if (txt) txt.textContent = 'Claude Code updated. Restart Eclipse (or open a new tab) to use it.';
+    const ver = (res.version) ? (' to ' + res.version) : '';
+    if (txt) txt.textContent = 'Claude Code updated' + ver + '. Restart Eclipse (or open a new tab) to use it.';
     return;
   }
   updateRunState = 'failed';
   if (btn) { btn.classList.remove('busy'); btn.textContent = 'Retry'; }
   if (txt) {
     const detail = (res && res.output) ? (' — ' + String(res.output).split('\n')[0]) : '';
-    txt.textContent = 'Update failed' + detail + '. You can also run "claude update" in a terminal.';
+    const hint = (res && res.hint) ? res.hint : 'claude update';
+    txt.textContent = 'Update failed' + detail + '. You can also run "' + hint + '" in a terminal.';
   }
 };
 
