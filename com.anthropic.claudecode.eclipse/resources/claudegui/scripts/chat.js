@@ -5,7 +5,16 @@
 let curTurn = null, curBody = null, curText = '';
 let curThink = null, curThinkText = '', thinkStart = 0, turnStart = 0;
 
-function clearWelcome(pane) { if (!pane) return; const w = pane.querySelector('.welcome'); if (w) w.remove(); }
+// .wc-wordmark is WELCOME_HTML's other top-level element (a sibling of .welcome, not a
+// child — see that function's own comment), so it has to be swept here too or it's
+// orphaned in the pane once .welcome itself is gone. renderTerminalTip re-checks
+// immediately after: its own visibility is keyed off whether .welcome still exists.
+function clearWelcome(pane) {
+  if (!pane) return;
+  const w = pane.querySelector('.welcome'); if (w) w.remove();
+  const wm = pane.querySelector('.wc-wordmark'); if (wm) wm.remove();
+  if (typeof renderTerminalTip === 'function') renderTerminalTip();
+}
 /* Scroll Lock — the view toolbar's checkbox (the same Action, and the same icon, the
    Claude Terminal carries; see ClaudeGuiView#createToolBar). It ARMS the follow-tail
    behavior below rather than freezing the transcript outright:

@@ -89,6 +89,9 @@
     <!-- Claude in Chrome, for the active conversation (mentions.js): a tab on top of the
          input box while the browser is connected; its × disconnects it. -->
     <div id="browser-banner" hidden><span class="bb-txt"></span><span class="bb-x" role="button" title="Disconnect browser" aria-label="Disconnect browser" onclick="disconnectBrowser()">__X__</span></div>
+    <!-- Only while the active tab is still on its welcome/empty state (tabs.js's
+         renderTerminalTip) — a plain text row, not a bordered banner like the two above. -->
+    <div id="terminal-tip" hidden><span class="tt-ic">__SPLIT__</span><span>Prefer the Terminal experience? <span class="wc-link" onclick="window._openTerminalView && window._openTerminalView()">Switch to Claude Terminal.</span></span><span class="tt-x" title="Dismiss" onclick="dismissTerminalBanner()">__X__</span></div>
     <div id="input-wrap">
       <!-- Thumbnails of pasted images awaiting send (per active tab). -->
       <div id="pending-images"></div>

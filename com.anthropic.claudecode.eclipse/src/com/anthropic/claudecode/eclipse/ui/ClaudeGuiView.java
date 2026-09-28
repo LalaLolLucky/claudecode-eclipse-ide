@@ -178,6 +178,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction advisorGetFn;
     @SuppressWarnings("unused") private BrowserFunction advisorSetFn;
     @SuppressWarnings("unused") private BrowserFunction openExternalFn;
+    @SuppressWarnings("unused") private BrowserFunction openTerminalViewFn;
     @SuppressWarnings("unused") private BrowserFunction openFileInEditorFn;
     @SuppressWarnings("unused") private BrowserFunction openTextInEditorFn;
     @SuppressWarnings("unused") private BrowserFunction openDiffInEditorFn;
@@ -982,6 +983,17 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // the session reloaded from history (issue #96). JS hands links here instead.
         openExternalFn = new SimpleFunction(browser, "_openExternal", a -> {
             if (a.length > 0 && a[0] instanceof String url) openExternal(url);
+            return null;
+        });
+        // Welcome screen's "Prefer the Terminal experience?" banner — activates the real
+        // Claude Terminal view (ClaudeCliView), the closest equivalent this plugin has to
+        // the reference product's single-view mode toggle (we have two separate views
+        // instead of one view with a mode setting).
+        openTerminalViewFn = new SimpleFunction(browser, "_openTerminalView", a -> {
+            try {
+                org.eclipse.ui.PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage()
+                        .showView("com.anthropic.claudecode.eclipse.ui.ClaudeCliView");
+            } catch (Exception ignored) {}
             return null;
         });
         // A tool line's file path (Read/Edit/Write/…) — root is the OWNING tab's working

@@ -474,17 +474,31 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
   min-height: 62vh; text-align: center; color: var(--fg-dim); gap: 8px; padding: 30px 14px;
   overflow-wrap: normal; word-break: keep-all; hyphens: none; }
 .welcome .wc-h, .welcome .wc-p { max-width: 100%; }
-.welcome .wc-logo { color: var(--accent); transform: scale(2.2); margin-bottom: 14px; }
-.welcome .wc-h { font-size: 17px; color: var(--fg); font-weight: 600; }
+/* Sibling of .welcome, not a child (see WELCOME_HTML's own comment) — pinned to the
+   actual top of the pane by normal block flow instead of riding along with .welcome's
+   centered content group. */
+.wc-wordmark { display: flex; justify-content: center; color: var(--fg); padding: 14px 14px 0; }
+.wc-wordmark svg { display: block; max-width: 100%; height: auto; }
+.welcome .wc-mascot { margin-bottom: 18px; }
+.welcome .wc-mascot svg { display: block; transform: scale(1.8); }
+.welcome .wc-h { font-size: 17px; color: var(--fg); font-weight: 600; margin-bottom: 8px; }
 .welcome .wc-p { font-size: 12.5px; }
+.welcome .wc-mcp-tip { font-size: 12px; margin-top: -2px; }
+/* Global, not .welcome-scoped: also used by #terminal-tip (layout.css), which lives
+   outside .welcome entirely (a persistent chrome row above the composer, not per-tab
+   content). */
+.wc-link { color: var(--link); cursor: pointer; }
+.wc-link:hover { text-decoration: underline; }
 /* Below this width the empty state is mostly padding, around a logo wider than the
    panel. It shrinks rather than overflowing: the view keeps a horizontal scrollbar for
    what genuinely cannot fit (layout.css), and an empty state should never be that. */
 @media (max-width: 240px) {
   .welcome { min-height: 40vh; padding: 16px 8px; gap: 6px; }
-  .welcome .wc-logo { transform: scale(1.4); margin-bottom: 6px; }
+  .wc-wordmark { transform: scale(0.75); padding: 8px 8px 0; }
+  .welcome .wc-mascot svg { transform: scale(1.2); }
   .welcome .wc-h { font-size: 14px; }
   .welcome .wc-p { font-size: 12px; }
+  .welcome .wc-terminal-banner { display: none; }   /* a dismissible tip is the first thing to give up the room */
 }
 
 /* assistant message body */

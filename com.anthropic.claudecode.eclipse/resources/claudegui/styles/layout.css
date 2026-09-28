@@ -192,7 +192,7 @@ body { min-width: 120px; }
    otherwise leave the input box uncomfortably wide with no matching cap on the transcript. */
 #composer { position: relative; flex-shrink: 0; padding: 8px 14px 12px;
   display: flex; flex-direction: column; align-items: center; }
-#usage-warn, #browser-banner, #input-wrap { width: 100%; max-width: 700px; }
+#usage-warn, #browser-banner, #terminal-tip, #input-wrap { width: 100%; max-width: 700px; }
 /* Floats OVER the transcript at the composer's position (composer hides while a
    card is up). The transcript never reflows; showBottomCard reserves matching
    bottom padding in #messages so the last message can scroll above the card. */
@@ -235,6 +235,15 @@ body { min-width: 120px; }
   width: 20px; height: 20px; border-radius: 4px; cursor: pointer; color: inherit; }
 #browser-banner .bb-x:hover { background: var(--hover-veil); }
 #browser-banner .bb-x svg { width: 12px; height: 12px; }
+/* Plain text row, deliberately NOT boxed like #usage-warn/#browser-banner above — just
+   an icon + sentence + dismiss, sitting directly above the composer. */
+#terminal-tip { display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 8px;
+  font-size: 12px; color: var(--fg-dim); }
+#terminal-tip[hidden] { display: none; }
+#terminal-tip .tt-ic { flex-shrink: 0; display: inline-flex; color: var(--fg-faint); }
+#terminal-tip .tt-x { flex-shrink: 0; cursor: pointer; color: var(--fg-faint); }
+#terminal-tip .tt-x:hover { color: var(--fg); }
+#terminal-tip .tt-x svg { display: block; width: 11px; height: 11px; }
 /* Border color signals the live permission mode when focused — plain classes toggled by
    controls.js's applyModeUI (MODE_BORDER_CLASSES), not a JS-set custom property (see that
    function's comment for why). Manual has no class of its own: this base rule IS its color.
