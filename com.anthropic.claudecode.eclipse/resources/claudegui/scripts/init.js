@@ -14,13 +14,10 @@
 
 let ccBooted = false;
 
-/* Whether every function the view made for the page is defined. _pageFunctions names
-   them all, so a function added to the view is waited for with no list to keep here. */
+/* Whether every function the view made for the page is defined: they all come through
+   _java (javabridge.js), so once it is there they are, and this defines them. */
 function ccHostReady() {
-  if (typeof window._pageFunctions !== 'function') return false;
-  let names = null;
-  try { names = JSON.parse(_pageFunctions()); } catch (e) { return false; }
-  return Array.isArray(names) && names.every(n => typeof window[n] === 'function');
+  return ccInstallJavaBridge();
 }
 
 /* Boots the page if it can: called here, and by the view until it has booted. */

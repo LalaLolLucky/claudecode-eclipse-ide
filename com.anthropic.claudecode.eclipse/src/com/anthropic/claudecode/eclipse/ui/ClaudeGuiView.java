@@ -81,8 +81,15 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private boolean pageLoadCompleted = false;
     /** Bumped by each {@link #loadPage}, so a boot retry left over from an earlier page stops. */
     private int pageLoadGeneration = 0;
-    /** Every function made for the page, by name — what {@code _pageFunctions} reports. */
-    private final List<String> pageFunctionNames = new java.util.ArrayList<>();
+    /**
+     * Every function made for the page, by name, in the order made — what {@code _pageFunctions}
+     * reports. The page reaches them all through the one real BrowserFunction, {@code _java}
+     * (see {@link SimpleFunction}).
+     */
+    private final java.util.Map<String, java.util.function.Function<Object[], Object>> pageFunctions =
+            new java.util.LinkedHashMap<>();
+    /** The one BrowserFunction the page is given: {@code _java(name, ...args)}. */
+    @SuppressWarnings("unused") private BrowserFunction javaBridgeFn;
     /** How long {@link #bootPage} waits for the functions before booting the page without them. */
     private static final int BOOT_RETRY_MS = 50;
     private static final int BOOT_TIMEOUT_MS = 10_000;
@@ -139,49 +146,49 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private volatile String pendingRootPath = null;
 
     // Strong references — prevent GC from unregistering the BrowserFunctions.
-    @SuppressWarnings("unused") private BrowserFunction sendFn;
-    @SuppressWarnings("unused") private BrowserFunction cancelFn;
-    @SuppressWarnings("unused") private BrowserFunction disposeTabFn;
-    @SuppressWarnings("unused") private BrowserFunction activeTabFn;
-    @SuppressWarnings("unused") private BrowserFunction newSessionFn;
-    @SuppressWarnings("unused") private BrowserFunction sttStartFn;
-    @SuppressWarnings("unused") private BrowserFunction sttStopFn;
-    @SuppressWarnings("unused") private BrowserFunction listSessionsFn;
-    @SuppressWarnings("unused") private BrowserFunction listSessionsAsyncFn;
-    @SuppressWarnings("unused") private BrowserFunction searchSessionContentFn;
-    @SuppressWarnings("unused") private BrowserFunction listWebSessionsFn;
-    @SuppressWarnings("unused") private BrowserFunction remoteControlFn;
-    @SuppressWarnings("unused") private BrowserFunction remoteControlQrFn;
-    @SuppressWarnings("unused") private BrowserFunction mcpFn;
-    @SuppressWarnings("unused") private BrowserFunction mcpConfigFn;
-    @SuppressWarnings("unused") private BrowserFunction cliFn;
-    @SuppressWarnings("unused") private BrowserFunction commandsFn;
-    @SuppressWarnings("unused") private BrowserFunction ideFn;
-    @SuppressWarnings("unused") private BrowserFunction cliEditFn;
-    @SuppressWarnings("unused") private BrowserFunction reloadTabFn;
-    @SuppressWarnings("unused") private BrowserFunction designLoginFn;
-    @SuppressWarnings("unused") private BrowserFunction userSettingFn;
-    @SuppressWarnings("unused") private BrowserFunction confirmDefaultModelFn;
-    @SuppressWarnings("unused") private BrowserFunction applySettingsFn;
-    @SuppressWarnings("unused") private BrowserFunction thinkingDefaultFn;
-    @SuppressWarnings("unused") private BrowserFunction bypassModeAllowedFn;
-    @SuppressWarnings("unused") private BrowserFunction initialPermissionModeFn;
-    @SuppressWarnings("unused") private BrowserFunction remoteControlStartupFn;
-    @SuppressWarnings("unused") private BrowserFunction teleportRepoCheckFn;
-    @SuppressWarnings("unused") private BrowserFunction teleportRunFn;
-    @SuppressWarnings("unused") private BrowserFunction teleportCheckoutFn;
-    @SuppressWarnings("unused") private BrowserFunction teleportGitStatusFn;
-    @SuppressWarnings("unused") private BrowserFunction loadSessionFn;
-    @SuppressWarnings("unused") private BrowserFunction deleteSessionFn;
-    @SuppressWarnings("unused") private BrowserFunction renameSessionFn;
-    @SuppressWarnings("unused") private BrowserFunction setSessionsArchivedFn;
-    @SuppressWarnings("unused") private BrowserFunction replyIdsFn;
-    @SuppressWarnings("unused") private BrowserFunction bookmarksFn;
-    @SuppressWarnings("unused") private BrowserFunction setBookmarkFn;
-    @SuppressWarnings("unused") private BrowserFunction bookmarkTextsFn;
-    @SuppressWarnings("unused") private BrowserFunction resumeNoteFn;
-    @SuppressWarnings("unused") private BrowserFunction openSessionAsyncFn;
-    @SuppressWarnings("unused") private BrowserFunction takeOpenedSessionFn;
+    @SuppressWarnings("unused") private SimpleFunction sendFn;
+    @SuppressWarnings("unused") private SimpleFunction cancelFn;
+    @SuppressWarnings("unused") private SimpleFunction disposeTabFn;
+    @SuppressWarnings("unused") private SimpleFunction activeTabFn;
+    @SuppressWarnings("unused") private SimpleFunction newSessionFn;
+    @SuppressWarnings("unused") private SimpleFunction sttStartFn;
+    @SuppressWarnings("unused") private SimpleFunction sttStopFn;
+    @SuppressWarnings("unused") private SimpleFunction listSessionsFn;
+    @SuppressWarnings("unused") private SimpleFunction listSessionsAsyncFn;
+    @SuppressWarnings("unused") private SimpleFunction searchSessionContentFn;
+    @SuppressWarnings("unused") private SimpleFunction listWebSessionsFn;
+    @SuppressWarnings("unused") private SimpleFunction remoteControlFn;
+    @SuppressWarnings("unused") private SimpleFunction remoteControlQrFn;
+    @SuppressWarnings("unused") private SimpleFunction mcpFn;
+    @SuppressWarnings("unused") private SimpleFunction mcpConfigFn;
+    @SuppressWarnings("unused") private SimpleFunction cliFn;
+    @SuppressWarnings("unused") private SimpleFunction commandsFn;
+    @SuppressWarnings("unused") private SimpleFunction ideFn;
+    @SuppressWarnings("unused") private SimpleFunction cliEditFn;
+    @SuppressWarnings("unused") private SimpleFunction reloadTabFn;
+    @SuppressWarnings("unused") private SimpleFunction designLoginFn;
+    @SuppressWarnings("unused") private SimpleFunction userSettingFn;
+    @SuppressWarnings("unused") private SimpleFunction confirmDefaultModelFn;
+    @SuppressWarnings("unused") private SimpleFunction applySettingsFn;
+    @SuppressWarnings("unused") private SimpleFunction thinkingDefaultFn;
+    @SuppressWarnings("unused") private SimpleFunction bypassModeAllowedFn;
+    @SuppressWarnings("unused") private SimpleFunction initialPermissionModeFn;
+    @SuppressWarnings("unused") private SimpleFunction remoteControlStartupFn;
+    @SuppressWarnings("unused") private SimpleFunction teleportRepoCheckFn;
+    @SuppressWarnings("unused") private SimpleFunction teleportRunFn;
+    @SuppressWarnings("unused") private SimpleFunction teleportCheckoutFn;
+    @SuppressWarnings("unused") private SimpleFunction teleportGitStatusFn;
+    @SuppressWarnings("unused") private SimpleFunction loadSessionFn;
+    @SuppressWarnings("unused") private SimpleFunction deleteSessionFn;
+    @SuppressWarnings("unused") private SimpleFunction renameSessionFn;
+    @SuppressWarnings("unused") private SimpleFunction setSessionsArchivedFn;
+    @SuppressWarnings("unused") private SimpleFunction replyIdsFn;
+    @SuppressWarnings("unused") private SimpleFunction bookmarksFn;
+    @SuppressWarnings("unused") private SimpleFunction setBookmarkFn;
+    @SuppressWarnings("unused") private SimpleFunction bookmarkTextsFn;
+    @SuppressWarnings("unused") private SimpleFunction resumeNoteFn;
+    @SuppressWarnings("unused") private SimpleFunction openSessionAsyncFn;
+    @SuppressWarnings("unused") private SimpleFunction takeOpenedSessionFn;
     /** Conversations read in the background (see {@code _openSessionAsync}), each waiting
      *  under its request's number for the page to fetch it. */
     private final java.util.concurrent.ConcurrentHashMap<Long, String> openedSessions =
@@ -189,55 +196,55 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     /** What the page asked for while it was still loading and was answered before it had
      *  finished: handed over the moment it has (see {@link #whenPageLoaded}). UI thread only. */
     private final List<Runnable> answersForLoadedPage = new java.util.ArrayList<>();
-    @SuppressWarnings("unused") private BrowserFunction currentContextFn;
-    @SuppressWarnings("unused") private BrowserFunction decideFn;
-    @SuppressWarnings("unused") private BrowserFunction answerQuestionFn;
-    @SuppressWarnings("unused") private BrowserFunction overlayOpenFn;
-    @SuppressWarnings("unused") private BrowserFunction debugLogFn;
-    @SuppressWarnings("unused") private BrowserFunction pageBootedFn;
-    @SuppressWarnings("unused") private BrowserFunction pageFunctionsFn;
-    @SuppressWarnings("unused") private BrowserFunction modelConfigFn;
-    @SuppressWarnings("unused") private BrowserFunction accountInfoFn;
-    @SuppressWarnings("unused") private BrowserFunction defaultRootFn;
-    @SuppressWarnings("unused") private BrowserFunction savedViewStateFn;
-    @SuppressWarnings("unused") private BrowserFunction saveViewStateFn;
-    @SuppressWarnings("unused") private BrowserFunction pickDirectoryFn;
-    @SuppressWarnings("unused") private BrowserFunction folderInfoFn;
-    @SuppressWarnings("unused") private BrowserFunction trustFolderFn;
-    @SuppressWarnings("unused") private BrowserFunction confirmCloseViewFn;
-    @SuppressWarnings("unused") private BrowserFunction saveSessionPrefsFn;
-    @SuppressWarnings("unused") private BrowserFunction loadSessionPrefsFn;
-    @SuppressWarnings("unused") private BrowserFunction setPermissionModeFn;
-    @SuppressWarnings("unused") private BrowserFunction updateCliFn;
-    @SuppressWarnings("unused") private BrowserFunction runManagedUpdateFn;
-    @SuppressWarnings("unused") private BrowserFunction rewindListFn;
-    @SuppressWarnings("unused") private BrowserFunction rewindPreviewFn;
-    @SuppressWarnings("unused") private BrowserFunction rewindApplyFn;
-    @SuppressWarnings("unused") private BrowserFunction rewindForkOnlyFn;
-    @SuppressWarnings("unused") private BrowserFunction rewindCodeOnlyFn;
-    @SuppressWarnings("unused") private BrowserFunction messageIdsFn;
-    @SuppressWarnings("unused") private BrowserFunction deleteMessageFn;
-    @SuppressWarnings("unused") private BrowserFunction advisorGetFn;
-    @SuppressWarnings("unused") private BrowserFunction advisorSetFn;
-    @SuppressWarnings("unused") private BrowserFunction openExternalFn;
-    @SuppressWarnings("unused") private BrowserFunction openTerminalViewFn;
-    @SuppressWarnings("unused") private BrowserFunction openSessionInTerminalFn;
-    @SuppressWarnings("unused") private BrowserFunction openFileInEditorFn;
-    @SuppressWarnings("unused") private BrowserFunction openTextInEditorFn;
-    @SuppressWarnings("unused") private BrowserFunction getContextStatusFn;
-    @SuppressWarnings("unused") private BrowserFunction stopAgentTaskFn;
-    @SuppressWarnings("unused") private BrowserFunction clipGetFn;
-    @SuppressWarnings("unused") private BrowserFunction clipSetFn;
-    @SuppressWarnings("unused") private BrowserFunction clipImagesFn;
-    @SuppressWarnings("unused") private BrowserFunction drainImagesFn;
-    @SuppressWarnings("unused") private BrowserFunction listFilesFn;
-    @SuppressWarnings("unused") private BrowserFunction takeFilesListedFn;
-    @SuppressWarnings("unused") private BrowserFunction browserSupportedFn;
-    @SuppressWarnings("unused") private BrowserFunction disconnectBrowserFn;
-    @SuppressWarnings("unused") private BrowserFunction pickFilesFn;
-    @SuppressWarnings("unused") private BrowserFunction drainPickedFilesFn;
-    @SuppressWarnings("unused") private BrowserFunction openAttachmentFn;
-    @SuppressWarnings("unused") private BrowserFunction openStoredAttachmentFn;
+    @SuppressWarnings("unused") private SimpleFunction currentContextFn;
+    @SuppressWarnings("unused") private SimpleFunction decideFn;
+    @SuppressWarnings("unused") private SimpleFunction answerQuestionFn;
+    @SuppressWarnings("unused") private SimpleFunction overlayOpenFn;
+    @SuppressWarnings("unused") private SimpleFunction debugLogFn;
+    @SuppressWarnings("unused") private SimpleFunction pageBootedFn;
+    @SuppressWarnings("unused") private SimpleFunction pageFunctionsFn;
+    @SuppressWarnings("unused") private SimpleFunction modelConfigFn;
+    @SuppressWarnings("unused") private SimpleFunction accountInfoFn;
+    @SuppressWarnings("unused") private SimpleFunction defaultRootFn;
+    @SuppressWarnings("unused") private SimpleFunction savedViewStateFn;
+    @SuppressWarnings("unused") private SimpleFunction saveViewStateFn;
+    @SuppressWarnings("unused") private SimpleFunction pickDirectoryFn;
+    @SuppressWarnings("unused") private SimpleFunction folderInfoFn;
+    @SuppressWarnings("unused") private SimpleFunction trustFolderFn;
+    @SuppressWarnings("unused") private SimpleFunction confirmCloseViewFn;
+    @SuppressWarnings("unused") private SimpleFunction saveSessionPrefsFn;
+    @SuppressWarnings("unused") private SimpleFunction loadSessionPrefsFn;
+    @SuppressWarnings("unused") private SimpleFunction setPermissionModeFn;
+    @SuppressWarnings("unused") private SimpleFunction updateCliFn;
+    @SuppressWarnings("unused") private SimpleFunction runManagedUpdateFn;
+    @SuppressWarnings("unused") private SimpleFunction rewindListFn;
+    @SuppressWarnings("unused") private SimpleFunction rewindPreviewFn;
+    @SuppressWarnings("unused") private SimpleFunction rewindApplyFn;
+    @SuppressWarnings("unused") private SimpleFunction rewindForkOnlyFn;
+    @SuppressWarnings("unused") private SimpleFunction rewindCodeOnlyFn;
+    @SuppressWarnings("unused") private SimpleFunction messageIdsFn;
+    @SuppressWarnings("unused") private SimpleFunction deleteMessageFn;
+    @SuppressWarnings("unused") private SimpleFunction advisorGetFn;
+    @SuppressWarnings("unused") private SimpleFunction advisorSetFn;
+    @SuppressWarnings("unused") private SimpleFunction openExternalFn;
+    @SuppressWarnings("unused") private SimpleFunction openTerminalViewFn;
+    @SuppressWarnings("unused") private SimpleFunction openSessionInTerminalFn;
+    @SuppressWarnings("unused") private SimpleFunction openFileInEditorFn;
+    @SuppressWarnings("unused") private SimpleFunction openTextInEditorFn;
+    @SuppressWarnings("unused") private SimpleFunction getContextStatusFn;
+    @SuppressWarnings("unused") private SimpleFunction stopAgentTaskFn;
+    @SuppressWarnings("unused") private SimpleFunction clipGetFn;
+    @SuppressWarnings("unused") private SimpleFunction clipSetFn;
+    @SuppressWarnings("unused") private SimpleFunction clipImagesFn;
+    @SuppressWarnings("unused") private SimpleFunction drainImagesFn;
+    @SuppressWarnings("unused") private SimpleFunction listFilesFn;
+    @SuppressWarnings("unused") private SimpleFunction takeFilesListedFn;
+    @SuppressWarnings("unused") private SimpleFunction browserSupportedFn;
+    @SuppressWarnings("unused") private SimpleFunction disconnectBrowserFn;
+    @SuppressWarnings("unused") private SimpleFunction pickFilesFn;
+    @SuppressWarnings("unused") private SimpleFunction drainPickedFilesFn;
+    @SuppressWarnings("unused") private SimpleFunction openAttachmentFn;
+    @SuppressWarnings("unused") private SimpleFunction openStoredAttachmentFn;
     /** The latest {@code @}-list answer as (request id, rows), held for the page to collect:
      *  a bare {@code @} lists a whole folder, too much to inline into a script. */
     private volatile String[] filesListed = { "", "[]" };
@@ -249,7 +256,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     /** Images fetched for a pasted fragment, waiting for the webview to collect them. */
     private final java.util.concurrent.ConcurrentLinkedQueue<Map<String, String>> fetchedImages =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
-    @SuppressWarnings("unused") private BrowserFunction editOpsReadyFn;
+    @SuppressWarnings("unused") private SimpleFunction editOpsReadyFn;
     /** Set by the page once the __cc* editing entry points exist — see registerEditHandlers. */
     private volatile boolean editOpsReady = false;
 
@@ -282,7 +289,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private org.eclipse.jface.util.IPropertyChangeListener themeChangeListener;
     // Re-pushes the right-click menu's key hints when the user's bindings change.
     private org.eclipse.jface.bindings.IBindingManagerListener bindingChangeListener;
-    @SuppressWarnings("unused") private BrowserFunction statusSelectionFn;
+    @SuppressWarnings("unused") private SimpleFunction statusSelectionFn;
     private volatile String availableModelsJson;   // curated model list from /v1/models, pushed to the webview
     private volatile String cliVersionJson;        // {installed,latest,updateAvailable} for the update banner
     private volatile String setupGuideMd = "";     // FreeBSD setup guide (Markdown) while claude is missing
@@ -1602,6 +1609,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // macOS WebKit; on WebKitGTK from inside bootPage's call, after it. The load's own
         // work (pageReady) waits for this, so the page is never pushed to before it booted.
         pageBootedFn = new SimpleFunction(browser, "_pageBooted", a -> {
+            debugPageBoot("page booted" + (pageLoadCompleted ? ", after its load completed" : ", while loading"));
             pageBooted = true;
             if (pageLoadCompleted && !pageLoaded) {
                 // Not inside the page's call: pageReady pushes to the page and evaluates in it.
@@ -1613,10 +1621,13 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             }
             return null;
         });
-        // Every function made for the page, by name: the page boots only once all of them
-        // exist (init.js, ccBootIfReady). Made last, so the list is complete.
+        // Every function made for the page, by name: javabridge.js defines window.<name> for
+        // each, as a call through _java. Made last, so the list is complete.
         pageFunctionsFn = new SimpleFunction(browser, "_pageFunctions", a ->
-                new Gson().toJson(pageFunctionNames));
+                new Gson().toJson(pageFunctions.keySet()));
+        // The one BrowserFunction the page gets: every function above is reached through
+        // it (javabridge.js). Last, once they are all in pageFunctions.
+        javaBridgeFn = new JavaBridgeFunction(browser);
 
         // Backstop for what the JS handler can't cancel — a window.open/target=_blank
         // that WebView2 turns into a top-level load, or a meta refresh. (Keyboard
@@ -1638,6 +1649,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // work runs now; on WebKitGTK the page is first made to boot (bootPage), and that
         // work follows it — the same order either way.
         browser.addProgressListener(org.eclipse.swt.browser.ProgressListener.completedAdapter(e -> {
+            debugPageBoot("page loaded; " + (pageBooted ? "it has booted" : "asking it to boot"));
             pageLoadCompleted = true;
             if (pageBooted) pageReady();
             else bootPage(pageLoadGeneration, System.currentTimeMillis());
@@ -1668,6 +1680,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      * on WebKitGTK, right after {@link #bootPage} has had it boot. UI thread.
      */
     private void pageReady() {
+        debugPageBoot("page ready");
         pageLoaded = true;
         // WebView2 init is async — retry here where the webview provably exists.
         disableDevTools();
@@ -1719,7 +1732,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      */
     private void bootPage(int generation, long startedAt) {
         if (browser == null || browser.isDisposed() || generation != pageLoadGeneration || pageBooted) return;
-        browser.execute("window.ccBootIfReady && window.ccBootIfReady()");
+        boolean executed = browser.execute("window.ccBootIfReady && window.ccBootIfReady()");
+        if (!executed) debugPageBoot("could not ask the page to boot; asking again");
         if (pageBooted) return;   // it booted inside that call; _pageBooted has queued pageReady
         if (System.currentTimeMillis() - startedAt < BOOT_TIMEOUT_MS) {
             browser.getDisplay().timerExec(BOOT_RETRY_MS, () -> bootPage(generation, startedAt));
@@ -1729,6 +1743,35 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 + BOOT_TIMEOUT_MS + " ms; starting it without them", null);
         browser.execute("window.ccBoot && window.ccBoot()");
         if (!pageBooted && !pageLoaded) pageReady();   // a page with no boot at all
+    }
+
+    /** When {@link #loadPage} last started a load — what the [page-boot] lines count from. */
+    private long pageLoadStartedAt;
+
+    /** A Debug mode line about the page's load and boot, with the time since the load started. */
+    private void debugPageBoot(String message) {
+        ClaudeCodeView.debug("[page-boot] " + message + " ("
+                + (System.currentTimeMillis() - pageLoadStartedAt) + " ms after the load started)");
+    }
+
+    /**
+     * Debug mode only: says what a page that is still not ready is doing — not loaded, loaded
+     * but without {@code _java}, or with it but not booted. A page that cannot even answer
+     * this is stuck in the browser itself.
+     */
+    private void debugSlowPageBoot() {
+        if (browser == null || browser.isDisposed() || pageLoaded || !DebugModeUi.isDebugEnabled()) return;
+        String page;
+        try {
+            page = String.valueOf(browser.evaluate("try { return 'readyState ' + document.readyState"
+                    + " + ', _java ' + (typeof window._java === 'function' ? 'defined' : 'missing')"
+                    + " + ', booted ' + (typeof ccBooted === 'undefined' ? 'unknown' : ccBooted);"
+                    + " } catch (e) { return 'the page threw ' + e; }"));
+        } catch (Throwable t) {
+            page = "the page could not be asked: " + t.getMessage();
+        }
+        debugPageBoot("still not ready: load completed " + (pageLoadCompleted ? "yes" : "no")
+                + ", booted " + (pageBooted ? "yes" : "no") + "; " + page);
     }
 
     /** Reads the newest model per family out of the CLI binary, then pushes it. */
@@ -3375,6 +3418,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         pageBooted = false;
         pageLoadCompleted = false;
         pageLoadGeneration++;
+        pageLoadStartedAt = System.currentTimeMillis();
+        debugPageBoot("loading the page");
+        if (DebugModeUi.isDebugEnabled()) {
+            for (int ms : new int[]{5000, 15000}) Display.getCurrent().timerExec(ms, this::debugSlowPageBoot);
+        }
         try {
             // Resolve the whole claudegui/ DIRECTORY, not just the html: the page now
             // references sibling styles/*.css and scripts/*.js, and toFileURL on a
@@ -4927,16 +4975,37 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
 
     // --- BrowserFunction helpers ---------------------------------------------
 
-    /** Generic BrowserFunction backed by a lambda. */
-    private class SimpleFunction extends BrowserFunction {
+    /**
+     * A function the page calls as {@code window.<name>(...)}, backed by a lambda. Not a
+     * BrowserFunction of its own: the page reaches every one through {@code _java}
+     * ({@link JavaBridgeFunction}), and javabridge.js defines {@code window.<name>} as a call
+     * through it. On WebKitGTK each BrowserFunction makes SWT rebuild and re-inject the whole
+     * set, and with ~95 of them the first page load could stall for good — the view stayed
+     * blank until it was reopened (no such stall in 45 loads with up to 30, 12 in 15 with 94).
+     */
+    private class SimpleFunction {
         private final java.util.function.Function<Object[], Object> impl;
         SimpleFunction(Browser browser, String name, java.util.function.Function<Object[], Object> impl) {
-            super(browser, name);
             this.impl = impl;
-            pageFunctionNames.add(name);
+            pageFunctions.put(name, this.impl);
+        }
+    }
+
+    /**
+     * {@code _java(name, ...args)}: calls the page function {@code name} with the rest of
+     * the arguments, converted by SWT as they always were, and hands back what it returns —
+     * null when it fails, as each function did when it was a BrowserFunction of its own.
+     */
+    private final class JavaBridgeFunction extends BrowserFunction {
+        JavaBridgeFunction(Browser browser) {
+            super(browser, "_java");
         }
         @Override public Object function(Object[] arguments) {
-            try { return impl.apply(arguments); } catch (Exception e) { return null; }
+            if (arguments == null || arguments.length == 0 || !(arguments[0] instanceof String name)) return null;
+            java.util.function.Function<Object[], Object> impl = pageFunctions.get(name);
+            if (impl == null) return null;
+            Object[] rest = java.util.Arrays.copyOfRange(arguments, 1, arguments.length);
+            try { return impl.apply(rest); } catch (Exception e) { return null; }
         }
     }
 }
