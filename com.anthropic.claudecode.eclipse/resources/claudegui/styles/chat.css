@@ -159,12 +159,12 @@
    own scrollbar instead, so "Show more" always stays fully reachable regardless of length. */
 .user-msg.expanded .body.clampable { max-height: 35vh; overflow-y: auto; }
 .user-msg.expanded .body.clampable::after { display: none; }
-/* Styled like .copy-btn (chip look, hover-revealed) but anchored bottom-left instead of
+/* Styled like .copy-btn (chip look, hover-revealed) but anchored bottom-right instead of
    top-right, and a touch bigger — a plain text link read as too easy to miss/misclick
    against the clamp fade. "Show more" only ever reveals on hover (nothing to click before
    that matters); "Show less" stays visible once expanded even without hovering, same as
    before this restyle — you shouldn't have to re-hover to find your way back to collapsed. */
-.user-msg .clamp-toggle { display: none; position: absolute; left: 8px; bottom: 8px; z-index: 2;
+.user-msg .clamp-toggle { display: none; position: absolute; right: 8px; bottom: 8px; z-index: 2;
   background: var(--bg-chip); border: 1px solid var(--border); color: var(--fg-dim);
   border-radius: 4px; font-size: 11.5px; padding: 3px 9px; cursor: pointer;
   opacity: 0; transition: opacity .1s; }
@@ -307,6 +307,7 @@
 .tool-line .tname { font-weight: 600; color: var(--fg); }
 .tool-line .tdesc { color: var(--fg-dim); font-weight: normal; } /* a tool's description, next to its name (Agent, Bash, ...) */
 .tool-line .tagent-type { color: var(--fg-faint); font-weight: normal; font-size: 11.5px; } /* e.g. "(Explore)" */
+.tool-line .tscope { color: var(--fg-faint); font-weight: normal; font-size: 11.5px; } /* Grep/Glob's scoping dir, e.g. "(in: internal)" */
 /* pre-wrap: a multi-line Bash command / Task prompt / search query used to collapse to one
    run-on line (word-break alone doesn't stop that — it only breaks long unbroken tokens,
    the newline collapse is a `white-space: normal` default). Same reasoning as .user-msg .body. */
@@ -448,15 +449,30 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
   min-height: 62vh; text-align: center; color: var(--fg-dim); gap: 8px; padding: 30px 14px;
   overflow-wrap: normal; word-break: keep-all; hyphens: none; }
 .welcome .wc-h, .welcome .wc-p { max-width: 100%; }
-.welcome .wc-logo { color: var(--accent); transform: scale(2.2); margin-bottom: 14px; }
-.welcome .wc-h { font-size: 17px; color: var(--fg); font-weight: 600; }
+/* Sibling of .welcome, not a child (see WELCOME_HTML's own comment) — pinned to the
+   actual top of the pane by normal block flow instead of riding along with .welcome's
+   centered content group. */
+.wc-wordmark { display: flex; align-items: center; justify-content: center; gap: 7px;
+  color: var(--accent); padding: 14px 14px 0; }
+.wc-wordmark .wc-word-ic { display: inline-flex; }
+.wc-wordmark .wc-word-txt { font-size: 14px; font-weight: 600; color: var(--fg); letter-spacing: .1px; }
+.welcome .wc-mascot { margin-bottom: 18px; }
+.welcome .wc-mascot svg { display: block; }
+.welcome .wc-h { font-size: 17px; color: var(--fg); font-weight: 600; margin-bottom: 8px; }
 .welcome .wc-p { font-size: 12.5px; }
+.welcome .wc-mcp-tip { font-size: 12px; margin-top: -2px; }
+/* Global, not .welcome-scoped: also used by #terminal-tip (layout.css), which lives
+   outside .welcome entirely (a persistent chrome row above the composer, not per-tab
+   content). */
+.wc-link { color: var(--link); cursor: pointer; }
+.wc-link:hover { text-decoration: underline; }
 /* Below this width the empty state is mostly padding, around a logo wider than the
    panel. It shrinks rather than overflowing: the view keeps a horizontal scrollbar for
    what genuinely cannot fit (layout.css), and an empty state should never be that. */
 @media (max-width: 240px) {
   .welcome { min-height: 40vh; padding: 16px 8px; gap: 6px; }
-  .welcome .wc-logo { transform: scale(1.4); margin-bottom: 6px; }
+  .wc-wordmark { transform: scale(0.85); padding: 8px 8px 0; }
+  .welcome .wc-mascot svg { transform: scale(0.8); }
   .welcome .wc-h { font-size: 14px; }
   .welcome .wc-p { font-size: 12px; }
 }
@@ -467,9 +483,22 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
    every item that is followed by another item — avoids relying on :has()) */
 .a-item.linked::before { content: ''; position: absolute; left: 7px; top: 9px; bottom: -16px;
   width: 1px; background: var(--border); }
-/* working indicator (sunburst + gerund) shown while Claude is processing */
+/* working indicator (breathing glyph + gerund) shown while Claude is processing. Colored by
+   the live permission mode, same tokens as #input-wrap/#send (controls.js's applyModeUI
+   toggles the mode-* class on document.body, not on this element directly — .working is
+   destroyed and recreated on every turn, so styling off a body class is correct regardless
+   of when it happens to exist, rather than needing the class re-applied at every
+   (re)creation). */
 .working { display: flex; align-items: center; gap: 9px; padding: 8px 0 8px 2px; color: var(--fg); font-weight: 600; }
-.working .sb { color: var(--accent); display: inline-flex; animation: spin 2.6s linear infinite; }
+/* .sb no longer rotates an SVG — working.js's global interval cycles its textContent through
+   a fixed glyph sequence (· ✢ * ✶ ✻ ✽ and back down) instead. font-family/size/width here
+   are the real reference app's own .icon_hc5dvw rule, not a guess. */
+.working .sb { display: inline-block; text-align: center; width: 1.5em; font-family: monospace;
+  font-size: 1.5em; color: var(--mode-manual); }
+body.mode-acceptEdits .working .sb { color: var(--mode-accept-edits); }
+body.mode-plan .working .sb { color: var(--mode-plan); }
+body.mode-auto .working .sb { color: var(--mode-auto); }
+body.mode-bypassPermissions .working .sb { color: var(--mode-auto); }
 /* pre-WRAP, not pre: the morph animation needs the literal spaces around the
    cursor preserved, but the token/elapsed suffix ("· ↑ 1.2k tokens · esc to
    interrupt") is long enough to run past a narrow panel, and plain `pre` would
@@ -478,8 +507,12 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
 .working .gerund { display: inline; white-space: pre-wrap; }
 /* Block-element glyph (U+258D) renders from Segoe UI / Consolas on Windows; the
    font-family fallback keeps it a solid bar and never a tofu box. */
-.working .gerund .cursor { font-family: Consolas, 'Segoe UI', monospace; color: var(--accent);
+.working .gerund .cursor { font-family: Consolas, 'Segoe UI', monospace; color: var(--mode-manual);
   animation: blink 1s step-end infinite; }
+body.mode-acceptEdits .working .gerund .cursor { color: var(--mode-accept-edits); }
+body.mode-plan .working .gerund .cursor { color: var(--mode-plan); }
+body.mode-auto .working .gerund .cursor { color: var(--mode-auto); }
+body.mode-bypassPermissions .working .gerund .cursor { color: var(--mode-auto); }
 @keyframes blink { 50% { opacity: 0; } }
 
 

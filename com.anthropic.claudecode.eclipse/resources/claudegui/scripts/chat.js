@@ -5,7 +5,16 @@
 let curTurn = null, curBody = null, curText = '';
 let curThink = null, curThinkText = '', thinkStart = 0, turnStart = 0;
 
-function clearWelcome(pane) { if (!pane) return; const w = pane.querySelector('.welcome'); if (w) w.remove(); }
+// .wc-wordmark is WELCOME_HTML's other top-level element (a sibling of .welcome, not a
+// child — see that function's own comment), so it has to be swept here too or it's
+// orphaned in the pane once .welcome itself is gone. renderTerminalTip re-checks
+// immediately after: its own visibility is keyed off whether .welcome still exists.
+function clearWelcome(pane) {
+  if (!pane) return;
+  const w = pane.querySelector('.welcome'); if (w) w.remove();
+  const wm = pane.querySelector('.wc-wordmark'); if (wm) wm.remove();
+  if (typeof renderTerminalTip === 'function') renderTerminalTip();
+}
 /* Scroll Lock — the view toolbar's checkbox (the same Action, and the same icon, the
    Claude Terminal carries; see ClaudeGuiView#createToolBar). It ARMS the follow-tail
    behavior below rather than freezing the transcript outright:
@@ -711,6 +720,15 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
         // click-outside handler, same class of bug as cycleSearchScope's innerHTML swap.
         tpathEl.onclick = () => window._openFileInEditor(path, root || rootPathOf(activeTab()));
       }
+      // Grep/Glob's own `path` merely scopes the search (preferPatternOverPath already
+      // outranked it for `detail` above) — shown as a faint suffix after the pattern so a
+      // scoped search reads differently from an unscoped one instead of looking identical.
+      if (preferPatternOverPath && path && path !== detail) {
+        const scope = document.createElement('span');
+        scope.className = 'tscope';
+        scope.textContent = ' (in: ' + path + ')';
+        line.querySelector('.tpath-wrap').appendChild(scope);
+      }
       if (detail) line.querySelector('.tpath-wrap').appendChild(makeCopyBtn(() => detail));
     }
   }
@@ -841,7 +859,7 @@ function applyToolResult(payload) {
 // Tools whose successful result is already fully represented some other way (a diff,
 // the plan-outcome tool-sub, the question card) — showing the CLI's boilerplate ack text
 // underneath would just be noise, so OUT is skipped for these specifically.
-const SKIP_OUT_BOX = new Set(['write', 'edit', 'multiedit', 'notebookedit', 'exitplanmode', 'askuserquestion', 'approvalprompt', 'todowrite']);
+const SKIP_OUT_BOX = new Set(['write', 'edit', 'multiedit', 'notebookedit', 'exitplanmode', 'askuserquestion', 'approvalprompt', 'todowrite', 'read']);
 /* The actual output-rendering fix: until now a successful tool_result only ever colored
    the dot (applyToolResult above) — the CLI's answer never appeared anywhere. Shared by
    the live path (applyToolResult) and, when a reload's session.rs starts carrying result

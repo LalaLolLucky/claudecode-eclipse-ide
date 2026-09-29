@@ -119,6 +119,23 @@ window.onSpinnerVerbs = function (json) {
 const GERUND_COMPACTING = 'Compacting';
 const GERUND_CONNECTING = 'Establishing connection';
 
+/* Breathing-glyph loader (replaces the old rotating SUNBURST SVG) — cycles .sb's
+   textContent through a fixed density ramp instead of spinning an icon; see
+   /tmp/spinner-demo.html for the reference this was built from. One global interval
+   drives every .sb currently in the DOM at once (there can be more than one — a
+   background tab's "Establishing connection" indicator alongside the active tab's own),
+   so there is nothing to start/stop per element: a removed node just stops being found
+   on the next tick, with nothing left to leak. */
+const WORKING_GLYPHS = ['·', '✢', '*', '✶', '✻', '✽'];
+const WORKING_GLYPH_SEQ = [...WORKING_GLYPHS, ...WORKING_GLYPHS.slice(0, -1).reverse()];
+let workingGlyphIdx = 0;
+function workingGlyphNow() { return WORKING_GLYPH_SEQ[workingGlyphIdx]; }
+setInterval(() => {
+  workingGlyphIdx = (workingGlyphIdx + 1) % WORKING_GLYPH_SEQ.length;
+  const glyph = workingGlyphNow();
+  document.querySelectorAll('.working .sb').forEach(el => { el.textContent = glyph; });
+}, 180);
+
 let workingEl = null, workingGerund = '', lastTokens = 0;
 let gerundCycleTimer = null, gerundTypeTimer = null, gerundIdx = 0, gerundHold = 0;
 const GERUND_HOLD_START = 5000;   // first gerund holds 5s, then 6s, 7s, 8s, 9s…
@@ -201,7 +218,7 @@ function showWorking() {
   workingGerund = pinned || shuffledGerunds[gerundIdx];
   const pane = streamPane(); if (!pane) return;
   workingEl = document.createElement('div'); workingEl.className = 'turn';
-  workingEl.innerHTML = '<div class="working"><span class="sb">' + ICONS.SUNBURST + '</span><span class="gerund"></span></div>';
+  workingEl.innerHTML = '<div class="working"><span class="sb">' + workingGlyphNow() + '</span><span class="gerund"></span></div>';
   pane.appendChild(workingEl);
   // Through autoScroll (chat.js), not a raw write: showWorking runs again after every
   // tool result, not just at turn start, so an ungated write here would re-pin the view
@@ -235,7 +252,7 @@ function showWorkingFor(t) {
   sweepWorkingNodes(t.pane);
   const el = document.createElement('div');
   el.className = 'turn';
-  el.innerHTML = '<div class="working"><span class="sb">' + ICONS.SUNBURST +
+  el.innerHTML = '<div class="working"><span class="sb">' + workingGlyphNow() +
     '</span><span class="gerund">' + escHtml(GERUND_CONNECTING + '...') + CURSOR + '</span></div>';
   t.pane.appendChild(el);
   // Parked where loadRender looks, so switching to this tab ADOPTS the node

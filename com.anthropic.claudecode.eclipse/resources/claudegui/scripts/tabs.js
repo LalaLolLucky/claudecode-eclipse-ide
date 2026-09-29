@@ -100,10 +100,40 @@ function syncComposer() {
                     : disconnecting ? 'Disconnecting…'
                     : (s ? 'Queue another message…' : 'Message Claude…');
 }
+/* "Prefer the Terminal experience?" — a persistent chrome row (#terminal-tip in
+   claudegui.html, right above #input-wrap, same slot as #browser-banner) rather than
+   part of WELCOME_HTML's own per-tab content: it needs to sit fixed above the composer,
+   not scroll away inside the pane with the rest of the welcome copy. Shown only while
+   the active tab is still on its welcome/empty state. Dismissed for the rest of this
+   run once closed — in-memory only, same rule controls.js's usage-warning banner
+   follows (usageDismissed), not persisted across Eclipse restarts. */
+let terminalBannerDismissed = false;
+function dismissTerminalBanner() {
+  terminalBannerDismissed = true;
+  renderTerminalTip();
+}
+function renderTerminalTip() {
+  const el = document.getElementById('terminal-tip');
+  if (!el) return;
+  const t = activeTab();
+  const showing = !!(t && t.pane && t.pane.querySelector('.welcome') && !terminalBannerDismissed);
+  el.hidden = !showing;
+}
 function WELCOME_HTML() {
-  return '<div class="welcome"><div class="wc-logo">' + ICONS.SUNBURST + '</div>' +
-    '<div class="wc-h">Claude Code</div>' +
-    '<div class="wc-p">Ask anything about your workspace. Type <code class="ic">/</code> for commands.</div></div>';
+  // wc-wordmark is a SIBLING before .welcome, not a child of it: .welcome centers its
+  // children as one group (justify-content:center), which would carry the wordmark down
+  // into the middle of the pane along with the mascot/heading whenever that group is
+  // shorter than .welcome's min-height. Kept outside that group so it stays pinned to
+  // the actual top of the pane regardless of how tall the rest of the welcome state is.
+  return '<div class="wc-wordmark"><span class="wc-word-ic">' + ICONS.SUNBURST + '</span><span class="wc-word-txt">Claude Code</span></div>'
+    + '<div class="welcome">'
+    + '<div class="wc-mascot">' + ICONS.MASCOT + '</div>'
+    + '<div class="wc-h">Ready to code?</div>'
+    + '<div class="wc-p">Let\'s write something worth deploying.</div>'
+    // We have a real in-GUI MCP servers window (openMcpServers/mcp.js), so this
+    // points straight at it instead of sending the user out to a terminal for it.
+    + '<div class="wc-mcp-tip">Set up <span class="wc-link" onclick="openMcpServers()">MCP servers</span> to connect Claude to more tools and data.</div>'
+    + '</div>';
 }
 /**
  * @param {{title?: string, sessionId?: string, titled?: boolean, model?: string,
@@ -167,8 +197,10 @@ function switchTab(id) {
   if (typeof renderBottomCard === 'function') renderBottomCard();   // card only in its own tab
   if (typeof renderPendingImages === 'function') renderPendingImages();  // this tab's pasted-image chips
   if (typeof renderBrowserBanner === 'function') renderBrowserBanner();  // this tab's browser connection
+  if (typeof renderTerminalTip === 'function') renderTerminalTip();      // shown only on THIS tab's welcome state
   if (typeof syncComposer === 'function') syncComposer();           // send/stop reflects THIS tab
   if (typeof updateAgentsBtn === 'function') updateAgentsBtn();     // toolbar pill reflects THIS tab's agents
+  if (typeof switchToContextRing === 'function') switchToContextRing(id);  // ring reflects THIS tab's context
   // The root rides along: Java scopes session history, rewind and the status bar to
   // the conversation's own folder, not to the workspace root.
   try { if (window._activeTab) window._activeTab(id, rootPathOf(t)); } catch (e) {} // status bar follows active tab

@@ -52,14 +52,17 @@ function toggleMenu(id, anchor) {
   // Reset any leftover filter text from last time this menu was open, and rebuild the
   // (unfiltered) list to match — otherwise reopening shows whatever narrowed subset was
   // left on screen when it was last closed.
+  let focusFilter = null;
   if (id === 'actions-menu') {
     const filterInput = document.getElementById('actions-slash-filter');
     if (filterInput) filterInput.value = '';
     if (typeof buildActionsSlash === 'function') buildActionsSlash('');
+    focusFilter = filterInput;
   }
   menu.classList.add('open');
   positionMenu(menu, anchor);
   openMenuEl = menu; openAnchor = anchor;
+  if (focusFilter) focusFilter.focus();   // interactable immediately, no click needed first
 }
 
 /* Drops a menu from the page's top-right corner rather than gluing it to an in-page

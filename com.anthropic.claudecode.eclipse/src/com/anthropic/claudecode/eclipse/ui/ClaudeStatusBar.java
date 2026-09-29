@@ -379,10 +379,10 @@ public final class ClaudeStatusBar extends Canvas {
         Seg model = buildModelSeg(gc, prefs, s);
         if (model != null) left.add(model);
 
-        if (prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_CONTEXT)) {
+        if (prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_CONTEXT) && s.contextUsedPercentage().isPresent()) {
             // Context never carries a reset time, so it never reserves width for one.
             left.add(buildMeter(gc, compact ? "C" : "Context",
-                    s.contextUsedPercentage().orElse(0.0), true,
+                    s.contextUsedPercentage().getAsDouble(), true,
                     OptionalLong.empty(), compact, false, false,
                     buildContextTooltip(s)));
         }

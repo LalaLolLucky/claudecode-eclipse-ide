@@ -69,6 +69,9 @@
 
 /* slash command menu */
 #slash-menu { min-width: 260px; max-height: 260px; overflow-y: auto; }
+/* Its own effort slider (kept even though the model+effort composer pill was dropped —
+   see the model chooser's own inline min-width:320px) needs room to breathe. */
+#model-menu { max-height: 320px; overflow-y: auto; }
 #slash-menu .item .cmd { font-family: 'Cascadia Code','Consolas',monospace; color: var(--fg); font-size: 12.5px; }
 #slash-menu .item .d { color: var(--fg-dim); font-size: 11px; margin-left: auto; }
 #slash-menu .item.sel { background: var(--menu-hover); }
@@ -498,3 +501,12 @@ body.teleporting #composer { display: none; }
 #agents-win .ap-transcript-body::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 5px; }
 #agents-win .ap-transcript-prompt { padding: 8px 10px; margin-bottom: 10px; background: var(--bg-soft);
   border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; color: var(--fg); white-space: pre-wrap; }
+
+/* Context-usage ring's hover popover (controls.js) — positioned in JS like a .menu
+   (position: fixed + explicit left/top), styled the same way rather than relying on the
+   browser's own native title tooltip. */
+#ctx-ring-tip { display: none; position: fixed; z-index: 60; min-width: 220px; background: var(--menu-bg);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px var(--shadow); }
+#ctx-ring-tip.open { display: block; }
+#ctx-ring-tip .crt-line { font-size: 12.5px; color: var(--fg); line-height: 1.4; }
+#ctx-ring-tip .crt-line.crt-dim { color: var(--fg-dim); margin-top: 6px; }
