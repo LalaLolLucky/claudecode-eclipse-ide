@@ -1,2 +1,4 @@
 # Moved each Rust module's tests into their own files; whitespace only.
 d4183bd6a247a9ab432f8d85bf0b0b7435c2e92c
+# Moved chrome.rs's test-only helpers below its Tests banner; moved as-is.
+0d3c0bc2f615397c3507f867d602280a2b6d3f2d
