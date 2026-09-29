@@ -41,6 +41,6 @@ jobs:
         run: |
           set -eu
           mkdir -p com.anthropic.claudecode.eclipse/src/core
-          cp claude-eclipse-core/src/*.rs com.anthropic.claudecode.eclipse/src/core/
+          cp -r claude-eclipse-core/src/. com.anthropic.claudecode.eclipse/src/core/
 
       - run: mvn -B integration-test
