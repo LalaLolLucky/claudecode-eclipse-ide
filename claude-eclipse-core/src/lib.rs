@@ -74,6 +74,51 @@ pub unsafe extern "system" fn JNI_OnLoad(
     .unwrap_or(jni::sys::JNI_ERR)
 }
 
+/// The end of every JNI export. A panic must not unwind out of an `extern "system"`
+/// function: since Rust 1.81 that aborts the process, which here is Eclipse. So each
+/// export runs its body under `catch_unwind` and hands the outcome here: a normal
+/// result passes through; a panic becomes a Java RuntimeException naming the export
+/// (unless a Java exception is already pending, which is then the real error) and the
+/// export returns `fallback`. Nothing in here can itself panic.
+fn finish_export<T>(env: &mut JNIEnv, export: &str, result: std::thread::Result<T>, fallback: T) -> T {
+    let panic = match result {
+        Ok(value) => return value,
+        Err(panic) => panic,
+    };
+    if !env.exception_check().unwrap_or(true) {
+        let _ = env.throw_new("java/lang/RuntimeException", panic_report(export, panic.as_ref()));
+    }
+    fallback
+}
+
+/// The message Java sees for a panic in `export`: the panic's own text when it has one.
+fn panic_report(export: &str, panic: &(dyn std::any::Any + Send)) -> String {
+    let why = panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "an unknown panic".to_string());
+    format!("claude_eclipse_core: {export} panicked: {why}")
+}
+
+/// A Java string as a Rust one: `""` when it is null or cannot be read, never a
+/// panic (a panic in a JNI export aborts the whole IDE).
+fn jstr(env: &mut JNIEnv, s: &JString) -> String {
+    if s.is_null() {
+        return String::new();
+    }
+    env.get_string(s).ok().map(|v| v.into()).unwrap_or_default()
+}
+
+/// A Rust string as a Java one: `value`, or `fallback` if the JVM cannot make it,
+/// or null if it cannot make either. Never a panic, for the same reason as [`jstr`].
+fn jout(env: &mut JNIEnv, value: impl AsRef<str>, fallback: &str) -> jstring {
+    env.new_string(value)
+        .or_else(|_| env.new_string(fallback))
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
 // ===========================================================================
 // Server JNI entry points
 // ===========================================================================
@@ -284,35 +329,6 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_register
     finish_export(&mut env, "registerStatusCallback", result, ())
 }
 
-/// Runs the CLI's own `/usage` command and returns the account-global
-/// subscription limits as statusLine-schema JSON (`{"rate_limits":{…}}`), or
-/// `""` when they can't be determined.
-///
-/// **Blocking** — it spawns a short-lived `claude` process (~1.3 s), so Java
-/// must call it off the UI thread. It costs the user's quota nothing (the CLI
-/// answers `/usage` locally, with no API call); see `chat::fetch_usage`.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_fetchUsage(
-    mut env: JNIEnv,
-    _class: JClass,
-    claude_cmd: JString,
-    workspace_root: JString,
-) -> jstring {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let cmd: String = match env.get_string(&claude_cmd) {
-            Ok(s) => s.into(),
-            Err(_) => return jout(&mut env, "", ""),
-        };
-        let root: String = match env.get_string(&workspace_root) {
-            Ok(s) => s.into(),
-            Err(_) => String::new(),
-        };
-        let json = chat::fetch_usage(&cmd, &root).unwrap_or_default();
-        jout(&mut env, json, "")
-    }));
-    finish_export(&mut env, "fetchUsage", result, std::ptr::null_mut())
-}
-
 // ===========================================================================
 // Lock-file JNI entry points
 // ===========================================================================
@@ -501,6 +517,292 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatDest
         drop(manager);
     }));
     finish_export(&mut env, "chatDestroy", result, ())
+}
+
+/// Runs the CLI's own `/usage` command and returns the account-global
+/// subscription limits as statusLine-schema JSON (`{"rate_limits":{…}}`), or
+/// `""` when they can't be determined.
+///
+/// **Blocking** — it spawns a short-lived `claude` process (~1.3 s), so Java
+/// must call it off the UI thread. It costs the user's quota nothing (the CLI
+/// answers `/usage` locally, with no API call); see `chat::fetch_usage`.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_fetchUsage(
+    mut env: JNIEnv,
+    _class: JClass,
+    claude_cmd: JString,
+    workspace_root: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let cmd: String = match env.get_string(&claude_cmd) {
+            Ok(s) => s.into(),
+            Err(_) => return jout(&mut env, "", ""),
+        };
+        let root: String = match env.get_string(&workspace_root) {
+            Ok(s) => s.into(),
+            Err(_) => String::new(),
+        };
+        let json = chat::fetch_usage(&cmd, &root).unwrap_or_default();
+        jout(&mut env, json, "")
+    }));
+    finish_export(&mut env, "fetchUsage", result, std::ptr::null_mut())
+}
+
+/// Takes the browser back out of this tab's conversation — the banner's ×.
+/// Returns whether it was on.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatDisableChrome(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        manager.disable_chrome() as jboolean
+    }));
+    finish_export(&mut env, "chatDisableChrome", result, jni::sys::JNI_FALSE)
+}
+
+/// Renames the LIVE conversation on this chat manager's process via its control
+/// channel (no extra process). Returns false if the manager isn't currently on
+/// `session_id` — caller falls back to sessionRename.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatRenameSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    session_id: JString,
+    title: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        let id: String = jstr(&mut env, &session_id);
+        let title: String = jstr(&mut env, &title);
+        manager.rename_session(&id, &title) as jboolean
+    }));
+    finish_export(&mut env, "chatRenameSession", result, jni::sys::JNI_FALSE)
+}
+
+/// Stops one specific background agent by its own internal task id (see
+/// ChatManager::stop_task's doc comment — a different id from its tool_use id).
+/// Returns false when there's no live process to send it to.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatStopTask(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    task_id: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        let id: String = jstr(&mut env, &task_id);
+        manager.stop_task(&id) as jboolean
+    }));
+    finish_export(&mut env, "chatStopTask", result, jni::sys::JNI_FALSE)
+}
+
+/// Switches a live conversation's permission mode over the existing control
+/// channel, so the GUI's per-tab mode dropdown applies mid-conversation instead
+/// of only at the next spawn. Returns false when there's no live process (the
+/// next spawn passes the mode as `--permission-mode` regardless).
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatSetPermissionMode(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    mode: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        let mode: String = jstr(&mut env, &mode);
+        manager.set_permission_mode(&mode) as jboolean
+    }));
+    finish_export(&mut env, "chatSetPermissionMode", result, jni::sys::JNI_FALSE)
+}
+
+/// The browser text blocks for a message about to be sent on this tab, as a JSON
+/// array — `[]` when it mentions no browser. Switches the browser on for the
+/// tab's live process first when it isn't yet. **Blocking** — may open a Chrome
+/// tab. Off the UI thread, after the tab's process has been ensured.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatBrowserBlocks(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    claude_cmd: JString,
+    message: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return jout(&mut env, "[]", "");
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        let cmd: String = jstr(&mut env, &claude_cmd);
+        let message: String = jstr(&mut env, &message);
+        let blocks = chrome::browser_blocks(
+            &cmd,
+            &message,
+            |cfg| manager.enable_chrome(cfg),
+            chrome::instruction,
+        );
+        let json = serde_json::to_string(&blocks).unwrap_or_else(|_| "[]".to_string());
+        jout(&mut env, json, "")
+    }));
+    finish_export(&mut env, "chatBrowserBlocks", result, std::ptr::null_mut())
+}
+
+/// Starts this tab's CLI process if it has none, sending nothing.
+///
+/// Lets Remote Control be switched on in a tab that has not had a conversation
+/// yet: the CLI answers a control request before any turn, so the only thing
+/// missing was a process to ask.
+///
+/// **Blocking** — spawns a child process. Off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatEnsureProcess(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    claude_cmd: JString,
+    workspace_root: JString,
+    mcp_port: jint,
+    mcp_auth_token: JString,
+    resume_id: JString,
+    perm_mode: JString,
+    effort: JString,
+    model: JString,
+    thinking: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        let claude_cmd = jstr(&mut env, &claude_cmd);
+        let workspace_root = jstr(&mut env, &workspace_root);
+        let mcp_auth_token = jstr(&mut env, &mcp_auth_token);
+        let resume_id = jstr(&mut env, &resume_id);
+        let perm_mode = jstr(&mut env, &perm_mode);
+        let effort = jstr(&mut env, &effort);
+        let model = jstr(&mut env, &model);
+        let thinking = jstr(&mut env, &thinking);
+        manager.ensure_process(
+            claude_cmd, workspace_root, mcp_port as u16, mcp_auth_token,
+            resume_id, perm_mode, effort, model, thinking,
+        ) as jboolean
+    }));
+    finish_export(&mut env, "chatEnsureProcess", result, jni::sys::JNI_FALSE)
+}
+
+/// Turns Remote Control on or off for this tab's live process.
+///
+/// Fire-and-forget: the CLI answers asynchronously, and that answer reaches
+/// Java as an `onRemoteControl` callback carrying the bridge session url.
+/// Returns false only when the tab has no live process to ask.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatRemoteControl(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    enabled: jboolean,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        manager.remote_control(enabled != 0) as jboolean
+    }));
+    finish_export(&mut env, "chatRemoteControl", result, jni::sys::JNI_FALSE)
+}
+
+/// Sends one of the MCP servers window's control requests to this tab's live
+/// process, under the page's `token`.
+///
+/// Fire-and-forget: the reply reaches Java as an `onMcp` callback carrying the same
+/// token. Returns false when the tab has no live process, or the request is not one
+/// the window may send.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatMcpRequest(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    token: JString,
+    request: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        let mut text = |s: JString| jstr(&mut env, &s);
+        let (token, request) = (text(token), text(request));
+        manager.mcp_request(&token, &request) as jboolean
+    }));
+    finish_export(&mut env, "chatMcpRequest", result, jni::sys::JNI_FALSE)
+}
+
+/// Applies a tab's launch settings (permission mode, effort, model, thinking) to its
+/// live process at once, rather than leaving them for the next message. What the view
+/// shows and what the process is running are then the same thing — and under Remote
+/// Control, so is what the phone and claude.ai show.
+///
+/// Returns false when the tab has no live process, or when the change needs a new one.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatApplySettings(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    perm_mode: JString,
+    effort: JString,
+    model: JString,
+    thinking: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        let mut text = |s: JString| jstr(&mut env, &s);
+        let (perm_mode, effort, model, thinking) =
+            (text(perm_mode), text(effort), text(model), text(thinking));
+        manager.apply_settings_now(&perm_mode, &effort, &model, &thinking) as jboolean
+    }));
+    finish_export(&mut env, "chatApplySettings", result, jni::sys::JNI_FALSE)
+}
+
+/// Whether switching this tab back to a Default model would restart its process.
+///
+/// Every other launch setting is applied to the running process; this one can be too,
+/// but only when the CLI has no model setting of its own to fall back to. The view
+/// warns before the restart, because it archives the conversation's Remote Control
+/// session on the other devices.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatDefaultModelRestarts(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        manager.default_model_restarts() as jboolean
+    }));
+    finish_export(&mut env, "chatDefaultModelRestarts", result, jni::sys::JNI_FALSE)
 }
 
 // ===========================================================================
@@ -836,6 +1138,24 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeIs
     finish_export(&mut env, "bridgeIsConnected", result, jni::sys::JNI_FALSE)
 }
 
+/// Renders a Remote Control session url as a scannable QR code, as SVG.
+///
+/// Generated on demand rather than carried on every toggle reply: it is a few
+/// KB of markup and is only wanted when the user actually reveals it.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_remoteControlQr(
+    mut env: JNIEnv,
+    _class: JClass,
+    url: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let u: String = jstr(&mut env, &url);
+        let svg = bridge::rc_qr_svg(&u);
+        jout(&mut env, svg, "")
+    }));
+    finish_export(&mut env, "remoteControlQr", result, std::ptr::null_mut())
+}
+
 // ===========================================================================
 // Proxy configuration JNI entry points
 // ===========================================================================
@@ -939,72 +1259,6 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionD
     finish_export(&mut env, "sessionDocumentFile", result, std::ptr::null_mut())
 }
 
-/// The composer's `@` list for `query`: the files and folders under `root`, with
-/// the browser tabs after them when `with_browser` (see
-/// `mentions::with_browser_rows` for the order). Those tabs come from the last
-/// lookup so a keystroke never waits on Chrome; a word starting `browser:` asks
-/// Chrome itself. **Blocking** (a folder walk, or Chrome): off the UI thread.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_listMentions(
-    mut env: JNIEnv,
-    _class: JClass,
-    root: JString,
-    claude_cmd: JString,
-    query: JString,
-    with_browser: jboolean,
-) -> jstring {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut arg = |s: JString| jstr(&mut env, &s);
-        let root = arg(root);
-        let cmd = arg(claude_cmd);
-        let query = arg(query);
-        let with_browser = with_browser != 0;
-        let json = if with_browser && query.to_lowercase().starts_with("browser:") {
-            chrome::browser_tabs_json(&cmd, &query)
-        } else {
-            let files = mentions::list_files_json(&root, &query);
-            if with_browser {
-                mentions::with_browser_rows(&files, &chrome::cached_browser_tabs_json(&cmd, &query), &query)
-            } else {
-                files
-            }
-        };
-        jout(&mut env, json, "[]")
-    }));
-    finish_export(&mut env, "listMentions", result, std::ptr::null_mut())
-}
-
-/// Takes the browser back out of this tab's conversation — the banner's ×.
-/// Returns whether it was on.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatDisableChrome(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return 0;
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        manager.disable_chrome() as jboolean
-    }));
-    finish_export(&mut env, "chatDisableChrome", result, jni::sys::JNI_FALSE)
-}
-
-/// Whether the CLI is signed in with a claude.ai account — what Browse the web and
-/// the browser tabs in the `@` list need. Cached for a minute in the core.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_hasClaudeAiLogin(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        web_history::has_claude_ai_login() as jboolean
-    }));
-    finish_export(&mut env, "hasClaudeAiLogin", result, jni::sys::JNI_FALSE)
-}
-
 /// Deletes one local session jsonl. Rejects ids that could escape the
 /// projects directory; returns whether the file was actually removed.
 #[no_mangle]
@@ -1083,192 +1337,39 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionR
     finish_export(&mut env, "sessionRename", result, jni::sys::JNI_FALSE)
 }
 
-/// Renames the LIVE conversation on this chat manager's process via its control
-/// channel (no extra process). Returns false if the manager isn't currently on
-/// `session_id` — caller falls back to sessionRename.
+/// The composer's `@` list for `query`: the files and folders under `root`, with
+/// the browser tabs after them when `with_browser` (see
+/// `mentions::with_browser_rows` for the order). Those tabs come from the last
+/// lookup so a keystroke never waits on Chrome; a word starting `browser:` asks
+/// Chrome itself. **Blocking** (a folder walk, or Chrome): off the UI thread.
 #[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatRenameSession(
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_listMentions(
     mut env: JNIEnv,
     _class: JClass,
-    handle: jlong,
-    session_id: JString,
-    title: JString,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return 0;
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        let id: String = jstr(&mut env, &session_id);
-        let title: String = jstr(&mut env, &title);
-        manager.rename_session(&id, &title) as jboolean
-    }));
-    finish_export(&mut env, "chatRenameSession", result, jni::sys::JNI_FALSE)
-}
-
-/// Stops one specific background agent by its own internal task id (see
-/// ChatManager::stop_task's doc comment — a different id from its tool_use id).
-/// Returns false when there's no live process to send it to.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatStopTask(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    task_id: JString,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return 0;
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        let id: String = jstr(&mut env, &task_id);
-        manager.stop_task(&id) as jboolean
-    }));
-    finish_export(&mut env, "chatStopTask", result, jni::sys::JNI_FALSE)
-}
-
-/// Switches a live conversation's permission mode over the existing control
-/// channel, so the GUI's per-tab mode dropdown applies mid-conversation instead
-/// of only at the next spawn. Returns false when there's no live process (the
-/// next spawn passes the mode as `--permission-mode` regardless).
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatSetPermissionMode(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    mode: JString,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return 0;
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        let mode: String = jstr(&mut env, &mode);
-        manager.set_permission_mode(&mode) as jboolean
-    }));
-    finish_export(&mut env, "chatSetPermissionMode", result, jni::sys::JNI_FALSE)
-}
-
-/// The browser text blocks for a message about to be sent on this tab, as a JSON
-/// array — `[]` when it mentions no browser. Switches the browser on for the
-/// tab's live process first when it isn't yet. **Blocking** — may open a Chrome
-/// tab. Off the UI thread, after the tab's process has been ensured.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatBrowserBlocks(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
+    root: JString,
     claude_cmd: JString,
-    message: JString,
+    query: JString,
+    with_browser: jboolean,
 ) -> jstring {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return jout(&mut env, "[]", "");
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        let cmd: String = jstr(&mut env, &claude_cmd);
-        let message: String = jstr(&mut env, &message);
-        let blocks = chrome::browser_blocks(
-            &cmd,
-            &message,
-            |cfg| manager.enable_chrome(cfg),
-            chrome::instruction,
-        );
-        let json = serde_json::to_string(&blocks).unwrap_or_else(|_| "[]".to_string());
-        jout(&mut env, json, "")
+        let mut arg = |s: JString| jstr(&mut env, &s);
+        let root = arg(root);
+        let cmd = arg(claude_cmd);
+        let query = arg(query);
+        let with_browser = with_browser != 0;
+        let json = if with_browser && query.to_lowercase().starts_with("browser:") {
+            chrome::browser_tabs_json(&cmd, &query)
+        } else {
+            let files = mentions::list_files_json(&root, &query);
+            if with_browser {
+                mentions::with_browser_rows(&files, &chrome::cached_browser_tabs_json(&cmd, &query), &query)
+            } else {
+                files
+            }
+        };
+        jout(&mut env, json, "[]")
     }));
-    finish_export(&mut env, "chatBrowserBlocks", result, std::ptr::null_mut())
-}
-
-
-/// Starts this tab's CLI process if it has none, sending nothing.
-///
-/// Lets Remote Control be switched on in a tab that has not had a conversation
-/// yet: the CLI answers a control request before any turn, so the only thing
-/// missing was a process to ask.
-///
-/// **Blocking** — spawns a child process. Off the UI thread.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatEnsureProcess(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    claude_cmd: JString,
-    workspace_root: JString,
-    mcp_port: jint,
-    mcp_auth_token: JString,
-    resume_id: JString,
-    perm_mode: JString,
-    effort: JString,
-    model: JString,
-    thinking: JString,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return 0;
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        let claude_cmd = jstr(&mut env, &claude_cmd);
-        let workspace_root = jstr(&mut env, &workspace_root);
-        let mcp_auth_token = jstr(&mut env, &mcp_auth_token);
-        let resume_id = jstr(&mut env, &resume_id);
-        let perm_mode = jstr(&mut env, &perm_mode);
-        let effort = jstr(&mut env, &effort);
-        let model = jstr(&mut env, &model);
-        let thinking = jstr(&mut env, &thinking);
-        manager.ensure_process(
-            claude_cmd, workspace_root, mcp_port as u16, mcp_auth_token,
-            resume_id, perm_mode, effort, model, thinking,
-        ) as jboolean
-    }));
-    finish_export(&mut env, "chatEnsureProcess", result, jni::sys::JNI_FALSE)
-}
-/// Turns Remote Control on or off for this tab's live process.
-///
-/// Fire-and-forget: the CLI answers asynchronously, and that answer reaches
-/// Java as an `onRemoteControl` callback carrying the bridge session url.
-/// Returns false only when the tab has no live process to ask.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatRemoteControl(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    enabled: jboolean,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return 0;
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        manager.remote_control(enabled != 0) as jboolean
-    }));
-    finish_export(&mut env, "chatRemoteControl", result, jni::sys::JNI_FALSE)
-}
-
-/// Sends one of the MCP servers window's control requests to this tab's live
-/// process, under the page's `token`.
-///
-/// Fire-and-forget: the reply reaches Java as an `onMcp` callback carrying the same
-/// token. Returns false when the tab has no live process, or the request is not one
-/// the window may send.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatMcpRequest(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    token: JString,
-    request: JString,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return 0;
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        let mut text = |s: JString| jstr(&mut env, &s);
-        let (token, request) = (text(token), text(request));
-        manager.mcp_request(&token, &request) as jboolean
-    }));
-    finish_export(&mut env, "chatMcpRequest", result, jni::sys::JNI_FALSE)
+    finish_export(&mut env, "listMentions", result, std::ptr::null_mut())
 }
 
 /// Adds or removes an MCP server with `claude mcp add|remove`, run in `cwd`.
@@ -1291,57 +1392,6 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_mcpEditC
         jout(&mut env, json, "")
     }));
     finish_export(&mut env, "mcpEditConfig", result, std::ptr::null_mut())
-}
-
-/// Applies a tab's launch settings (permission mode, effort, model, thinking) to its
-/// live process at once, rather than leaving them for the next message. What the view
-/// shows and what the process is running are then the same thing — and under Remote
-/// Control, so is what the phone and claude.ai show.
-///
-/// Returns false when the tab has no live process, or when the change needs a new one.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatApplySettings(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    perm_mode: JString,
-    effort: JString,
-    model: JString,
-    thinking: JString,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return 0;
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        let mut text = |s: JString| jstr(&mut env, &s);
-        let (perm_mode, effort, model, thinking) =
-            (text(perm_mode), text(effort), text(model), text(thinking));
-        manager.apply_settings_now(&perm_mode, &effort, &model, &thinking) as jboolean
-    }));
-    finish_export(&mut env, "chatApplySettings", result, jni::sys::JNI_FALSE)
-}
-
-/// Whether switching this tab back to a Default model would restart its process.
-///
-/// Every other launch setting is applied to the running process; this one can be too,
-/// but only when the CLI has no model setting of its own to fall back to. The view
-/// warns before the restart, because it archives the conversation's Remote Control
-/// session on the other devices.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatDefaultModelRestarts(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-) -> jboolean {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if handle == 0 {
-            return 0;
-        }
-        let manager = unsafe { &*(handle as *const ChatManager) };
-        manager.default_model_restarts() as jboolean
-    }));
-    finish_export(&mut env, "chatDefaultModelRestarts", result, jni::sys::JNI_FALSE)
 }
 
 // ===========================================================================
@@ -1458,54 +1508,22 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_webSessi
     finish_export(&mut env, "webSessionList", result, std::ptr::null_mut())
 }
 
+/// Whether the CLI is signed in with a claude.ai account — what Browse the web and
+/// the browser tabs in the `@` list need. Cached for a minute in the core.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_hasClaudeAiLogin(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        web_history::has_claude_ai_login() as jboolean
+    }));
+    finish_export(&mut env, "hasClaudeAiLogin", result, jni::sys::JNI_FALSE)
+}
+
 // ===========================================================================
 // Teleport JNI entry points (continuing a claude.ai session locally)
 // ===========================================================================
-
-/// The end of every JNI export. A panic must not unwind out of an `extern "system"`
-/// function: since Rust 1.81 that aborts the process, which here is Eclipse. So each
-/// export runs its body under `catch_unwind` and hands the outcome here: a normal
-/// result passes through; a panic becomes a Java RuntimeException naming the export
-/// (unless a Java exception is already pending, which is then the real error) and the
-/// export returns `fallback`. Nothing in here can itself panic.
-fn finish_export<T>(env: &mut JNIEnv, export: &str, result: std::thread::Result<T>, fallback: T) -> T {
-    let panic = match result {
-        Ok(value) => return value,
-        Err(panic) => panic,
-    };
-    if !env.exception_check().unwrap_or(true) {
-        let _ = env.throw_new("java/lang/RuntimeException", panic_report(export, panic.as_ref()));
-    }
-    fallback
-}
-
-/// The message Java sees for a panic in `export`: the panic's own text when it has one.
-fn panic_report(export: &str, panic: &(dyn std::any::Any + Send)) -> String {
-    let why = panic
-        .downcast_ref::<&str>()
-        .map(|s| s.to_string())
-        .or_else(|| panic.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "an unknown panic".to_string());
-    format!("claude_eclipse_core: {export} panicked: {why}")
-}
-
-/// A Java string as a Rust one: `""` when it is null or cannot be read, never a
-/// panic (a panic in a JNI export aborts the whole IDE).
-fn jstr(env: &mut JNIEnv, s: &JString) -> String {
-    if s.is_null() {
-        return String::new();
-    }
-    env.get_string(s).ok().map(|v| v.into()).unwrap_or_default()
-}
-
-/// A Rust string as a Java one: `value`, or `fallback` if the JVM cannot make it,
-/// or null if it cannot make either. Never a panic, for the same reason as [`jstr`].
-fn jout(env: &mut JNIEnv, value: impl AsRef<str>, fallback: &str) -> jstring {
-    env.new_string(value)
-        .or_else(|_| env.new_string(fallback))
-        .map(JString::into_raw)
-        .unwrap_or(std::ptr::null_mut())
-}
 
 /// Classifies a session against this workspace for the repo dialog.
 ///
@@ -1595,24 +1613,6 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_teleport
     finish_export(&mut env, "teleportGitStatus", result, std::ptr::null_mut())
 }
 
-/// Renders a Remote Control session url as a scannable QR code, as SVG.
-///
-/// Generated on demand rather than carried on every toggle reply: it is a few
-/// KB of markup and is only wanted when the user actually reveals it.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_remoteControlQr(
-    mut env: JNIEnv,
-    _class: JClass,
-    url: JString,
-) -> jstring {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let u: String = jstr(&mut env, &url);
-        let svg = bridge::rc_qr_svg(&u);
-        jout(&mut env, svg, "")
-    }));
-    finish_export(&mut env, "remoteControlQr", result, std::ptr::null_mut())
-}
-
 // ---------------------------------------------------------------------------
 // Dictation
 // ---------------------------------------------------------------------------
@@ -1692,19 +1692,6 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttUnava
     finish_export(&mut env, "sttUnavailableReason", result, std::ptr::null_mut())
 }
 
-/// FreeBSD only: the setup guide (Markdown) the GUI view shows when the `claude`
-/// CLI is missing. Empty elsewhere. See `freebsd_guide`.
-#[no_mangle]
-pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_freebsdSetupGuide(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        jout(&mut env, freebsd_guide::markdown(), "")
-    }));
-    finish_export(&mut env, "freebsdSetupGuide", result, std::ptr::null_mut())
-}
-
 /// FreeBSD only: true when alsa-plugins -- ALSA's bridge to OSS -- is not
 /// installed. Always false elsewhere.
 #[no_mangle]
@@ -1729,6 +1716,19 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttNoCap
         u8::from(stt::no_capture_device())
     }));
     finish_export(&mut env, "sttNoCaptureDevice", result, jni::sys::JNI_FALSE)
+}
+
+/// FreeBSD only: the setup guide (Markdown) the GUI view shows when the `claude`
+/// CLI is missing. Empty elsewhere. See `freebsd_guide`.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_freebsdSetupGuide(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        jout(&mut env, freebsd_guide::markdown(), "")
+    }));
+    finish_export(&mut env, "freebsdSetupGuide", result, std::ptr::null_mut())
 }
 
 // ---------------------------------------------------------------------------
