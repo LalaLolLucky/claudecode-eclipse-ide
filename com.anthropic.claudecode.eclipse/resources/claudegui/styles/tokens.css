@@ -24,6 +24,9 @@
   --mode-manual: #c6613f;     /* composer border: Manual permission mode */
   --mode-plan: #297aa0;       /* composer border: Plan permission mode */
   --mode-accept-edits: #bfbfbf; /* composer border: Edit automatically permission mode */
+  /* Send-arrow color on the two light mode fills above: white on them is under 3:1. */
+  --mode-on-accept-edits: #1e1e1e;
+  --mode-on-auto: #1e1e1e;
   --sel: #2d84af;             /* VSCode-style selection blue (cards/answers) */
   --sel-hover: #3a93bf;
   --green: #4eb87a;           /* action dots */
@@ -95,10 +98,12 @@
   --chip-border-hover: #b1b1b1;
   --accent: #c8502b;          /* Claude coral, darkened for contrast on white */
   --accent-dim: rgba(200,80,43,.5);
-  --mode-auto: #f48771;       /* composer border: Auto permission mode */
+  --mode-auto: #a1260d;       /* composer border: Auto permission mode, darkened for contrast on white */
   --mode-manual: #c6613f;     /* composer border: Manual permission mode */
   --mode-plan: #297aa0;       /* composer border: Plan permission mode */
-  --mode-accept-edits: #bfbfbf; /* composer border: Edit automatically permission mode */
+  --mode-accept-edits: #767676; /* composer border: Edit automatically permission mode, darkened for contrast on white */
+  --mode-on-accept-edits: #fff;
+  --mode-on-auto: #fff;
   --sel: #0a6ebd;             /* selection blue tuned for light bg */
   --sel-hover: #0b7fd4;
   --green: #2e9e5b;

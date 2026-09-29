@@ -379,12 +379,12 @@ body { min-width: 120px; }
    the equal-specificity tie over a mode-* class when both are present on the button. */
 #send { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
   margin-left: 2px; border-radius: 8px; background: var(--mode-manual); color: var(--on-accent); cursor: pointer; flex-shrink: 0; }
-#send.mode-acceptEdits { background: var(--mode-accept-edits); }
+#send.mode-acceptEdits { background: var(--mode-accept-edits); color: var(--mode-on-accept-edits); }
 #send.mode-plan { background: var(--mode-plan); }
-#send.mode-auto { background: var(--mode-auto); }
-#send.mode-bypassPermissions { background: var(--mode-auto); }
+#send.mode-auto { background: var(--mode-auto); color: var(--mode-on-auto); }
+#send.mode-bypassPermissions { background: var(--mode-auto); color: var(--mode-on-auto); }
 #send.disabled { cursor: default; opacity: .5; }
-#send.stop { background: var(--accent); }
+#send.stop { background: var(--accent); color: var(--on-accent); }
 
 
 /* FreeBSD setup guide showing (cliversion.js onSetupGuide): nothing to talk to, so
