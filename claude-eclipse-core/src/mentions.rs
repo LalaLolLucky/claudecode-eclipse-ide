@@ -59,6 +59,30 @@ pub fn with_browser_rows(files_json: &str, tabs_json: &str, query: &str) -> Stri
     serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// The whole `@` list for `query`. With the browser on, a word starting `browser:`
+/// asks Chrome itself (`live_tabs`); anything else lists the files under `root`,
+/// followed, with the browser on, by the tabs from the last lookup (`cached_tabs`,
+/// ordered by [`with_browser_rows`]). The lookups are passed in, and only the one
+/// needed runs.
+pub fn mention_rows_json(
+    root: &str,
+    query: &str,
+    with_browser: bool,
+    live_tabs: impl FnOnce() -> String,
+    cached_tabs: impl FnOnce() -> String,
+) -> String {
+    if with_browser && query.to_lowercase().starts_with("browser:") {
+        live_tabs()
+    } else {
+        let files = list_files_json(root, query);
+        if with_browser {
+            with_browser_rows(&files, &cached_tabs(), query)
+        } else {
+            files
+        }
+    }
+}
+
 fn row(e: &Entry) -> serde_json::Value {
     serde_json::json!({
         "path": e.path,
@@ -289,5 +313,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         files.sort();
         assert_eq!(files, [".hidden/h.txt", "sub/file.txt"]);
+    }
+
+    /// Stands in for a Chrome lookup that must not happen in this case.
+    fn never() -> String {
+        panic!("this Chrome lookup must not run");
+    }
+
+    const TABS: &str = r#"[{"type":"browser","name":"Docs"}]"#;
+
+    fn workspace() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("readme.md"), "x").unwrap();
+        root
+    }
+
+    #[test]
+    fn a_browser_word_with_the_browser_on_asks_chrome_and_skips_the_files() {
+        let root = workspace();
+        let root = root.path().to_string_lossy();
+        for query in ["browser:", "browser:docs", "BROWSER:Docs"] {
+            assert_eq!(mention_rows_json(&root, query, true, || TABS.to_string(), never), TABS, "{query}");
+        }
+    }
+
+    #[test]
+    fn with_the_browser_off_even_a_browser_word_is_a_file_search() {
+        let root = workspace();
+        let root = root.path().to_string_lossy();
+        for query in ["browser:x", "read", ""] {
+            assert_eq!(mention_rows_json(&root, query, false, never, never), list_files_json(&root, query), "{query}");
+        }
+    }
+
+    #[test]
+    fn with_the_browser_on_the_files_are_joined_by_the_cached_tabs() {
+        let root = workspace();
+        let root = root.path().to_string_lossy();
+        let rows = mention_rows_json(&root, "read", true, never, || TABS.to_string());
+        assert_eq!(rows, with_browser_rows(&list_files_json(&root, "read"), TABS, "read"));
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&rows).unwrap();
+        assert_eq!(rows.len(), 2, "readme.md, then the tab: {rows:?}");
+        assert_eq!(rows[0]["name"], "readme.md");
+        assert_eq!(rows[1]["name"], "Docs");
     }
 }

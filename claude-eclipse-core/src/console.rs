@@ -280,6 +280,22 @@ mod win32 {
 }
 
 // ---------------------------------------------------------------------------
+// Launch spec
+// ---------------------------------------------------------------------------
+
+/// What Java sends to start a console, as JSON: the arguments (a list of strings)
+/// and the extra environment (a list of `[name, value]` pairs). Malformed JSON
+/// counts as none of either.
+pub fn launch_spec(args_json: &str, env_json: &str) -> (Vec<String>, Vec<(String, String)>) {
+    let args: Vec<String> = serde_json::from_str(args_json).unwrap_or_default();
+    let raw_env: Vec<[String; 2]> = serde_json::from_str(env_json).unwrap_or_default();
+    let extra_env: Vec<(String, String)> = raw_env.into_iter()
+        .map(|p| (p[0].clone(), p[1].clone()))
+        .collect();
+    (args, extra_env)
+}
+
+// ---------------------------------------------------------------------------
 // ConsoleSession
 // ---------------------------------------------------------------------------
 
@@ -782,5 +798,39 @@ mod tests {
         assert!(!block.contains(&format!("{OVERRIDDEN}=from the process")));
         assert!(block.contains(&format!("{ADDED}=new = value")));
         assert_eq!(block.len(), std::env::vars().count() + 1, "every process variable, plus the one added");
+    }
+}
+
+/// launch_spec is plain parsing, so unlike the tests above these run everywhere.
+#[cfg(test)]
+mod launch_tests {
+    use super::launch_spec;
+
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn arguments_and_environment_come_through_in_order() {
+        let (args, env) = launch_spec(
+            r#"["--model","opus","two words"]"#,
+            r#"[["PATH","C:\\bin"],["EMPTY",""]]"#,
+        );
+        assert_eq!(args, ["--model", "opus", "two words"]);
+        assert_eq!(env, pairs(&[("PATH", r"C:\bin"), ("EMPTY", "")]));
+    }
+
+    #[test]
+    fn malformed_json_counts_as_none() {
+        for (args_json, env_json) in [("", ""), ("not json", "{}"), ("[1,2]", r#"[["only-one"]]"#)] {
+            let (args, env) = launch_spec(args_json, env_json);
+            assert!(args.is_empty() && env.is_empty(), "{args_json:?} / {env_json:?}");
+        }
+    }
+
+    #[test]
+    fn each_half_is_read_on_its_own() {
+        assert_eq!(launch_spec(r#"["a"]"#, "garbage"), (vec!["a".to_string()], vec![]));
+        assert_eq!(launch_spec("garbage", r#"[["K","v"]]"#), (vec![], pairs(&[("K", "v")])));
     }
 }
