@@ -6,18 +6,12 @@
 const ICONS = {
   SUNBURST: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><g>'+
     [0,45,90,135].map(a=>`<rect x="11" y="2" width="2" height="20" rx="1" transform="rotate(${a} 12 12)"/>`).join('')+'</g></svg>',
-  /* Welcome-screen mascot — an original illustration (not derived from any Anthropic asset):
-     an eclipse, playing on the plugin's own name. Same rotated-rect ray technique as SUNBURST
-     above, scaled up into a corona, with a var(--bg)-filled disc laid over it off-center so it
-     reads as a crescent of light around a dark moon rather than a plain sunburst — the disc
-     fill is the PAGE background (not a fixed color) so the cutout blends seamlessly in both
-     light and dark themes. */
-  MASCOT: '<svg width="46" height="46" viewBox="0 0 48 48" fill="none">'+
-    '<g fill="var(--accent)">'+
-    [0,45,90,135].map(a=>`<rect x="21" y="2" width="6" height="12" rx="3" transform="rotate(${a} 24 24)"/><rect x="21" y="34" width="6" height="12" rx="3" transform="rotate(${a} 24 24)"/>`).join('')+
-    '</g>'+
-    '<circle cx="20" cy="24" r="13" fill="var(--bg)"/>'+
-    '</svg>',
+  /* Welcome-screen mascot — an original illustration (not derived from any Anthropic asset): a
+     sleepy pixel-art crescent moon with a face, the eclipsed sun's glow peeking around its rim
+     and a couple of stars nearby. Fixed palette (like the reference's own mascot choice) since
+     this is decorative art, not a themeable UI icon — shape-rendering:crispEdges keeps the
+     pixel blocks sharp instead of getting anti-aliased when scaled up from the 25x25 grid. */
+  MASCOT: '<svg width="75" height="75" viewBox="0 0 25 25" shape-rendering="crispEdges"><path fill="#f5a623" d="M10 1h3v1h-3zM7 2h5v1H7zM5 3h3v1H5zM4 4h2v1H4zM3 5h2v1H3zM2 6h2v1H2zm0 1h1v1H2zM1 8h2v1H1zm0 1h1v1H1zm0 1h1v1H1zm-1 1h2v1H0zm0 1h2v1H0zm0 1h2v1H0zm0 1h2v1H0zm1 1h1v1H1zm0 1h1v1H1zm21 0h1v1h-1zM1 17h2v1H1zm20 0h2v1h-2zM2 18h1v1H2zm19 0h1v1h-1zM2 19h2v1H2zm18 0h2v1h-2zM3 20h2v1H3zm16 0h2v1h-2zM4 21h2v1H4zm14 0h2v1h-2zM5 22h3v1H5zm11 0h3v1h-3zm-9 1h10v1H7zm3 1h4v1h-4z"/><path fill="#4b4869" d="M8 3h3v1H8zM6 4h4v1H6zM5 5h5v1H5zM4 6h5v1H4zM3 7h6v1H3zm0 1h6v1H3zM2 9h7v1H2zm0 1h7v1H2zm0 1h7v1H2zm0 1h8v1H2zm0 1h8v1H2zm0 1h9v1H2zm0 1h10v1H2zm0 1h11v1H2zm1 1h13v1H3zm16 0h2v1h-2zM3 18h18v1H3zm1 1h16v1H4zm1 1h14v1H5zm1 1h12v1H6zm2 1h8v1H8z"/><path fill="#f6efe0" d="M4 15h1v1H4zm4 0h1v1H8zm-3 2h1v1H5zm1 1h2v1H6zm2-1h1v1H8z"/><path fill="#f7c948" d="M21 5h1v1h-1zm-1 1h3v1h-3zm1 1h1v1h-1zm3 5h1v1h-1zM15 1h1v1h-1z"/><path fill="#9b97c9" d="M17 6h1v1h-1zm6 3h1v1h-1zM13 0h1v1h-1z"/></svg>',
   X: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   SPLIT: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>',
   LOCK: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
