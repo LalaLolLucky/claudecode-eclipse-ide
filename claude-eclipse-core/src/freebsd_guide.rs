@@ -20,7 +20,8 @@
 #![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
 
 #[cfg(target_os = "freebsd")]
-const GUIDE_JSON: &str = include_str!("../.settings/org.eclipse.core.freebsd.container");
+const GUIDE_JSON: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.settings/org.eclipse.core.freebsd.container"));
 
 /// Whether a failed tool result is the fdescfs failure the guide fixes: the
 /// Linux-ABI `claude` hitting ENOTDIR on its own task folder or file writes.
@@ -320,7 +321,8 @@ fn checks(md: &mut String, title: &str, v: &serde_json::Value) {
 mod tests {
     #[test]
     fn guide_json_renders_every_section() {
-        let json = include_str!("../.settings/org.eclipse.core.freebsd.container");
+        let json =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.settings/org.eclipse.core.freebsd.container"));
         let v: serde_json::Value = serde_json::from_str(json).expect("guide JSON parses");
         let md = super::render(&v);
         for heading in ["### 1.", "### 2.", "### 3.", "### 4.", "### 5.", "### Before you start"] {

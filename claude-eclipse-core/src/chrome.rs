@@ -34,7 +34,8 @@ const INSTRUCTION_TAIL: &str = "call tabs_context_mcp to see what tabs are avail
 /// decrypted when first loaded. A constant, so a Claude Code update cannot take it
 /// away. When the extension's wording changes, re-seal it with the
 /// `seal_the_instruction` test.
-const INSTRUCTION_CONTAINER: &str = include_str!("../.settings/com.eclipse.chrome.container");
+const INSTRUCTION_CONTAINER: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.settings/com.eclipse.chrome.container"));
 const INSTRUCTION_KEY: [u8; 32] = [
     0x53, 0xfa, 0xa4, 0x90, 0xad, 0xc3, 0x02, 0x35, 0xae, 0xfc, 0x75, 0x83, 0x3b, 0xe4, 0x31, 0x23,
     0xfa, 0xb8, 0x7a, 0xb2, 0x1a, 0xaa, 0xc3, 0x5f, 0x00, 0x18, 0x1e, 0xc4, 0x39, 0x86, 0xb8, 0x5c,
