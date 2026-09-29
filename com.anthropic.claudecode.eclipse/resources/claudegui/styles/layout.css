@@ -317,14 +317,6 @@ body { min-width: 120px; }
    a group that shrinks lets its controls slide under the other group's, and hides the
    very overflow fitComposerBar measures to decide how far to collapse. */
 .cb-left, .cb-right { display: flex; align-items: center; gap: 2px; }
-/* Separates the +/commands/agents button group from the file-context chip. Asymmetric on
-   purpose: .agents-pill has a visible background box that already ends flush at its own
-   padding, so .cb-left's 2px gap alone reads fine on that side — but .file-chip has NO
-   background at rest, so ITS 8px left padding is invisible whitespace that only reads as
-   "the gap" once something (this divider) marks where the gap actually starts. Adding the
-   same 8px as margin-left here (and none on the right, since the chip already supplies it)
-   balances the two sides instead of leaving the left one looking flush. */
-.cb-divider { width: 1px; height: 16px; background: var(--border-soft); margin-left: 8px; flex-shrink: 0; }
 .pill { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
   padding: 0; flex-shrink: 0; border-radius: 5px; color: var(--fg-dim); cursor: pointer; }
 .pill svg { display: block; flex-shrink: 0; }
@@ -345,10 +337,6 @@ body { min-width: 120px; }
 .file-chip.off { opacity: .55; }
 .file-chip.empty { opacity: .5; cursor: default; }
 .file-chip.empty:hover { background: transparent; color: var(--fg-dim); }
-.file-chip .ctx-x { display: none; align-items: center; opacity: .6; border-radius: 3px; flex-shrink: 0; margin-left: 1px; }
-.file-chip .ctx-x:hover { opacity: 1; background: var(--hover-veil); }
-.file-chip:not(.empty) .ctx-x { display: inline-flex; }
-#ctx-chip.icon-only .ctx-x { display: none; }   /* narrow-width collapse (fitComposerBar) has no room for it */
 .modes-btn { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px;
   border-radius: 6px; color: var(--fg-soft); cursor: pointer; font-size: 12px; }
 .modes-btn:hover { background: var(--bg-hover); }
@@ -357,10 +345,10 @@ body { min-width: 120px; }
    an always-visible chip background (unlike .modes-btn's hover-only fill) with a status
    dot + live count, hidden entirely until this conversation has at least one agent
    (agents.js's updateAgentsBtn) — never shown empty. */
-.agents-pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 9px;
-  border-radius: 999px; background: var(--bg-chip); color: var(--fg-soft); cursor: pointer; font-size: 11px; }
+.agents-pill { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+  border-radius: 6px; background: var(--bg-chip); color: var(--fg-soft); cursor: pointer; font-size: 12px; }
 .agents-pill:hover { background: var(--bg-hover); color: var(--fg); }
-.agents-pill .agents-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-faint); flex-shrink: 0; }
+.agents-pill .agents-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-faint); flex-shrink: 0; }
 .agents-pill .agents-dot.running { background: var(--accent); }
 /* narrow-width collapse (fitComposerBar): words hide, icons stay, nothing leaves the div.
    The mode label may NEVER wrap — it is either one line or hidden entirely. */

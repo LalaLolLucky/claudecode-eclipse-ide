@@ -181,7 +181,6 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction openTerminalViewFn;
     @SuppressWarnings("unused") private BrowserFunction openFileInEditorFn;
     @SuppressWarnings("unused") private BrowserFunction openTextInEditorFn;
-    @SuppressWarnings("unused") private BrowserFunction openDiffInEditorFn;
     @SuppressWarnings("unused") private BrowserFunction getContextStatusFn;
     @SuppressWarnings("unused") private BrowserFunction stopAgentTaskFn;
     @SuppressWarnings("unused") private BrowserFunction clipGetFn;
@@ -1011,17 +1010,6 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         openTextInEditorFn = new SimpleFunction(browser, "_openTextInEditor", a -> {
             String text = a.length > 0 && a[0] instanceof String s ? s : null;
             if (text != null) openTextInEditor(text);
-            return null;
-        });
-        // "View full diff" on a capped/truncated Write/Edit/MultiEdit/NotebookEdit diff card —
-        // unlike openTextInEditor's flattened +/- text dump, this opens a real read-only
-        // Eclipse Compare editor (DiffPreview) with proper old/new panes, reusing the exact
-        // machinery the live permission-decision preview already uses.
-        openDiffInEditorFn = new SimpleFunction(browser, "_openDiffInEditor", a -> {
-            String oldText = a.length > 0 && a[0] instanceof String s ? s : "";
-            String newText = a.length > 1 && a[1] instanceof String s ? s : "";
-            String title = a.length > 2 && a[2] instanceof String s ? s : "Diff";
-            com.anthropic.claudecode.eclipse.tools.DiffPreview.openText(oldText, newText, title);
             return null;
         });
         // Backs the composer's /context command (slash.js) — the token/context-window

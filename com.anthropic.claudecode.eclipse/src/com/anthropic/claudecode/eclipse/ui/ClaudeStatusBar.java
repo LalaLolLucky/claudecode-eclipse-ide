@@ -463,21 +463,72 @@ public final class ClaudeStatusBar extends Canvas {
     }
 
     /**
-     * {@code thinking} — the thinking indicator, muted. Model and effort level are shown in
-     * the composer's own model pill instead (not duplicated here); this segment now exists
-     * solely for the thinking indicator and disappears entirely when that's off.
+     * {@code Opus 4.8 · high · thinking} — model name in foreground; effort and the thinking
+     * indicator muted, each joined by {@code · } after the preceding piece. Any piece may be
+     * hidden (by preference or absent data).
      */
     private Seg buildModelSeg(GC gc, IPreferenceStore prefs, ClaudeStatus s) {
+        String model = prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_MODEL)
+                && s.modelDisplayName().isPresent() ? s.modelDisplayName().get() : null;
+        String effort = prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_EFFORT)
+                && s.effortLevel().isPresent() ? s.effortLevel().get() : null;
         boolean thinking = prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_THINKING)
                 && s.thinkingEnabled().orElse(false);
-        if (!thinking) return null;
 
-        String text = "thinking";
-        int width = gc.textExtent(text).x;
+        // Muted suffixes after the model name, in display order.
+        List<String> muted = new ArrayList<>();
+        if (effort != null) muted.add(effort);
+        if (thinking) muted.add("thinking");
+        if (model == null && muted.isEmpty()) return null;
+
+        final String dot = " · ";
+        int dw = gc.textExtent(dot).x;
+        int mw = model != null ? gc.textExtent(model).x : 0;
+        int[] partW = new int[muted.size()];
+        int width = mw;
+        boolean anyBefore = model != null;
+        for (int i = 0; i < muted.size(); i++) {
+            partW[i] = gc.textExtent(muted.get(i)).x;
+            if (anyBefore) width += dw;
+            width += partW[i];
+            anyBefore = true;
+        }
+
         Seg seg = new Seg(width);
-        seg.painter = (g, x, midY) -> drawText(g, text, x, midY, mutedColor);
-        seg.tooltip = "Thinking: enabled";
+        seg.painter = (g, x, midY) -> {
+            int cx = x;
+            boolean drawn = false;
+            if (model != null) {
+                drawText(g, model, cx, midY, fgColor);
+                cx += mw;
+                drawn = true;
+            }
+            for (int i = 0; i < muted.size(); i++) {
+                if (drawn) {
+                    drawText(g, dot, cx, midY, mutedColor);
+                    cx += dw;
+                }
+                drawText(g, muted.get(i), cx, midY, mutedColor);
+                cx += partW[i];
+                drawn = true;
+            }
+        };
+        seg.tooltip = buildModelTooltip(model, s);
         return seg;
+    }
+
+    /**
+     * Model tooltip. Effort and thinking are always shown — independent of their bar-visibility
+     * preferences — with thinking rendered as {@code enabled}/{@code disabled} and effort falling
+     * back to {@code default} when the status doesn't report a level.
+     */
+    private static String buildModelTooltip(String model, ClaudeStatus s) {
+        StringBuilder sb = new StringBuilder();
+        if (model != null) sb.append("Model: ").append(model).append('\n');
+        sb.append("Effort level: ").append(s.effortLevel().orElse("default"));
+        sb.append('\n').append("Thinking: ")
+                .append(s.thinkingEnabled().orElse(false) ? "enabled" : "disabled");
+        return sb.toString();
     }
 
     /** Accumulated session cost: {@code Cost $1.23} (long) / {@code $1.23} (short). */

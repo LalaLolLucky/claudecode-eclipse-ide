@@ -33,24 +33,6 @@ function closeMenus() {
    its right edge to the button; everything else aligns its left edge. Then clamped. */
 function positionMenu(menu, anchor) {
   if (!menu || !anchor) return;
-  // Sized to the actual visible composer BOX (#input-wrap, the bordered element itself) —
-  // NOT #composer, which is a full-width outer container with its own 14px padding that
-  // #input-wrap sits inset within (and caps at max-width:700px besides), so #composer's
-  // rect is a different, larger box than what's actually on screen as "the composer".
-  // Inset by 10px on each side (matching #input-wrap/#composer-bar's own 10px horizontal
-  // padding, not an arbitrary gap) so this menu's border doesn't sit right on top of it.
-  // max-height is set from the actual space above the composer, not a fixed/viewport-wide
-  // guess — read BEFORE offsetHeight below so a menu taller than that space is already
-  // capped (and scrollable) by the time its height is measured for the top offset, instead
-  // of rendering off the top edge of the screen.
-  if (menu.id === 'actions-menu' || menu.id === 'model-menu') {
-    const c = document.getElementById('input-wrap').getBoundingClientRect();
-    menu.style.width = (c.width - 20) + 'px';
-    menu.style.left = (c.left + 10) + 'px';
-    menu.style.maxHeight = (c.top - 16) + 'px';
-    menu.style.top = (c.top - menu.offsetHeight - 6) + 'px';
-    return;
-  }
   const r = anchor.getBoundingClientRect();
   const mw = menu.offsetWidth, mh = menu.offsetHeight;
   const below = (menu.id === 'history-panel' || menu.id === 'msg-menu');

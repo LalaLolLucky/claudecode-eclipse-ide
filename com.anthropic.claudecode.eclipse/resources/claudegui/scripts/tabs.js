@@ -125,7 +125,7 @@ function WELCOME_HTML() {
   // into the middle of the pane along with the mascot/heading whenever that group is
   // shorter than .welcome's min-height. Kept outside that group so it stays pinned to
   // the actual top of the pane regardless of how tall the rest of the welcome state is.
-  return '<div class="wc-wordmark">' + ICONS.WORDMARK + '</div>'
+  return '<div class="wc-wordmark"><span class="wc-word-ic">' + ICONS.SUNBURST + '</span><span class="wc-word-txt">Claude Code</span></div>'
     + '<div class="welcome">'
     + '<div class="wc-mascot">' + ICONS.MASCOT + '</div>'
     + '<div class="wc-h">Ready to code?</div>'
@@ -362,7 +362,7 @@ function renderTabs() {
     // just be siblings of the title.
     // The FreeBSD setup guide's tab (cliversion.js) can be neither renamed nor closed,
     // so it gets no actions at all, not even on hover.
-    el.innerHTML = '<span class="ti">' + ICONS.CLAUDELOGO + '</span><span class="tt"></span>'
+    el.innerHTML = '<span class="ti">' + ICONS.SUNBURST + '</span><span class="tt"></span>'
       + (t.setupGuide ? '' :
           '<span class="tab-actions">'
         +   '<span class="tab-edit" title="Rename">' + ICONS.PENCIL + '</span>'
