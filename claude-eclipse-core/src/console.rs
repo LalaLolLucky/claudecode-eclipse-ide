@@ -243,24 +243,53 @@ mod win32 {
         OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
     }
 
+    /// The command line CreateProcessW needs for `cmd args…`, written so the child's
+    /// own parsing (CommandLineToArgvW and the C runtime use the same rules) gets
+    /// every argument back exactly.
     pub fn build_command_line(cmd: &str, args: &[String]) -> Vec<u16> {
         let mut s = String::new();
-        if cmd.contains(' ') {
+        // The program name follows simpler rules: a quote starts and ends it, and
+        // backslashes are never escapes (a path cannot contain a quote anyway).
+        if cmd.contains([' ', '\t']) {
             s.push('"'); s.push_str(cmd); s.push('"');
         } else {
             s.push_str(cmd);
         }
         for arg in args {
             s.push(' ');
-            if arg.contains(' ') || arg.contains('"') {
-                s.push('"');
-                s.push_str(&arg.replace('"', "\\\""));
-                s.push('"');
-            } else {
-                s.push_str(arg);
-            }
+            push_quoted_arg(&mut s, arg);
         }
         to_wide(&s)
+    }
+
+    /// Appends one argument. Quoted when empty or holding whitespace or a quote.
+    /// Inside the quotes, backslashes are literal except directly before a quote,
+    /// where a run of n becomes 2n (then `\"` for the quote itself), and at the
+    /// very end, where the run is doubled so the closing quote stays a quote.
+    fn push_quoted_arg(s: &mut String, arg: &str) {
+        if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '\u{b}', '"']) {
+            s.push_str(arg);
+            return;
+        }
+        s.push('"');
+        let mut backslashes = 0;
+        for c in arg.chars() {
+            match c {
+                '\\' => backslashes += 1,
+                '"' => {
+                    s.extend(std::iter::repeat('\\').take(backslashes * 2 + 1));
+                    s.push('"');
+                    backslashes = 0;
+                }
+                _ => {
+                    s.extend(std::iter::repeat('\\').take(backslashes));
+                    s.push(c);
+                    backslashes = 0;
+                }
+            }
+        }
+        s.extend(std::iter::repeat('\\').take(backslashes * 2));
+        s.push('"');
     }
 
     pub fn build_env_block(extra: &[(String, String)]) -> Vec<u16> {
@@ -777,6 +806,26 @@ mod tests {
             expected.extend(&args);
             let line = build_command_line(cmd, &strings(&args));
             assert_eq!(as_the_child_sees_it(&line), strings(&expected), "{cmd} {args:?}");
+        }
+    }
+
+    #[test]
+    fn backslashes_empty_arguments_and_tabs_reach_the_child_intact() {
+        // The cases Windows' argument rules make hard: backslashes are literal except
+        // right before a quote, an empty argument has to be written as "", and a tab
+        // separates arguments just as a space does.
+        for args in [
+            vec![r"C:\dir with space\", "next"],
+            vec![r"C:\no space\", r"\\server\share\"],
+            vec!["", "next"],
+            vec!["a\tb"],
+            vec![r#"a\"b"#, r#"ends with backslash-quote\""#],
+            vec![r"\", r"\\", "\""],
+        ] {
+            let mut expected = vec!["claude"];
+            expected.extend(&args);
+            let line = build_command_line("claude", &strings(&args));
+            assert_eq!(as_the_child_sees_it(&line), strings(&expected), "{args:?}");
         }
     }
 
