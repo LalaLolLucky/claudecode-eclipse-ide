@@ -1739,19 +1739,11 @@ pub(crate) fn message_text_by_uuid(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::Mutex;
 
-    /// The tests below all repoint the home env var (USERPROFILE / HOME) at a
-    /// per-test fake home; serialize them so parallel test threads don't clobber
-    /// each other's environment.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn set_home(home: &std::path::Path) {
-        #[cfg(windows)]
-        std::env::set_var("USERPROFILE", home);
-        #[cfg(not(windows))]
-        std::env::set_var("HOME", home);
-    }
+    // The tests below all repoint the home directory at a per-test fake home,
+    // under EnvGuard: one lock shared with every test that changes the
+    // environment, and the real home put back afterwards.
+    use crate::test_support::EnvGuard;
 
     /// Hermetic fixture (same one the PHP reader was verified against): builds a
     /// fake home + ~/.claude/projects/<hash>/ under a temp dir and points the
@@ -1769,7 +1761,7 @@ mod tests {
     /// inbound bubble would put the CLI's own plumbing in the transcript.
     #[test]
     fn message_text_by_uuid_reads_a_bridge_message_from_the_transcript() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-inbound-test-home");
         let root = r"C:\inbound";
         let dir = home.join(".claude").join("projects").join("C--inbound");
@@ -1786,7 +1778,7 @@ mod tests {
             r#"{"type":"user","uuid":"phone-2","message":{"role":"user","content":[{"type":"text","text":"two"},{"type":"text","text":"lines"}]}}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
 
         let phone = super::message_text_by_uuid(root, "sess1", "phone-1");
         let blocks = super::message_text_by_uuid(root, "sess1", "phone-2");
@@ -1818,7 +1810,7 @@ mod tests {
 
     #[test]
     fn list_sessions_title_precedence_matches_php_reader() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-test-home");
         let root = r"C:\histtest";
         let dir = home.join(".claude").join("projects").join("C--histtest");
@@ -1841,7 +1833,7 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]},"timestamp":"2026-07-02T09:00:04.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
 
         let json = super::list_sessions(root);
         let _ = fs::remove_dir_all(&home);
@@ -1864,7 +1856,7 @@ mod tests {
     /// is case-insensitive.
     #[test]
     fn search_session_content_finds_first_match_and_skips_others() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-search-home");
         let root = r"C:\searchtest";
         let dir = home.join(".claude").join("projects").join("C--searchtest");
@@ -1882,7 +1874,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":"QUILT also appears here"},"timestamp":"2026-07-01T10:00:00.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let ids = vec!["aaaa1111".to_string(), "bbbb2222".to_string()];
         let json = super::search_session_content(root, &ids, "quilt", false, 1);
         let _ = fs::remove_dir_all(&home);
@@ -1899,7 +1891,7 @@ mod tests {
     /// assistant text rather than just being ignored.
     #[test]
     fn search_session_content_own_messages_only_excludes_assistant_text() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-search-own-home");
         let root = r"C:\searchownt";
         let dir = home.join(".claude").join("projects").join("C--searchownt");
@@ -1911,7 +1903,7 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"the quilt patch system works like this"}]},"timestamp":"2026-07-01T10:00:05.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let ids = vec!["aaaa1111".to_string()];
         let full = super::search_session_content(root, &ids, "quilt", false, 1);
         let own_only = super::search_session_content(root, &ids, "quilt", true, 1);
@@ -1935,7 +1927,7 @@ mod tests {
     /// panicked at the exact line this function now guards.
     #[test]
     fn search_session_content_snippet_survives_case_folding_byte_length_change() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-search-unicode-home");
         let root = r"C:\searchunicode";
         let dir = home.join(".claude").join("projects").join("C--searchunicode");
@@ -1949,7 +1941,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":"ẞẞxquilt talk"},"timestamp":"2026-07-01T10:00:00.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let ids = vec!["aaaa1111".to_string()];
         // Must not panic — that's the entire point of this test.
         let json = super::search_session_content(root, &ids, "quilt", false, 1);
@@ -1970,7 +1962,7 @@ mod tests {
     /// tool_results ignored.
     #[test]
     fn load_session_render_items_match_php_reader() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-load-home");
         let root = r"C:\phpfixws";
         let dir = home.join(".claude").join("projects").join("C--phpfixws");
@@ -1990,7 +1982,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_99","content":"unrelated result"}]},"timestamp":"2026-07-03T08:00:02.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
 
         let loaded1 = super::load_session_history(root, "sess1");
         let loaded2 = super::load_session_history(root, "sess2");
@@ -2030,7 +2022,7 @@ mod tests {
     /// should be.
     #[test]
     fn load_session_hides_background_task_notifications() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-tasknote-home");
         let root = r"C:\tasknotews";
         let dir = home.join(".claude").join("projects").join("C--tasknotews");
@@ -2044,7 +2036,7 @@ mod tests {
             r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"noted."}]},"timestamp":"2026-09-16T17:19:45.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "sessn");
         let _ = fs::remove_dir_all(&home);
 
@@ -2059,7 +2051,7 @@ mod tests {
 
     #[test]
     fn load_session_hides_the_browser_disconnected_notice() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-notice-home");
         let root = r"C:\noticews";
         let dir = home.join(".claude").join("projects").join("C--noticews");
@@ -2071,7 +2063,7 @@ mod tests {
             r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"Chrome has disconnected."}]},"timestamp":"2026-09-15T08:40:25.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "sessn");
         let _ = fs::remove_dir_all(&home);
 
@@ -2090,7 +2082,7 @@ mod tests {
     /// bubble. Fixture shapes captured from a real CLI 2.1.177 /compact run.
     #[test]
     fn load_session_surfaces_compact_boundary_and_summary() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-compact-home");
         let root = r"C:\compactws";
         let dir = home.join(".claude").join("projects").join("C--compactws");
@@ -2106,7 +2098,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":"<command-name>/compact</command-name>"},"timestamp":"2026-07-27T02:37:08.130Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "sessc");
         let _ = fs::remove_dir_all(&home);
 
@@ -2130,7 +2122,7 @@ mod tests {
     /// pasted PNG to image/jpeg).
     #[test]
     fn load_session_restores_pasted_images() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-images-home");
         let root = r"C:\imgws";
         let dir = home.join(".claude").join("projects").join("C--imgws");
@@ -2144,7 +2136,7 @@ mod tests {
             r#"{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"a screenshot"}]},"timestamp":"2026-07-30T01:00:06.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "sessi");
         let listed = super::list_sessions(root);
         let _ = fs::remove_dir_all(&home);
@@ -2168,7 +2160,7 @@ mod tests {
     /// the title.
     #[test]
     fn load_session_restores_documents_and_hides_browser_blocks() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-docs-home");
         let root = r"C:\docws";
         let dir = home.join(".claude").join("projects").join("C--docws");
@@ -2179,7 +2171,7 @@ mod tests {
             r#"{"type":"user","uuid":"u-doc","message":{"role":"user","content":[{"type":"text","text":"<browser_instruction># x</browser_instruction>"},{"type":"text","text":"read this @browser:new_tab"},{"type":"document","source":{"type":"text","media_type":"text/plain","data":"hello"},"title":"notes.txt"},{"type":"text","text":"<browser tabGroupId=\"1\" tabId=\"2\"></browser>"}]},"timestamp":"2026-09-14T01:00:00.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "sessd");
         let listed = super::list_sessions(root);
         // The chip's click fetches the contents the render item deliberately left behind.
@@ -2210,7 +2202,7 @@ mod tests {
     /// the block keeps it as the user's own words.
     #[test]
     fn load_session_restores_path_attachments() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-paths-home");
         let root = r"C:\pathws";
         let dir = home.join(".claude").join("projects").join("C--pathws");
@@ -2222,7 +2214,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"I wrote <attached_file path=\"C:\\x\\big.zip\" /> myself"}]},"timestamp":"2026-09-15T01:01:00.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "sessp");
         let listed = super::list_sessions(root);
         let _ = fs::remove_dir_all(&home);
@@ -2254,7 +2246,7 @@ mod tests {
     /// of the errors silently turning back into paragraphs.
     #[test]
     fn load_session_surfaces_api_errors_as_muted_lines() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-apierr-home");
         let root = r"C:\errws";
         let dir = home.join(".claude").join("projects").join("C--errws");
@@ -2272,7 +2264,7 @@ mod tests {
 ",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "sesse");
         let _ = fs::remove_dir_all(&home);
 
@@ -2355,7 +2347,7 @@ mod tests {
     /// rather than the muted one-line error note).
     #[test]
     fn load_session_attaches_error_text_to_failed_tools() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-toolerr-home");
         let root = r"C:\toolerrws";
         let dir = home.join(".claude").join("projects").join("C--toolerrws");
@@ -2372,7 +2364,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_c","content":"contents"}]},"timestamp":"2026-09-04T01:00:06.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "sesst");
         let _ = fs::remove_dir_all(&home);
 
@@ -2395,7 +2387,7 @@ mod tests {
     /// reproduces that exact layout.
     #[test]
     fn load_session_reads_agent_log_from_its_own_subagent_file() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-agentlog-home");
         let root = r"C:\agentws";
         let dir = home.join(".claude").join("projects").join("C--agentws");
@@ -2423,7 +2415,7 @@ mod tests {
             r#"{"type":"assistant","isSidechain":true,"agentId":"abc123","message":{"model":"claude-sonnet-5","usage":{"input_tokens":80,"output_tokens":40},"content":[{"type":"text","text":"Counted to 3."}]},"timestamp":"2026-09-16T13:54:40.480Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "sessa");
         let _ = fs::remove_dir_all(&home);
 
@@ -2451,7 +2443,7 @@ mod tests {
 
     #[test]
     fn load_session_reconstructs_tool_status() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-status-home");
         let root = r"C:\statusws";
         let dir = home.join(".claude").join("projects").join("C--statusws");
@@ -2466,7 +2458,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"file contents"},{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"The user doesn't want to proceed with this tool use."}]},"timestamp":"2026-07-15T10:00:03.000Z"}"#, "\n",
         )).unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
         let loaded = super::load_session_history(root, "s");
         let _ = fs::remove_dir_all(&home);
 
@@ -2484,7 +2476,7 @@ mod tests {
 
     #[test]
     fn delete_session_guards_and_removes() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let home = std::env::temp_dir().join("claude-eclipse-session-del-home");
         let root = r"C:\deltest";
         let dir = home.join(".claude").join("projects").join("C--deltest");
@@ -2492,7 +2484,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("victim.jsonl"), "{}\n").unwrap();
 
-        set_home(&home);
+        env.set_home(&home);
 
         assert!(!super::delete_session(root, ""), "empty id rejected");
         assert!(!super::delete_session(root, "../victim"), "traversal rejected");
@@ -2555,10 +2547,10 @@ mod tests {
 
     #[test]
     fn message_ids_track_the_rendered_user_bubbles() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let (home, dir) = msg_home("ids");
         fs::write(dir.join("sess1.jsonl"), msg_fixture("")).unwrap();
-        set_home(&home);
+        env.set_home(&home);
 
         let ids = super::message_ids(r"C:\msgtest", "sess1");
         let _ = fs::remove_dir_all(&home);
@@ -2586,11 +2578,11 @@ mod tests {
 
     #[test]
     fn delete_message_relinks_the_chain_and_sweeps_unchained_copies() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let (home, dir) = msg_home("del");
         let path = dir.join("sess1.jsonl");
         fs::write(&path, msg_fixture("")).unwrap();
-        set_home(&home);
+        env.set_home(&home);
 
         let res = super::delete_message(r"C:\msgtest", "sess1", "u2");
         let after = lines_of(&path);
@@ -2667,14 +2659,14 @@ mod tests {
     /// future CLI adds.
     #[test]
     fn delete_message_aborts_on_an_unknown_prompt_carrier() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let (home, dir) = msg_home("abort");
         let path = dir.join("sess1.jsonl");
         let planted = "\n".to_string()
             + r#"{"type":"future-prompt-log","promptText":"second question","sessionId":"sess1"}"#;
         let original = msg_fixture(&planted);
         fs::write(&path, &original).unwrap();
-        set_home(&home);
+        env.set_home(&home);
 
         let res = super::delete_message(r"C:\msgtest", "sess1", "u2");
         let untouched = fs::read_to_string(&path).unwrap();
@@ -2690,10 +2682,10 @@ mod tests {
 
     #[test]
     fn delete_message_guards_bad_input() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let mut env = EnvGuard::lock();
         let (home, dir) = msg_home("guard");
         fs::write(dir.join("sess1.jsonl"), msg_fixture("")).unwrap();
-        set_home(&home);
+        env.set_home(&home);
 
         let bad_session = super::delete_message(r"C:\msgtest", "../sess1", "u2");
         let bad_msg = super::delete_message(r"C:\msgtest", "sess1", "");

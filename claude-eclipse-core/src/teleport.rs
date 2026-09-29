@@ -1220,20 +1220,18 @@ mod transcript_tests {
 
     #[test]
     fn writes_and_reads_back_a_local_transcript() {
-        // Point HOME at a temp dir so the real ~/.claude is never touched.
-        let tmp = std::env::temp_dir().join(format!("claude-tp-write-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let prev_win = std::env::var("USERPROFILE").ok();
-        let prev_unix = std::env::var("HOME").ok();
-        std::env::set_var("USERPROFILE", &tmp);
-        std::env::set_var("HOME", &tmp);
+        // Point HOME at a temp dir so the real ~/.claude is never touched. Both are
+        // undone when they drop, even if an assertion below fails.
+        let mut env = crate::test_support::EnvGuard::lock();
+        let tmp = tempfile::tempdir().unwrap();
+        env.set_home(tmp.path());
 
         let events = vec![ev("1", "user", "2026-09-01T00:00:01Z"), ev("2", "assistant", "2026-09-01T00:00:02Z")];
         let lines = to_transcript(&events, "pending", "C--tpws");
         let id = write_local_session("C--tpws", &lines).expect("should write");
 
         let path = tmp
+            .path()
             .join(".claude").join("projects")
             .join(crate::session::workspace_hash("C--tpws"))
             .join(format!("{}.jsonl", id));
@@ -1245,10 +1243,6 @@ mod transcript_tests {
         // A uuid, not the remote id — teleporting twice must not collide.
         assert_ne!(id, "cse_01Hasw");
         assert_eq!(id.len(), 36, "uuid v4 with dashes");
-
-        if let Some(v) = prev_win { std::env::set_var("USERPROFILE", v) } else { std::env::remove_var("USERPROFILE") }
-        if let Some(v) = prev_unix { std::env::set_var("HOME", v) } else { std::env::remove_var("HOME") }
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

@@ -15,6 +15,8 @@ mod stt;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod alsa_capture;
 mod teleport;
+#[cfg(test)]
+mod test_support;
 mod web_history;
 
 use chat::ChatManager;
