@@ -828,11 +828,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_consoleC
         let env_s: String = jstr(&mut env, &extra_env_json);
         let cwd_s: String = jstr(&mut env, &cwd);
 
-        let args: Vec<String> = serde_json::from_str(&args_s).unwrap_or_default();
-        let raw_env: Vec<[String; 2]> = serde_json::from_str(&env_s).unwrap_or_default();
-        let extra_env: Vec<(String, String)> = raw_env.into_iter()
-            .map(|p| (p[0].clone(), p[1].clone()))
-            .collect();
+        let (args, extra_env) = console::launch_spec(&args_s, &env_s);
 
         match console::ConsoleSession::create(&cmd_s, &args, &extra_env, &cwd_s) {
             Some(session) => Box::into_raw(Box::new(session)) as jlong,
