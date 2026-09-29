@@ -4,3 +4,5 @@ d4183bd6a247a9ab432f8d85bf0b0b7435c2e92c
 0d3c0bc2f615397c3507f867d602280a2b6d3f2d
 # Wrapped every JNI export's body in a panic guard; the bodies only moved one level right.
 61e4f95cfbbd5c2453301954f90d96329391fd0c
+# Moved lib.rs's exports into their sections; moved as-is.
+3a3821d5a5adbe86ac2ae50dd1dc538a6bc27b23
