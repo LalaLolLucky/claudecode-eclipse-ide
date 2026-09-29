@@ -412,12 +412,7 @@ async fn handle_tools_call(
         call_java_tool(&java_vm, &callback, &tool_name, &args_json)
     })
     .await
-    .unwrap_or_else(|e| {
-        format!(
-            r#"{{"content":[{{"type":"text","text":"spawn_blocking panic: {}"}}],"isError":true}}"#,
-            e
-        )
-    });
+    .unwrap_or_else(|e| tool_error(&format!("spawn_blocking panic: {}", e)));
 
     // Parse the JSON returned by Java and wrap it in a JSON-RPC result envelope.
     let result_value: Value = serde_json::from_str(&result_json).unwrap_or_else(|_| {
@@ -439,12 +434,7 @@ pub fn call_java_tool(
 ) -> String {
     let mut env = match java_vm.attach_current_thread() {
         Ok(env) => env,
-        Err(e) => {
-            return format!(
-                r#"{{"content":[{{"type":"text","text":"JVM attach failed: {}"}}],"isError":true}}"#,
-                e
-            )
-        }
+        Err(e) => return tool_error(&format!("JVM attach failed: {}", e)),
     };
 
     let tool_name_jstr = match env.new_string(tool_name) {
@@ -487,10 +477,14 @@ pub fn call_java_tool(
 }
 
 fn jni_error_result(msg: &str) -> String {
-    format!(
-        r#"{{"content":[{{"type":"text","text":"JNI error: {}"}}],"isError":true}}"#,
-        msg.replace('"', "\\\"")
-    )
+    tool_error(&format!("JNI error: {}", msg))
+}
+
+/// A failed tool result carrying `text`, as a JSON string. Built by serde_json, so
+/// any text (a Windows path, a newline, quotes) comes through as valid JSON: a
+/// malformed one would be read back as a *successful* plain-text result.
+fn tool_error(text: &str) -> String {
+    json!({ "content": [{ "type": "text", "text": text }], "isError": true }).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -655,5 +649,16 @@ mod tests {
         assert_eq!(result["isError"], true);
         assert_eq!(result["content"][0]["type"], "text");
         assert_eq!(result["content"][0]["text"], r#"JNI error: said "no""#);
+    }
+
+    #[test]
+    fn a_jni_error_with_any_characters_is_still_valid_json() {
+        // A Windows path, a newline, a tab and quotes: all of them turn up in real
+        // JNI and JVM error text.
+        let msg = "cannot open C:\\Users\\x\n\tsaid \"no\"";
+        let raw = jni_error_result(msg);
+        let result: Value = serde_json::from_str(&raw).unwrap_or_else(|e| panic!("not JSON ({e}): {raw}"));
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["content"][0]["text"], format!("JNI error: {msg}"), "the text survives unchanged");
     }
 }
