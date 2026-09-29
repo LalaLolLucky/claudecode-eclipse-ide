@@ -145,17 +145,22 @@ fn resolve_proxy_var(
     captured.clone()
 }
 
-/// Ensures localhost/127.0.0.1/::1 are in NO_PROXY.
+/// Ensures localhost/127.0.0.1/::1 are in NO_PROXY. An entry counts only when it
+/// is one of them whole (ignoring case and surrounding spaces): a host such as
+/// `notlocalhost.corp` merely contains `localhost` and does not keep loopback off
+/// the proxy.
 fn ensure_localhost_in_no_proxy(current: Option<String>) -> String {
     let localhost_entries = ["localhost", "127.0.0.1", "::1"];
 
-    let current_lower = current.as_ref()
-        .map(|s| s.to_lowercase())
-        .unwrap_or_default();
+    let present: Vec<String> = current.as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .map(|e| e.trim().to_lowercase())
+        .collect();
 
     let mut missing: Vec<&str> = Vec::new();
     for entry in &localhost_entries {
-        if !current_lower.contains(entry) {
+        if !present.iter().any(|p| p == entry) {
             missing.push(entry);
         }
     }
@@ -506,6 +511,24 @@ mod tests {
         assert_eq!(
             ensure_localhost_in_no_proxy(Some("LOCALHOST,127.0.0.1,::1".into())),
             "LOCALHOST,127.0.0.1,::1"
+        );
+    }
+
+    #[test]
+    fn a_host_that_merely_contains_a_loopback_name_does_not_count() {
+        // Each of these contains "localhost", "127.0.0.1" or "::1" as text, and is
+        // none of them, so all three loopback names still have to go in front.
+        assert_eq!(
+            ensure_localhost_in_no_proxy(Some("notlocalhost.corp,127.0.0.10,fe80::1".into())),
+            "localhost,127.0.0.1,::1,notlocalhost.corp,127.0.0.10,fe80::1"
+        );
+    }
+
+    #[test]
+    fn loopback_entries_are_recognised_with_spaces_around_them() {
+        assert_eq!(
+            ensure_localhost_in_no_proxy(Some(" localhost , 127.0.0.1 ,::1".into())),
+            " localhost , 127.0.0.1 ,::1"
         );
     }
 
