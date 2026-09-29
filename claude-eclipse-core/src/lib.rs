@@ -149,15 +149,15 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_serverGe
 
 #[no_mangle]
 pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_serverGetAuthToken(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     handle: jlong,
 ) -> jstring {
     if handle == 0 {
-        return env.new_string("").unwrap().into_raw();
+        return jout(&mut env, "", "");
     }
     let server = unsafe { &*(handle as *const Server) };
-    env.new_string(server.auth_token()).unwrap().into_raw()
+    jout(&mut env, server.auth_token(), "")
 }
 
 #[no_mangle]
@@ -171,7 +171,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_serverBr
         return;
     }
     let server = unsafe { &*(handle as *const Server) };
-    let json_str: String = env.get_string(&json).unwrap().into();
+    let json_str: String = jstr(&mut env, &json);
     server.broadcast(&json_str);
 }
 
@@ -206,8 +206,8 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_serverNo
         return;
     }
     let server = unsafe { &*(handle as *const Server) };
-    let fp: String = env.get_string(&file_path).map(|s| s.into()).unwrap_or_default();
-    let t: String = env.get_string(&text).map(|s| s.into()).unwrap_or_default();
+    let fp: String = jstr(&mut env, &file_path);
+    let t: String = jstr(&mut env, &text);
     server.notify_selection(fp, t, start_line, end_line, start_col, end_col, is_empty != 0);
 }
 
@@ -262,14 +262,14 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_fetchUsa
 ) -> jstring {
     let cmd: String = match env.get_string(&claude_cmd) {
         Ok(s) => s.into(),
-        Err(_) => return env.new_string("").unwrap().into_raw(),
+        Err(_) => return jout(&mut env, "", ""),
     };
     let root: String = match env.get_string(&workspace_root) {
         Ok(s) => s.into(),
         Err(_) => String::new(),
     };
     let json = chat::fetch_usage(&cmd, &root).unwrap_or_default();
-    env.new_string(json).unwrap().into_raw()
+    jout(&mut env, json, "")
 }
 
 // ===========================================================================
@@ -285,9 +285,9 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_lockFile
     workspace_root: JString,
     project_paths_json: JString,
 ) {
-    let auth_token: String = env.get_string(&auth_token).unwrap().into();
-    let workspace_root: String = env.get_string(&workspace_root).unwrap().into();
-    let project_paths_json: String = env.get_string(&project_paths_json).unwrap().into();
+    let auth_token: String = jstr(&mut env, &auth_token);
+    let workspace_root: String = jstr(&mut env, &workspace_root);
+    let project_paths_json: String = jstr(&mut env, &project_paths_json);
     lock_file::write(port as u16, &auth_token, &workspace_root, &project_paths_json);
 }
 
@@ -348,40 +348,16 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatSend
         return;
     }
     let manager = unsafe { &*(handle as *const ChatManager) };
-    let message: String = env.get_string(&message).unwrap().into();
-    let claude_cmd: String = env.get_string(&claude_cmd).unwrap().into();
-    let workspace_root: String = env.get_string(&workspace_root).unwrap().into();
-    let mcp_auth_token: String = env.get_string(&mcp_auth_token).unwrap().into();
-    let resume_id: String = if resume_id.is_null() {
-        String::new()
-    } else {
-        env.get_string(&resume_id).ok().map(|s| s.into()).unwrap_or_default()
-    };
-    let perm_mode: String = if perm_mode.is_null() {
-        String::new()
-    } else {
-        env.get_string(&perm_mode).ok().map(|s| s.into()).unwrap_or_default()
-    };
-    let effort: String = if effort.is_null() {
-        String::new()
-    } else {
-        env.get_string(&effort).ok().map(|s| s.into()).unwrap_or_default()
-    };
-    let model: String = if model.is_null() {
-        String::new()
-    } else {
-        env.get_string(&model).ok().map(|s| s.into()).unwrap_or_default()
-    };
-    let thinking: String = if thinking.is_null() {
-        String::new()
-    } else {
-        env.get_string(&thinking).ok().map(|s| s.into()).unwrap_or_default()
-    };
-    let images_json: String = if images_json.is_null() {
-        String::new()
-    } else {
-        env.get_string(&images_json).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let message: String = jstr(&mut env, &message);
+    let claude_cmd: String = jstr(&mut env, &claude_cmd);
+    let workspace_root: String = jstr(&mut env, &workspace_root);
+    let mcp_auth_token: String = jstr(&mut env, &mcp_auth_token);
+    let resume_id: String = jstr(&mut env, &resume_id);
+    let perm_mode: String = jstr(&mut env, &perm_mode);
+    let effort: String = jstr(&mut env, &effort);
+    let model: String = jstr(&mut env, &model);
+    let thinking: String = jstr(&mut env, &thinking);
+    let images_json: String = jstr(&mut env, &images_json);
     manager.send_message(message, claude_cmd, workspace_root, mcp_port as u16, mcp_auth_token, resume_id, perm_mode, effort, model, thinking, images_json);
 }
 
@@ -469,10 +445,10 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_consoleC
     extra_env_json: JString,
     cwd: JString,
 ) -> jlong {
-    let cmd_s: String = env.get_string(&cmd).map(|s| s.into()).unwrap_or_default();
-    let args_s: String = env.get_string(&args_json).map(|s| s.into()).unwrap_or_default();
-    let env_s: String = env.get_string(&extra_env_json).map(|s| s.into()).unwrap_or_default();
-    let cwd_s: String = env.get_string(&cwd).map(|s| s.into()).unwrap_or_default();
+    let cmd_s: String = jstr(&mut env, &cmd);
+    let args_s: String = jstr(&mut env, &args_json);
+    let env_s: String = jstr(&mut env, &extra_env_json);
+    let cwd_s: String = jstr(&mut env, &cwd);
 
     let args: Vec<String> = serde_json::from_str(&args_s).unwrap_or_default();
     let raw_env: Vec<[String; 2]> = serde_json::from_str(&env_s).unwrap_or_default();
@@ -669,11 +645,11 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_browserA
 /// via bridgeConnect so the Rust side authenticates too.
 #[no_mangle]
 pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeGenerateToken(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let token = uuid::Uuid::new_v4().to_string();
-    env.new_string(token).unwrap().into_raw()
+    jout(&mut env, token, "")
 }
 
 /// Starts the in-process relay: binds the first two free ports in
@@ -687,14 +663,12 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeSt
     port_max: jint,
     token: JString,
 ) -> jstring {
-    let token: String = env.get_string(&token).map(|s| s.into()).unwrap_or_default();
+    let token: String = jstr(&mut env, &token);
     let out = match bridge::relay_start(port_min as u16, port_max as u16, &token) {
         Some((a, b)) => format!("{} {}", a, b),
         None => String::new(),
     };
-    env.new_string(out)
-        .unwrap_or_else(|_| env.new_string("").unwrap())
-        .into_raw()
+    jout(&mut env, out, "")
 }
 
 #[no_mangle]
@@ -720,7 +694,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_bridgeCo
     port: jint,
     token: JString,
 ) -> jboolean {
-    let token: String = env.get_string(&token).map(|s| s.into()).unwrap_or_default();
+    let token: String = jstr(&mut env, &token);
     bridge::connect(port as u16, &token) as jboolean
 }
 
@@ -752,27 +726,9 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_setProxy
     https_proxy: JString,
     no_proxy: JString,
 ) {
-    let http = if http_proxy.is_null() {
-        None
-    } else {
-        env.get_string(&http_proxy).ok()
-            .map(|s| s.into())
-            .filter(|s: &String| !s.is_empty())
-    };
-    let https = if https_proxy.is_null() {
-        None
-    } else {
-        env.get_string(&https_proxy).ok()
-            .map(|s| s.into())
-            .filter(|s: &String| !s.is_empty())
-    };
-    let no = if no_proxy.is_null() {
-        None
-    } else {
-        env.get_string(&no_proxy).ok()
-            .map(|s| s.into())
-            .filter(|s: &String| !s.is_empty())
-    };
+    let http = Some(jstr(&mut env, &http_proxy)).filter(|s| !s.is_empty());
+    let https = Some(jstr(&mut env, &https_proxy)).filter(|s| !s.is_empty());
+    let no = Some(jstr(&mut env, &no_proxy)).filter(|s| !s.is_empty());
     shell_env::set_proxy_overrides(http, https, no);
 }
 
@@ -786,13 +742,9 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionL
     _class: JClass,
     workspace_root: JString,
 ) -> jstring {
-    let root: String = if workspace_root.is_null() {
-        String::new()
-    } else {
-        env.get_string(&workspace_root).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let root: String = jstr(&mut env, &workspace_root);
     let json = session::list_sessions(&root);
-    env.new_string(json).unwrap_or_else(|_| env.new_string("[]").unwrap()).into_raw()
+    jout(&mut env, json, "[]")
 }
 
 #[no_mangle]
@@ -805,24 +757,16 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionS
     own_messages_only: jboolean,
     generation: jlong,
 ) -> jstring {
-    let root: String = if workspace_root.is_null() {
-        String::new()
-    } else {
-        env.get_string(&workspace_root).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let root: String = jstr(&mut env, &workspace_root);
     let ids_json: String = if session_ids_json.is_null() {
         "[]".to_string()
     } else {
         env.get_string(&session_ids_json).ok().map(|s| s.into()).unwrap_or_else(|| "[]".to_string())
     };
-    let q: String = if query.is_null() {
-        String::new()
-    } else {
-        env.get_string(&query).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let q: String = jstr(&mut env, &query);
     let ids: Vec<String> = serde_json::from_str(&ids_json).unwrap_or_default();
     let json = session::search_session_content(&root, &ids, &q, own_messages_only != 0, generation as u64);
-    env.new_string(json).unwrap_or_else(|_| env.new_string("[]").unwrap()).into_raw()
+    jout(&mut env, json, "[]")
 }
 
 #[no_mangle]
@@ -832,18 +776,10 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionL
     workspace_root: JString,
     session_id: JString,
 ) -> jstring {
-    let root: String = if workspace_root.is_null() {
-        String::new()
-    } else {
-        env.get_string(&workspace_root).ok().map(|s| s.into()).unwrap_or_default()
-    };
-    let id: String = if session_id.is_null() {
-        String::new()
-    } else {
-        env.get_string(&session_id).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let root: String = jstr(&mut env, &workspace_root);
+    let id: String = jstr(&mut env, &session_id);
     let json = session::load_session_history(&root, &id);
-    env.new_string(json).unwrap_or_else(|_| env.new_string("[]").unwrap()).into_raw()
+    jout(&mut env, json, "[]")
 }
 
 /// Writes one uploaded document out of a transcript to a file and returns its
@@ -858,18 +794,12 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionD
     message_uuid: JString,
     index: jint,
 ) -> jstring {
-    let mut arg = |s: JString| -> String {
-        if s.is_null() {
-            String::new()
-        } else {
-            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
-        }
-    };
+    let mut arg = |s: JString| jstr(&mut env, &s);
     let root = arg(workspace_root);
     let id = arg(session_id);
     let uuid = arg(message_uuid);
     let path = session::session_document_file(&root, &id, &uuid, index.max(0) as usize);
-    env.new_string(path).unwrap_or_else(|_| env.new_string("").unwrap()).into_raw()
+    jout(&mut env, path, "")
 }
 
 /// The composer's `@` list for `query`: the files and folders under `root`, with
@@ -886,13 +816,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_listMent
     query: JString,
     with_browser: jboolean,
 ) -> jstring {
-    let mut arg = |s: JString| -> String {
-        if s.is_null() {
-            String::new()
-        } else {
-            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
-        }
-    };
+    let mut arg = |s: JString| jstr(&mut env, &s);
     let root = arg(root);
     let cmd = arg(claude_cmd);
     let query = arg(query);
@@ -907,7 +831,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_listMent
             files
         }
     };
-    env.new_string(json).unwrap_or_else(|_| env.new_string("[]").unwrap()).into_raw()
+    jout(&mut env, json, "[]")
 }
 
 /// Takes the browser back out of this tab's conversation — the banner's ×.
@@ -944,16 +868,8 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionD
     workspace_root: JString,
     session_id: JString,
 ) -> jboolean {
-    let root: String = if workspace_root.is_null() {
-        String::new()
-    } else {
-        env.get_string(&workspace_root).ok().map(|s| s.into()).unwrap_or_default()
-    };
-    let id: String = if session_id.is_null() {
-        String::new()
-    } else {
-        env.get_string(&session_id).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let root: String = jstr(&mut env, &workspace_root);
+    let id: String = jstr(&mut env, &session_id);
     session::delete_session(&root, &id) as jboolean
 }
 
@@ -966,17 +882,10 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionM
     workspace_root: JString,
     session_id: JString,
 ) -> jstring {
-    let get = |env: &mut JNIEnv, s: &JString| -> String {
-        if s.is_null() {
-            String::new()
-        } else {
-            env.get_string(s).ok().map(|v| v.into()).unwrap_or_default()
-        }
-    };
-    let root = get(&mut env, &workspace_root);
-    let id = get(&mut env, &session_id);
+    let root = jstr(&mut env, &workspace_root);
+    let id = jstr(&mut env, &session_id);
     let json = session::message_ids(&root, &id);
-    env.new_string(json).unwrap_or_else(|_| env.new_string("[]").unwrap()).into_raw()
+    jout(&mut env, json, "[]")
 }
 
 /// Permanently removes one user message from a session transcript: the chained
@@ -990,20 +899,11 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionD
     session_id: JString,
     message_id: JString,
 ) -> jstring {
-    let get = |env: &mut JNIEnv, s: &JString| -> String {
-        if s.is_null() {
-            String::new()
-        } else {
-            env.get_string(s).ok().map(|v| v.into()).unwrap_or_default()
-        }
-    };
-    let root = get(&mut env, &workspace_root);
-    let id = get(&mut env, &session_id);
-    let mid = get(&mut env, &message_id);
+    let root = jstr(&mut env, &workspace_root);
+    let id = jstr(&mut env, &session_id);
+    let mid = jstr(&mut env, &message_id);
     let json = session::delete_message(&root, &id, &mid);
-    env.new_string(json)
-        .unwrap_or_else(|_| env.new_string(r#"{"error":"internal"}"#).unwrap())
-        .into_raw()
+    jout(&mut env, json, r#"{"error":"internal"}"#)
 }
 
 /// Renames an INACTIVE session the CLI-native way (headless --resume + the
@@ -1018,17 +918,10 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionR
     session_id: JString,
     title: JString,
 ) -> jboolean {
-    let get = |env: &mut JNIEnv, s: &JString| -> String {
-        if s.is_null() {
-            String::new()
-        } else {
-            env.get_string(s).ok().map(|v| v.into()).unwrap_or_default()
-        }
-    };
-    let cmd = get(&mut env, &claude_cmd);
-    let root = get(&mut env, &workspace_root);
-    let id = get(&mut env, &session_id);
-    let title = get(&mut env, &title);
+    let cmd = jstr(&mut env, &claude_cmd);
+    let root = jstr(&mut env, &workspace_root);
+    let id = jstr(&mut env, &session_id);
+    let title = jstr(&mut env, &title);
     session::rename_session_offline(&cmd, &root, &id, &title) as jboolean
 }
 
@@ -1047,16 +940,8 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatRena
         return 0;
     }
     let manager = unsafe { &*(handle as *const ChatManager) };
-    let id: String = if session_id.is_null() {
-        String::new()
-    } else {
-        env.get_string(&session_id).ok().map(|s| s.into()).unwrap_or_default()
-    };
-    let title: String = if title.is_null() {
-        String::new()
-    } else {
-        env.get_string(&title).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let id: String = jstr(&mut env, &session_id);
+    let title: String = jstr(&mut env, &title);
     manager.rename_session(&id, &title) as jboolean
 }
 
@@ -1074,11 +959,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatStop
         return 0;
     }
     let manager = unsafe { &*(handle as *const ChatManager) };
-    let id: String = if task_id.is_null() {
-        String::new()
-    } else {
-        env.get_string(&task_id).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let id: String = jstr(&mut env, &task_id);
     manager.stop_task(&id) as jboolean
 }
 
@@ -1097,11 +978,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatSetP
         return 0;
     }
     let manager = unsafe { &*(handle as *const ChatManager) };
-    let mode: String = if mode.is_null() {
-        String::new()
-    } else {
-        env.get_string(&mode).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let mode: String = jstr(&mut env, &mode);
     manager.set_permission_mode(&mode) as jboolean
 }
 
@@ -1118,19 +995,11 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatBrow
     message: JString,
 ) -> jstring {
     if handle == 0 {
-        return env.new_string("[]").unwrap().into_raw();
+        return jout(&mut env, "[]", "");
     }
     let manager = unsafe { &*(handle as *const ChatManager) };
-    let cmd: String = if claude_cmd.is_null() {
-        String::new()
-    } else {
-        env.get_string(&claude_cmd).ok().map(|s| s.into()).unwrap_or_default()
-    };
-    let message: String = if message.is_null() {
-        String::new()
-    } else {
-        env.get_string(&message).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let cmd: String = jstr(&mut env, &claude_cmd);
+    let message: String = jstr(&mut env, &message);
     let blocks = chrome::browser_blocks(
         &cmd,
         &message,
@@ -1138,7 +1007,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatBrow
         chrome::instruction,
     );
     let json = serde_json::to_string(&blocks).unwrap_or_else(|_| "[]".to_string());
-    env.new_string(json).unwrap().into_raw()
+    jout(&mut env, json, "")
 }
 
 
@@ -1168,18 +1037,14 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatEnsu
         return 0;
     }
     let manager = unsafe { &*(handle as *const ChatManager) };
-    let s = |env: &mut JNIEnv, v: &JString| -> String {
-        if v.is_null() { String::new() }
-        else { env.get_string(v).ok().map(|x| x.into()).unwrap_or_default() }
-    };
-    let claude_cmd = s(&mut env, &claude_cmd);
-    let workspace_root = s(&mut env, &workspace_root);
-    let mcp_auth_token = s(&mut env, &mcp_auth_token);
-    let resume_id = s(&mut env, &resume_id);
-    let perm_mode = s(&mut env, &perm_mode);
-    let effort = s(&mut env, &effort);
-    let model = s(&mut env, &model);
-    let thinking = s(&mut env, &thinking);
+    let claude_cmd = jstr(&mut env, &claude_cmd);
+    let workspace_root = jstr(&mut env, &workspace_root);
+    let mcp_auth_token = jstr(&mut env, &mcp_auth_token);
+    let resume_id = jstr(&mut env, &resume_id);
+    let perm_mode = jstr(&mut env, &perm_mode);
+    let effort = jstr(&mut env, &effort);
+    let model = jstr(&mut env, &model);
+    let thinking = jstr(&mut env, &thinking);
     manager.ensure_process(
         claude_cmd, workspace_root, mcp_port as u16, mcp_auth_token,
         resume_id, perm_mode, effort, model, thinking,
@@ -1222,13 +1087,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatMcpR
         return 0;
     }
     let manager = unsafe { &*(handle as *const ChatManager) };
-    let mut text = |s: JString| -> String {
-        if s.is_null() {
-            String::new()
-        } else {
-            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
-        }
-    };
+    let mut text = |s: JString| jstr(&mut env, &s);
     let (token, request) = (text(token), text(request));
     manager.mcp_request(&token, &request) as jboolean
 }
@@ -1246,16 +1105,10 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_mcpEditC
     token: JString,
     op: JString,
 ) -> jstring {
-    let mut text = |s: JString| -> String {
-        if s.is_null() {
-            String::new()
-        } else {
-            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
-        }
-    };
+    let mut text = |s: JString| jstr(&mut env, &s);
     let (claude_cmd, cwd, token, op) = (text(claude_cmd), text(cwd), text(token), text(op));
     let json = mcp_servers::edit_config(&claude_cmd, &cwd, &token, &op);
-    env.new_string(json).unwrap().into_raw()
+    jout(&mut env, json, "")
 }
 
 /// Applies a tab's launch settings (permission mode, effort, model, thinking) to its
@@ -1278,13 +1131,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatAppl
         return 0;
     }
     let manager = unsafe { &*(handle as *const ChatManager) };
-    let mut text = |s: JString| -> String {
-        if s.is_null() {
-            String::new()
-        } else {
-            env.get_string(&s).ok().map(|v| v.into()).unwrap_or_default()
-        }
-    };
+    let mut text = |s: JString| jstr(&mut env, &s);
     let (perm_mode, effort, model, thinking) =
         (text(perm_mode), text(effort), text(model), text(thinking));
     manager.apply_settings_now(&perm_mode, &effort, &model, &thinking) as jboolean
@@ -1382,11 +1229,11 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_shellEnv
 /// Non-blocking — cache only — so the Web tab can paint before the fetch lands.
 #[no_mangle]
 pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_webSessionCached(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let json = web_history::cached();
-    env.new_string(json).unwrap_or_else(|_| env.new_string("").unwrap()).into_raw()
+    jout(&mut env, json, "")
 }
 
 /// Lists this account's claude.ai sessions as `{state, sessions:[…]}`.
@@ -1403,27 +1250,31 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_webSessi
     claude_cmd: JString,
     force_refresh: jboolean,
 ) -> jstring {
-    let cmd: String = if claude_cmd.is_null() {
-        String::new()
-    } else {
-        env.get_string(&claude_cmd).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let cmd: String = jstr(&mut env, &claude_cmd);
     let json = web_history::list(&cmd, force_refresh != 0);
-    env.new_string(json)
-        .unwrap_or_else(|_| env.new_string(r#"{"state":"error","sessions":[]}"#).unwrap())
-        .into_raw()
+    jout(&mut env, json, r#"{"state":"error","sessions":[]}"#)
 }
 
 // ===========================================================================
 // Teleport JNI entry points (continuing a claude.ai session locally)
 // ===========================================================================
 
-/// Reads two JStrings, defaulting either to empty rather than failing the call.
+/// A Java string as a Rust one: `""` when it is null or cannot be read, never a
+/// panic (a panic in a JNI export aborts the whole IDE).
 fn jstr(env: &mut JNIEnv, s: &JString) -> String {
     if s.is_null() {
         return String::new();
     }
     env.get_string(s).ok().map(|v| v.into()).unwrap_or_default()
+}
+
+/// A Rust string as a Java one: `value`, or `fallback` if the JVM cannot make it,
+/// or null if it cannot make either. Never a panic, for the same reason as [`jstr`].
+fn jout(env: &mut JNIEnv, value: impl AsRef<str>, fallback: &str) -> jstring {
+    env.new_string(value)
+        .or_else(|_| env.new_string(fallback))
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Classifies a session against this workspace for the repo dialog.
@@ -1445,9 +1296,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_teleport
     let id = jstr(&mut env, &session_id);
     let root = jstr(&mut env, &workspace_root);
     let json = teleport::repo_check(&cmd, &id, &root);
-    env.new_string(json)
-        .unwrap_or_else(|_| env.new_string(r#"{"status":"error"}"#).unwrap())
-        .into_raw()
+    jout(&mut env, json, r#"{"status":"error"}"#)
 }
 
 /// Pulls a session down as a local conversation in this workspace.
@@ -1471,9 +1320,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_teleport
     let id = jstr(&mut env, &session_id);
     let root = jstr(&mut env, &workspace_root);
     let json = teleport::run(&cmd, &id, &root);
-    env.new_string(json)
-        .unwrap_or_else(|_| env.new_string(r#"{"ok":false,"error":"error"}"#).unwrap())
-        .into_raw()
+    jout(&mut env, json, r#"{"ok":false,"error":"error"}"#)
 }
 
 /// Switches the working tree to a teleported session's branch.
@@ -1490,9 +1337,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_teleport
     let root = jstr(&mut env, &workspace_root);
     let b = jstr(&mut env, &branch);
     let json = teleport::checkout_branch(&root, &b);
-    env.new_string(json)
-        .unwrap_or_else(|_| env.new_string(r#"{"ok":false}"#).unwrap())
-        .into_raw()
+    jout(&mut env, json, r#"{"ok":false}"#)
 }
 
 /// Whether the tree is clean, what changed, and the branch currently out — the
@@ -1505,9 +1350,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_teleport
 ) -> jstring {
     let root = jstr(&mut env, &workspace_root);
     let json = teleport::git_status_json(&root);
-    env.new_string(json)
-        .unwrap_or_else(|_| env.new_string(r#"{"clean":true,"changedFiles":[]}"#).unwrap())
-        .into_raw()
+    jout(&mut env, json, r#"{"clean":true,"changedFiles":[]}"#)
 }
 
 /// Renders a Remote Control session url as a scannable QR code, as SVG.
@@ -1520,13 +1363,9 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_remoteCo
     _class: JClass,
     url: JString,
 ) -> jstring {
-    let u: String = if url.is_null() {
-        String::new()
-    } else {
-        env.get_string(&url).ok().map(|s| s.into()).unwrap_or_default()
-    };
+    let u: String = jstr(&mut env, &url);
     let svg = bridge::rc_qr_svg(&u);
-    env.new_string(svg).unwrap_or_else(|_| env.new_string("").unwrap()).into_raw()
+    jout(&mut env, svg, "")
 }
 
 // ---------------------------------------------------------------------------
@@ -1561,10 +1400,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttStart
     keyterms: JString,
 ) {
     // Hints are optional: an empty string just means no x-config-keyterms header.
-    let terms: String = env
-        .get_string(&keyterms)
-        .map(|s| s.into())
-        .unwrap_or_default();
+    let terms: String = jstr(&mut env, &keyterms);
     dictation().start(terms);
 }
 
@@ -1589,23 +1425,21 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttIsRec
 /// this library and is told here instead.
 #[no_mangle]
 pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttUnavailableReason(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let reason = stt::unavailable_reason().unwrap_or_default();
-    env.new_string(reason).unwrap_or_else(|_| env.new_string("").unwrap()).into_raw()
+    jout(&mut env, reason, "")
 }
 
 /// FreeBSD only: the setup guide (Markdown) the GUI view shows when the `claude`
 /// CLI is missing. Empty elsewhere. See `freebsd_guide`.
 #[no_mangle]
 pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_freebsdSetupGuide(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    env.new_string(freebsd_guide::markdown())
-        .unwrap_or_else(|_| env.new_string("").unwrap())
-        .into_raw()
+    jout(&mut env, freebsd_guide::markdown(), "")
 }
 
 /// FreeBSD only: true when alsa-plugins -- ALSA's bridge to OSS -- is not
