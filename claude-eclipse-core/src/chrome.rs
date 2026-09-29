@@ -10,8 +10,6 @@
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-#[cfg(test)]
-use std::io::{Seek, SeekFrom};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -20,13 +18,6 @@ use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-
-/// How the `<browser_instruction>` text the extension sends begins and ends: checks
-/// on the text, not the text (tests only).
-#[cfg(test)]
-const INSTRUCTION_HEAD: &str = "# Claude in Chrome browser automation";
-#[cfg(test)]
-const INSTRUCTION_TAIL: &str = "call tabs_context_mcp to see what tabs are available";
 
 /// The `<browser_instruction>` text the extension sends, sealed.
 /// `.settings/com.eclipse.chrome.container` holds it encrypted as `inst_hash=`
@@ -77,117 +68,6 @@ fn open_instruction(container: &str) -> Option<String> {
     String::from_utf8(text.to_vec()).ok()
 }
 
-// ── Reading the instruction out of an installed CLI ─────────────────────────
-// Tests only. Nothing reads the CLI at run time any more; this is how a change to
-// the CLI's own wording is noticed (installed_cli_carries_the_instruction compares
-// the two) and where the text to seal comes from.
-
-/// How far past its opening backtick the literal may run; it is about 4KB.
-#[cfg(test)]
-const INSTRUCTION_WINDOW: u64 = 64 * 1024;
-/// How far back from the literal to look for a constant one of its slots names.
-/// Minified code keeps a module's constants together: 2.1.280 defines `YL` a few
-/// hundred bytes before the literal that uses it.
-#[cfg(test)]
-const DEFINITION_WINDOW: u64 = 64 * 1024;
-#[cfg(test)]
-const SCAN_CHUNK: usize = 8 * 1024 * 1024;
-
-/// The CLI program file as `(path, size, mtime)`, so an updated CLI is read again.
-#[cfg(test)]
-type InstructionKey = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
-/// What was read from that file, a miss included.
-#[cfg(test)]
-static INSTRUCTION_CACHE: Mutex<Option<(InstructionKey, Option<String>)>> = Mutex::new(None);
-
-/// The browser instruction, read out of the installed CLI. `None` when it can't be
-/// found there — a CLI that bundles it differently, or a wrapper script in place of
-/// the program. The first call reads through the CLI binary (237MB on Windows,
-/// about 230ms in a release build); later calls only stat the file.
-#[cfg(test)]
-pub fn cli_instruction(claude_cmd: &str) -> Option<String> {
-    let path = crate::launch::claude_program_file(claude_cmd)?;
-    let meta = std::fs::metadata(&path).ok()?;
-    let key = (path, meta.len(), meta.modified().ok());
-    let mut cache = INSTRUCTION_CACHE.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some((cached, text)) = cache.as_ref() {
-        if *cached == key {
-            return text.clone();
-        }
-    }
-    let text = read_instruction(&key.0);
-    *cache = Some((key, text.clone()));
-    text
-}
-
-/// Finds the literal in `path` — the header straight after a template's opening
-/// backtick — evaluates it, and keeps it only if it reads as the whole instruction.
-///
-/// Every copy is tried, in file order, and the first that reads whole wins. Up to
-/// 2.1.266 there is one, its slots all string literals. From 2.1.280 there are two:
-/// first the one the CLI sends when tool search is on (its "Loading deferred tools"
-/// paragraph a constant in a `${YL}` slot, found by [`definition_before`]), then the
-/// same text without that paragraph — the fallback if the constant can't be read.
-#[cfg(test)]
-fn read_instruction(path: &std::path::Path) -> Option<String> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let needle = format!("`{INSTRUCTION_HEAD}");
-    let mut from = 0;
-    loop {
-        file.seek(SeekFrom::Start(from)).ok()?;
-        let at = from + find_in_reader(&mut file, needle.as_bytes(), SCAN_CHUNK)?;
-        if let Some(text) = instruction_at(&mut file, at) {
-            return Some(text);
-        }
-        from = at + 1;
-    }
-}
-
-/// The literal whose opening backtick is at `at`, if it reads as the whole instruction.
-#[cfg(test)]
-fn instruction_at(file: &mut std::fs::File, at: u64) -> Option<String> {
-    let window = read_window(file, at, INSTRUCTION_WINDOW)?;
-    // Lossy: the window runs on past the literal into whatever follows it.
-    let text = eval_template_with(&String::from_utf8_lossy(&window), &mut |name| {
-        definition_before(file, at, name)
-    })?;
-    let whole = text.starts_with(INSTRUCTION_HEAD)
-        && text.ends_with(INSTRUCTION_TAIL)
-        && text.len() > 1000
-        && !text.contains('\u{FFFD}');
-    whole.then_some(text)
-}
-
-/// The value of the template constant `name` (`name=\`…\``) nearest before `at`,
-/// within [`DEFINITION_WINDOW`]. Its own slots must be string literals: one level
-/// of constant is what the CLI uses, and anything deeper is refused, not guessed.
-#[cfg(test)]
-fn definition_before(file: &mut std::fs::File, at: u64, name: &str) -> Option<String> {
-    let start = at.saturating_sub(DEFINITION_WINDOW);
-    let before = read_window(file, start, at - start)?;
-    let needle = format!("{name}=`");
-    let pos = (0..before.len().saturating_sub(needle.len() - 1))
-        .rev()
-        .filter(|&i| before[i..].starts_with(needle.as_bytes()))
-        // The whole name, not the end of a longer one (`aYL=`).
-        .find(|&i| i == 0 || !is_ident_byte(before[i - 1]))?;
-    let value = read_window(file, start + (pos + name.len() + 1) as u64, INSTRUCTION_WINDOW)?;
-    eval_template(&String::from_utf8_lossy(&value)).filter(|v| !v.contains('\u{FFFD}'))
-}
-
-#[cfg(test)]
-fn read_window(file: &mut std::fs::File, at: u64, len: u64) -> Option<Vec<u8>> {
-    file.seek(SeekFrom::Start(at)).ok()?;
-    let mut window = Vec::new();
-    file.take(len).read_to_end(&mut window).ok()?;
-    Some(window)
-}
-
-#[cfg(test)]
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
-}
-
 /// The offset of the first `needle` in `reader`, read `chunk` bytes at a time with
 /// enough carried over that a match across two reads is still found. The CLI is not
 /// text throughout, so it is searched as bytes.
@@ -227,152 +107,6 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
     None
 }
 
-#[cfg(test)]
-type Chars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
-
-/// Evaluates the JS template literal `src` starts with: its text with JS escapes
-/// decoded, where each `${…}` slot holds one quoted string literal (the CLI builds
-/// the instruction's ToolSearch line that way). `None` for anything else — a
-/// computed slot, a malformed escape, no closing backtick — so a wrong instruction
-/// never reaches the model.
-#[cfg(test)]
-fn eval_template(src: &str) -> Option<String> {
-    eval_template_with(src, &mut |_| None)
-}
-
-/// [`eval_template`], where a slot may also name a constant (`${YL}`), whose value
-/// `resolve` supplies — `None` refuses the whole literal.
-#[cfg(test)]
-fn eval_template_with(src: &str, resolve: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
-    let mut chars = src.chars().peekable();
-    if chars.next()? != '`' {
-        return None;
-    }
-    let mut out = String::new();
-    loop {
-        match chars.next()? {
-            '`' => return Some(out),
-            '\\' => unescape(&mut chars, &mut out)?,
-            '$' if chars.peek() == Some(&'{') => {
-                chars.next();
-                skip_space(&mut chars);
-                match chars.next()? {
-                    quote @ ('"' | '\'') => string_literal(&mut chars, quote, &mut out)?,
-                    c if c.is_ascii_alphabetic() || c == '_' || c == '$' => {
-                        let mut name = String::from(c);
-                        while let Some(&c) = chars.peek().filter(|c| c.is_ascii_alphanumeric() || **c == '_' || **c == '$') {
-                            name.push(c);
-                            chars.next();
-                        }
-                        out.push_str(&resolve(&name)?);
-                    }
-                    _ => return None,
-                }
-                skip_space(&mut chars);
-                if chars.next()? != '}' {
-                    return None;
-                }
-            }
-            // A template's line breaks read as \n whatever the source used.
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                out.push('\n');
-            }
-            c => out.push(c),
-        }
-    }
-}
-
-#[cfg(test)]
-fn skip_space(chars: &mut Chars<'_>) {
-    while chars.peek().is_some_and(|c| c.is_whitespace()) {
-        chars.next();
-    }
-}
-
-/// The rest of a quoted string literal, its opening `quote` already taken.
-#[cfg(test)]
-fn string_literal(chars: &mut Chars<'_>, quote: char, out: &mut String) -> Option<()> {
-    loop {
-        match chars.next()? {
-            c if c == quote => return Some(()),
-            '\\' => unescape(chars, out)?,
-            '\n' | '\r' => return None,
-            c => out.push(c),
-        }
-    }
-}
-
-/// One JS escape sequence, its backslash already taken.
-#[cfg(test)]
-fn unescape(chars: &mut Chars<'_>, out: &mut String) -> Option<()> {
-    let decoded = match chars.next()? {
-        'n' => '\n',
-        't' => '\t',
-        'r' => '\r',
-        'b' => '\u{8}',
-        'f' => '\u{c}',
-        'v' => '\u{b}',
-        '0' if !chars.peek().is_some_and(|d| d.is_ascii_digit()) => '\0',
-        '0'..='9' => return None,
-        'x' => char::from_u32(hex(chars, 2)?)?,
-        'u' => {
-            let unit = code_point(chars)?;
-            if (0xD800..0xDC00).contains(&unit) {
-                // Outside the BMP, written as a surrogate pair of \u escapes.
-                if chars.next()? != '\\' || chars.next()? != 'u' {
-                    return None;
-                }
-                let low = code_point(chars)?;
-                if !(0xDC00..0xE000).contains(&low) {
-                    return None;
-                }
-                char::from_u32(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00))?
-            } else {
-                char::from_u32(unit)?
-            }
-        }
-        // A line continuation stands for nothing.
-        '\n' => return Some(()),
-        '\r' => {
-            if chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-            return Some(());
-        }
-        // \` \\ \$ \" \' and any other character stand for themselves.
-        other => other,
-    };
-    out.push(decoded);
-    Some(())
-}
-
-/// The digits of a `\u` escape: four hex digits, or `{…}` around one to six.
-#[cfg(test)]
-fn code_point(chars: &mut Chars<'_>) -> Option<u32> {
-    if chars.peek() != Some(&'{') {
-        return hex(chars, 4);
-    }
-    chars.next();
-    let mut value: u32 = 0;
-    let mut digits = 0;
-    loop {
-        let c = chars.next()?;
-        if c == '}' {
-            break;
-        }
-        value = value.checked_mul(16)?.checked_add(c.to_digit(16)?)?;
-        digits += 1;
-    }
-    (digits > 0 && value <= 0x10FFFF).then_some(value)
-}
-
-#[cfg(test)]
-fn hex(chars: &mut Chars<'_>, digits: usize) -> Option<u32> {
-    (0..digits).try_fold(0u32, |value, _| Some(value * 16 + chars.next()?.to_digit(16)?))
-}
 const SERVER_ARG: &str = "--claude-in-chrome-mcp";
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -744,6 +478,274 @@ pub fn browser_blocks(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+use std::io::{Seek, SeekFrom};
+
+/// How the `<browser_instruction>` text the extension sends begins and ends: checks
+/// on the text, not the text (tests only).
+#[cfg(test)]
+const INSTRUCTION_HEAD: &str = "# Claude in Chrome browser automation";
+#[cfg(test)]
+const INSTRUCTION_TAIL: &str = "call tabs_context_mcp to see what tabs are available";
+
+// ── Reading the instruction out of an installed CLI ─────────────────────────
+// Tests only. Nothing reads the CLI at run time any more; this is how a change to
+// the CLI's own wording is noticed (installed_cli_carries_the_instruction compares
+// the two) and where the text to seal comes from.
+
+/// How far past its opening backtick the literal may run; it is about 4KB.
+#[cfg(test)]
+const INSTRUCTION_WINDOW: u64 = 64 * 1024;
+/// How far back from the literal to look for a constant one of its slots names.
+/// Minified code keeps a module's constants together: 2.1.280 defines `YL` a few
+/// hundred bytes before the literal that uses it.
+#[cfg(test)]
+const DEFINITION_WINDOW: u64 = 64 * 1024;
+#[cfg(test)]
+const SCAN_CHUNK: usize = 8 * 1024 * 1024;
+
+/// The CLI program file as `(path, size, mtime)`, so an updated CLI is read again.
+#[cfg(test)]
+type InstructionKey = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
+/// What was read from that file, a miss included.
+#[cfg(test)]
+static INSTRUCTION_CACHE: Mutex<Option<(InstructionKey, Option<String>)>> = Mutex::new(None);
+
+/// The browser instruction, read out of the installed CLI. `None` when it can't be
+/// found there — a CLI that bundles it differently, or a wrapper script in place of
+/// the program. The first call reads through the CLI binary (237MB on Windows,
+/// about 230ms in a release build); later calls only stat the file.
+#[cfg(test)]
+pub fn cli_instruction(claude_cmd: &str) -> Option<String> {
+    let path = crate::launch::claude_program_file(claude_cmd)?;
+    let meta = std::fs::metadata(&path).ok()?;
+    let key = (path, meta.len(), meta.modified().ok());
+    let mut cache = INSTRUCTION_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((cached, text)) = cache.as_ref() {
+        if *cached == key {
+            return text.clone();
+        }
+    }
+    let text = read_instruction(&key.0);
+    *cache = Some((key, text.clone()));
+    text
+}
+
+/// Finds the literal in `path` — the header straight after a template's opening
+/// backtick — evaluates it, and keeps it only if it reads as the whole instruction.
+///
+/// Every copy is tried, in file order, and the first that reads whole wins. Up to
+/// 2.1.266 there is one, its slots all string literals. From 2.1.280 there are two:
+/// first the one the CLI sends when tool search is on (its "Loading deferred tools"
+/// paragraph a constant in a `${YL}` slot, found by [`definition_before`]), then the
+/// same text without that paragraph — the fallback if the constant can't be read.
+#[cfg(test)]
+fn read_instruction(path: &std::path::Path) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let needle = format!("`{INSTRUCTION_HEAD}");
+    let mut from = 0;
+    loop {
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let at = from + find_in_reader(&mut file, needle.as_bytes(), SCAN_CHUNK)?;
+        if let Some(text) = instruction_at(&mut file, at) {
+            return Some(text);
+        }
+        from = at + 1;
+    }
+}
+
+/// The literal whose opening backtick is at `at`, if it reads as the whole instruction.
+#[cfg(test)]
+fn instruction_at(file: &mut std::fs::File, at: u64) -> Option<String> {
+    let window = read_window(file, at, INSTRUCTION_WINDOW)?;
+    // Lossy: the window runs on past the literal into whatever follows it.
+    let text = eval_template_with(&String::from_utf8_lossy(&window), &mut |name| {
+        definition_before(file, at, name)
+    })?;
+    let whole = text.starts_with(INSTRUCTION_HEAD)
+        && text.ends_with(INSTRUCTION_TAIL)
+        && text.len() > 1000
+        && !text.contains('\u{FFFD}');
+    whole.then_some(text)
+}
+
+/// The value of the template constant `name` (`name=\`…\``) nearest before `at`,
+/// within [`DEFINITION_WINDOW`]. Its own slots must be string literals: one level
+/// of constant is what the CLI uses, and anything deeper is refused, not guessed.
+#[cfg(test)]
+fn definition_before(file: &mut std::fs::File, at: u64, name: &str) -> Option<String> {
+    let start = at.saturating_sub(DEFINITION_WINDOW);
+    let before = read_window(file, start, at - start)?;
+    let needle = format!("{name}=`");
+    let pos = (0..before.len().saturating_sub(needle.len() - 1))
+        .rev()
+        .filter(|&i| before[i..].starts_with(needle.as_bytes()))
+        // The whole name, not the end of a longer one (`aYL=`).
+        .find(|&i| i == 0 || !is_ident_byte(before[i - 1]))?;
+    let value = read_window(file, start + (pos + name.len() + 1) as u64, INSTRUCTION_WINDOW)?;
+    eval_template(&String::from_utf8_lossy(&value)).filter(|v| !v.contains('\u{FFFD}'))
+}
+
+#[cfg(test)]
+fn read_window(file: &mut std::fs::File, at: u64, len: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(at)).ok()?;
+    let mut window = Vec::new();
+    file.take(len).read_to_end(&mut window).ok()?;
+    Some(window)
+}
+
+#[cfg(test)]
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+
+#[cfg(test)]
+type Chars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
+
+/// Evaluates the JS template literal `src` starts with: its text with JS escapes
+/// decoded, where each `${…}` slot holds one quoted string literal (the CLI builds
+/// the instruction's ToolSearch line that way). `None` for anything else — a
+/// computed slot, a malformed escape, no closing backtick — so a wrong instruction
+/// never reaches the model.
+#[cfg(test)]
+fn eval_template(src: &str) -> Option<String> {
+    eval_template_with(src, &mut |_| None)
+}
+
+/// [`eval_template`], where a slot may also name a constant (`${YL}`), whose value
+/// `resolve` supplies — `None` refuses the whole literal.
+#[cfg(test)]
+fn eval_template_with(src: &str, resolve: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
+    let mut chars = src.chars().peekable();
+    if chars.next()? != '`' {
+        return None;
+    }
+    let mut out = String::new();
+    loop {
+        match chars.next()? {
+            '`' => return Some(out),
+            '\\' => unescape(&mut chars, &mut out)?,
+            '$' if chars.peek() == Some(&'{') => {
+                chars.next();
+                skip_space(&mut chars);
+                match chars.next()? {
+                    quote @ ('"' | '\'') => string_literal(&mut chars, quote, &mut out)?,
+                    c if c.is_ascii_alphabetic() || c == '_' || c == '$' => {
+                        let mut name = String::from(c);
+                        while let Some(&c) = chars.peek().filter(|c| c.is_ascii_alphanumeric() || **c == '_' || **c == '$') {
+                            name.push(c);
+                            chars.next();
+                        }
+                        out.push_str(&resolve(&name)?);
+                    }
+                    _ => return None,
+                }
+                skip_space(&mut chars);
+                if chars.next()? != '}' {
+                    return None;
+                }
+            }
+            // A template's line breaks read as \n whatever the source used.
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push('\n');
+            }
+            c => out.push(c),
+        }
+    }
+}
+
+#[cfg(test)]
+fn skip_space(chars: &mut Chars<'_>) {
+    while chars.peek().is_some_and(|c| c.is_whitespace()) {
+        chars.next();
+    }
+}
+
+/// The rest of a quoted string literal, its opening `quote` already taken.
+#[cfg(test)]
+fn string_literal(chars: &mut Chars<'_>, quote: char, out: &mut String) -> Option<()> {
+    loop {
+        match chars.next()? {
+            c if c == quote => return Some(()),
+            '\\' => unescape(chars, out)?,
+            '\n' | '\r' => return None,
+            c => out.push(c),
+        }
+    }
+}
+
+/// One JS escape sequence, its backslash already taken.
+#[cfg(test)]
+fn unescape(chars: &mut Chars<'_>, out: &mut String) -> Option<()> {
+    let decoded = match chars.next()? {
+        'n' => '\n',
+        't' => '\t',
+        'r' => '\r',
+        'b' => '\u{8}',
+        'f' => '\u{c}',
+        'v' => '\u{b}',
+        '0' if !chars.peek().is_some_and(|d| d.is_ascii_digit()) => '\0',
+        '0'..='9' => return None,
+        'x' => char::from_u32(hex(chars, 2)?)?,
+        'u' => {
+            let unit = code_point(chars)?;
+            if (0xD800..0xDC00).contains(&unit) {
+                // Outside the BMP, written as a surrogate pair of \u escapes.
+                if chars.next()? != '\\' || chars.next()? != 'u' {
+                    return None;
+                }
+                let low = code_point(chars)?;
+                if !(0xDC00..0xE000).contains(&low) {
+                    return None;
+                }
+                char::from_u32(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00))?
+            } else {
+                char::from_u32(unit)?
+            }
+        }
+        // A line continuation stands for nothing.
+        '\n' => return Some(()),
+        '\r' => {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            return Some(());
+        }
+        // \` \\ \$ \" \' and any other character stand for themselves.
+        other => other,
+    };
+    out.push(decoded);
+    Some(())
+}
+
+/// The digits of a `\u` escape: four hex digits, or `{…}` around one to six.
+#[cfg(test)]
+fn code_point(chars: &mut Chars<'_>) -> Option<u32> {
+    if chars.peek() != Some(&'{') {
+        return hex(chars, 4);
+    }
+    chars.next();
+    let mut value: u32 = 0;
+    let mut digits = 0;
+    loop {
+        let c = chars.next()?;
+        if c == '}' {
+            break;
+        }
+        value = value.checked_mul(16)?.checked_add(c.to_digit(16)?)?;
+        digits += 1;
+    }
+    (digits > 0 && value <= 0x10FFFF).then_some(value)
+}
+
+#[cfg(test)]
+fn hex(chars: &mut Chars<'_>, digits: usize) -> Option<u32> {
+    (0..digits).try_fold(0u32, |value, _| Some(value * 16 + chars.next()?.to_digit(16)?))
+}
 
 #[cfg(test)]
 mod tests {
