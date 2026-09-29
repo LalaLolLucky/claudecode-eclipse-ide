@@ -1364,17 +1364,13 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_listMent
         let root = arg(root);
         let cmd = arg(claude_cmd);
         let query = arg(query);
-        let with_browser = with_browser != 0;
-        let json = if with_browser && query.to_lowercase().starts_with("browser:") {
-            chrome::browser_tabs_json(&cmd, &query)
-        } else {
-            let files = mentions::list_files_json(&root, &query);
-            if with_browser {
-                mentions::with_browser_rows(&files, &chrome::cached_browser_tabs_json(&cmd, &query), &query)
-            } else {
-                files
-            }
-        };
+        let json = mentions::mention_rows_json(
+            &root,
+            &query,
+            with_browser != 0,
+            || chrome::browser_tabs_json(&cmd, &query),
+            || chrome::cached_browser_tabs_json(&cmd, &query),
+        );
         jout(&mut env, json, "[]")
     }));
     finish_export(&mut env, "listMentions", result, std::ptr::null_mut())
