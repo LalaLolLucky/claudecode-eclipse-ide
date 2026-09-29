@@ -48,3 +48,8 @@ cpal            = "0.18"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 libloading      = "0.9"
+
+[lints.clippy]
+# The standard module layout (the Rust Book's idiomatic paths): src/<module>.rs next
+# to src/<module>/, never src/<module>/mod.rs.
+mod_module_files = "deny"
