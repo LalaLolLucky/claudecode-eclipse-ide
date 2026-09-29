@@ -693,3 +693,94 @@ impl Drop for ConsoleSession {
         self.kill();
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::win32::{build_command_line, build_env_block, to_wide};
+    use crate::test_support::EnvGuard;
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn CommandLineToArgvW(cmd_line: *const u16, argc: *mut i32) -> *mut *mut u16;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LocalFree(mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+
+    /// Splits a command line the way the started program will see it.
+    fn as_the_child_sees_it(line: &[u16]) -> Vec<String> {
+        unsafe {
+            let mut argc = 0;
+            let argv = CommandLineToArgvW(line.as_ptr(), &mut argc);
+            assert!(!argv.is_null(), "CommandLineToArgvW failed");
+            let args = (0..argc as usize)
+                .map(|i| {
+                    let p = *argv.add(i);
+                    let len = (0..).take_while(|&n| *p.add(n) != 0).count();
+                    String::from_utf16_lossy(std::slice::from_raw_parts(p, len))
+                })
+                .collect();
+            LocalFree(argv.cast());
+            args
+        }
+    }
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Entries of an environment block: NUL-separated, ending in an empty one.
+    fn entries(block: &[u16]) -> Vec<String> {
+        assert_eq!(&block[block.len() - 2..], &[0, 0], "a block ends with two NULs");
+        block[..block.len() - 2].split(|&c| c == 0).map(String::from_utf16_lossy).collect()
+    }
+
+    #[test]
+    fn to_wide_is_nul_terminated_utf16() {
+        assert_eq!(to_wide(""), vec![0]);
+        assert_eq!(to_wide("aé"), vec![0x61, 0xE9, 0]);
+        assert_eq!(to_wide("😀"), vec![0xD83D, 0xDE00, 0], "a surrogate pair");
+    }
+
+    #[test]
+    fn the_child_receives_each_argument_as_given() {
+        for (cmd, args) in [
+            ("claude", vec![]),
+            ("claude", vec!["--model", "opus"]),
+            (r"C:\Program Files\Claude\claude.exe", vec!["--resume"]),
+            ("claude", vec!["hello world", "two  spaces"]),
+            ("claude", vec![r#"say "hi""#, r#""quoted" and spaced"#]),
+            ("claude", vec![r"C:\no\trailing\slash", "plain"]),
+        ] {
+            let mut expected = vec![cmd];
+            expected.extend(&args);
+            let line = build_command_line(cmd, &strings(&args));
+            assert_eq!(as_the_child_sees_it(&line), strings(&expected), "{cmd} {args:?}");
+        }
+    }
+
+    #[test]
+    fn the_environment_block_is_the_process_environment_plus_the_extras() {
+        const OVERRIDDEN: &str = "CLAUDE_ECLIPSE_TEST_ENV_OVERRIDDEN";
+        const ADDED: &str = "CLAUDE_ECLIPSE_TEST_ENV_ADDED";
+        let mut env = EnvGuard::lock();
+        env.set(OVERRIDDEN, "from the process");
+        env.remove(ADDED);
+
+        let extras = vec![
+            (OVERRIDDEN.to_string(), "from the caller".to_string()),
+            (ADDED.to_string(), "new = value".to_string()),
+        ];
+        let block = entries(&build_env_block(&extras));
+
+        assert!(block.contains(&format!("{OVERRIDDEN}=from the caller")), "the caller's value wins");
+        assert!(!block.contains(&format!("{OVERRIDDEN}=from the process")));
+        assert!(block.contains(&format!("{ADDED}=new = value")));
+        assert_eq!(block.len(), std::env::vars().count() + 1, "every process variable, plus the one added");
+    }
+}

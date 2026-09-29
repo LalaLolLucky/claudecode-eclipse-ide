@@ -678,3 +678,164 @@ impl<S: Stream + Unpin> Stream for GuardedStream<S> {
 
 // Axum requires the SSE stream to be Send.
 unsafe impl<S: Send> Send for GuardedStream<S> {}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{header, HeaderMap, HeaderValue};
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    fn headers(host: Option<&str>, origin: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(v) = host {
+            h.insert(header::HOST, HeaderValue::from_str(v).unwrap());
+        }
+        if let Some(v) = origin {
+            h.insert(header::ORIGIN, HeaderValue::from_str(v).unwrap());
+        }
+        h
+    }
+
+    /// A server on a port the OS just handed out, well away from the range the
+    /// plugin's own MCP server uses. Nothing is registered, so no request reaches Java.
+    fn start_server() -> (Server, u16) {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let server = Server::new(port, port);
+        assert_eq!(server.start(), port, "the server binds the port it was given");
+        (server, port)
+    }
+
+    fn connect(port: u16) -> TcpStream {
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+    }
+
+    /// Sends one request with `Connection: close` and returns (status, whole response).
+    fn request(port: u16, method: &str, path: &str, host: &str, extra: &str, body: &str) -> (u16, String) {
+        let mut stream = connect(port);
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: {host}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        let status = response.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        (status, response)
+    }
+
+    /// Reads from an open SSE stream until `needle` has arrived, and returns all of it.
+    fn read_until(stream: &mut TcpStream, seen: &mut String, needle: &str) {
+        let mut buf = [0u8; 4096];
+        while !seen.contains(needle) {
+            let n = stream.read(&mut buf).expect("the stream stays open and delivers");
+            assert!(n > 0, "the server closed the stream before sending {needle:?}");
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+    }
+
+    #[test]
+    fn only_loopback_host_names_count_as_local() {
+        for local in ["127.0.0.1", "127.0.0.1:48123", "localhost", "LOCALHOST:80"] {
+            assert!(is_loopback_host(local), "{local}");
+        }
+        for foreign in ["evil.example", "evil.example:80", "127.0.0.2:80", "localhost.evil.example", "evil:127.0.0.1"] {
+            assert!(!is_loopback_host(foreign), "{foreign}");
+        }
+    }
+
+    #[test]
+    fn a_request_is_local_only_with_a_loopback_host_and_no_foreign_origin() {
+        assert!(is_local_request(&headers(Some("127.0.0.1:1"), None)), "the CLI sends no Origin");
+        assert!(is_local_request(&headers(Some("127.0.0.1:1"), Some("http://localhost:3000"))));
+
+        // DNS rebinding: the page's own name arrives as Host.
+        assert!(!is_local_request(&headers(Some("evil.example:1"), None)));
+        assert!(!is_local_request(&headers(Some("127.0.0.1:1"), Some("http://evil.example"))));
+        assert!(!is_local_request(&headers(Some("127.0.0.1:1"), Some("null"))));
+        assert!(!is_local_request(&headers(None, None)), "no Host at all");
+    }
+
+    #[test]
+    fn a_foreign_host_or_origin_is_refused_on_both_mcp_routes() {
+        let (_server, port) = start_server();
+        let local = format!("127.0.0.1:{port}");
+        assert_eq!(request(port, "GET", "/sse", "evil.example", "", "").0, 403);
+        assert_eq!(request(port, "GET", "/sse", &local, "Origin: http://evil.example\r\n", "").0, 403);
+        assert_eq!(request(port, "POST", "/messages?sessionId=x", "evil.example", "", "{}").0, 403);
+    }
+
+    #[test]
+    fn messages_need_a_known_session() {
+        let (_server, port) = start_server();
+        let local = format!("127.0.0.1:{port}");
+        let (status, body) = request(port, "POST", "/messages", &local, "", "{}");
+        assert_eq!(status, 400);
+        assert!(body.ends_with("Missing sessionId"), "{body}");
+        let (status, body) = request(port, "POST", "/messages?sessionId=nobody", &local, "", "{}");
+        assert_eq!(status, 400);
+        assert!(body.ends_with("Unknown session"), "{body}");
+    }
+
+    #[test]
+    fn the_status_line_needs_a_tab_and_the_servers_token() {
+        let (server, port) = start_server();
+        let local = format!("127.0.0.1:{port}");
+        let token = server.auth_token().to_string();
+
+        let (status, _) = request(port, "POST", &format!("/statusline?authToken={token}"), &local, "", "{}");
+        assert_eq!(status, 400, "no tab");
+        let (status, _) = request(port, "POST", "/statusline?tab=t1&authToken=wrong", &local, "", "{}");
+        assert_eq!(status, 401);
+        let (status, _) = request(port, "POST", &format!("/statusline?tab=t1&authToken={token}"), &local, "", "{}");
+        assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn an_sse_client_gets_its_endpoint_and_the_answer_to_initialize() {
+        let (server, port) = start_server();
+        let local = format!("127.0.0.1:{port}");
+
+        let mut sse = connect(port);
+        write!(sse, "GET /sse HTTP/1.1\r\nHost: {local}\r\nAccept: text/event-stream\r\n\r\n").unwrap();
+        let mut seen = String::new();
+        read_until(&mut sse, &mut seen, "\n\n");
+        read_until(&mut sse, &mut seen, "sessionId=");
+        read_until(&mut sse, &mut seen, "\n");
+        assert!(seen.starts_with("HTTP/1.1 200"), "{seen}");
+        assert!(seen.contains("event: endpoint"), "{seen}");
+        let endpoint = seen
+            .lines()
+            .find_map(|l| l.strip_prefix("data: "))
+            .expect("the endpoint event carries the POST path")
+            .trim()
+            .to_string();
+        assert!(endpoint.starts_with("/messages?sessionId="), "{endpoint}");
+        assert_eq!(server.client_count(), 1);
+
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+        let (status, _) = request(port, "POST", &endpoint, &local, "", init);
+        assert_eq!(status, 202, "accepted; the answer comes over SSE");
+
+        read_until(&mut sse, &mut seen, "protocolVersion");
+        read_until(&mut sse, &mut seen, "\n");
+        assert!(seen.contains("event: message"), "{seen}");
+        assert!(seen.contains(r#""protocolVersion":"2024-11-05""#), "{seen}");
+    }
+
+    #[test]
+    fn a_range_with_no_free_port_reports_zero_instead_of_panicking() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let server = Server::new(port, port);
+        assert_eq!(server.start(), 0);
+        assert!(!server.is_running());
+    }
+}

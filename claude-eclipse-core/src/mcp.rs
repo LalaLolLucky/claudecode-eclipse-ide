@@ -522,3 +522,138 @@ fn send_error(sender: &UnboundedSender<SseEvent>, id: &Value, code: i32, message
         data: json,
     });
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Mutex;
+
+    /// Server state as it is before Eclipse registers its tool callback, so nothing
+    /// here reaches Java.
+    fn state(last_selection: Option<&str>) -> Arc<AppState> {
+        Arc::new(AppState {
+            clients: Mutex::new(HashMap::new()),
+            auth_token: "token".to_string(),
+            tool_callback: Mutex::new(None),
+            status_callback: Mutex::new(None),
+            preferred_port: None,
+            last_selection: Mutex::new(last_selection.map(str::to_string)),
+        })
+    }
+
+    /// Everything the server sent back over SSE for one incoming message.
+    async fn replies(state: Arc<AppState>, body: &str) -> Vec<SseEvent> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        handle_message(state, tx, body.to_string()).await;
+        let mut out = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            out.push(event);
+        }
+        out
+    }
+
+    fn json_of(event: &SseEvent) -> Value {
+        assert_eq!(event.event_type, "message");
+        serde_json::from_str(&event.data).expect("SSE data is JSON")
+    }
+
+    #[tokio::test]
+    async fn initialize_reports_the_protocol_version_and_server_name() {
+        let out = replies(state(None), r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#).await;
+        assert_eq!(out.len(), 1);
+        let reply = json_of(&out[0]);
+        assert_eq!(reply["jsonrpc"], "2.0");
+        assert_eq!(reply["id"], 1);
+        assert_eq!(reply["result"]["protocolVersion"], "2024-11-05");
+        assert_eq!(reply["result"]["serverInfo"]["name"], "claude-code-eclipse");
+        assert_eq!(reply["result"]["capabilities"]["tools"]["listChanged"], false);
+    }
+
+    #[tokio::test]
+    async fn initialize_replays_the_last_selection_verbatim() {
+        let cached = r#"{"jsonrpc":"2.0","method":"selection_changed","params":{"filePath":"C:/a.rs"}}"#;
+        let out = replies(state(Some(cached)), r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#).await;
+        assert_eq!(out.len(), 2, "the reply, then the cached selection");
+        assert_eq!(out[1].event_type, "message");
+        assert_eq!(out[1].data, cached);
+    }
+
+    #[tokio::test]
+    async fn notifications_get_no_reply() {
+        assert!(replies(state(None), r#"{"jsonrpc":"2.0","method":"initialized"}"#).await.is_empty());
+        assert!(replies(state(None), r#"{"jsonrpc":"2.0","method":"no/such/method"}"#).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_method_is_answered_with_method_not_found() {
+        let out = replies(state(None), r#"{"jsonrpc":"2.0","id":"abc","method":"nope"}"#).await;
+        let reply = json_of(&out[0]);
+        assert_eq!(reply["id"], "abc", "a string id is echoed as a string");
+        assert_eq!(reply["error"]["code"], -32601);
+        assert_eq!(reply["error"]["message"], "Method not found: nope");
+    }
+
+    #[tokio::test]
+    async fn shutdown_is_acknowledged_with_an_empty_result() {
+        let out = replies(state(None), r#"{"jsonrpc":"2.0","id":7,"method":"shutdown"}"#).await;
+        let reply = json_of(&out[0]);
+        assert_eq!(reply["id"], 7);
+        assert_eq!(reply["result"], json!({}));
+    }
+
+    #[tokio::test]
+    async fn anything_but_a_json_rpc_2_request_is_ignored() {
+        for body in [
+            "not json",
+            r#"{"jsonrpc":"1.0","id":1,"method":"initialize"}"#,
+            r#"{"id":1,"method":"initialize"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+        ] {
+            assert!(replies(state(None), body).await.is_empty(), "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_list_without_java_serves_the_fallback_list() {
+        let out = replies(state(None), r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#).await;
+        let tools = json_of(&out[0])["result"]["tools"].clone();
+        assert_eq!(tools, fallback_tools());
+
+        let tools = tools.as_array().unwrap();
+        assert!(!tools.is_empty());
+        let mut names = HashSet::new();
+        for tool in tools {
+            let name = tool["name"].as_str().unwrap_or_default();
+            assert!(!name.is_empty(), "every tool has a name: {tool}");
+            assert!(names.insert(name), "{name} is listed twice");
+            assert!(tool["description"].is_string(), "{name} has a description");
+            assert_eq!(tool["inputSchema"]["type"], "object", "{name}'s input schema is an object");
+        }
+        assert!(names.contains("openFile"));
+    }
+
+    #[tokio::test]
+    async fn tools_call_without_java_is_an_internal_error() {
+        let out = replies(
+            state(None),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"openFile","arguments":{}}}"#,
+        )
+        .await;
+        let reply = json_of(&out[0]);
+        assert_eq!(reply["error"]["code"], -32603);
+        assert_eq!(reply["error"]["message"], "No tool callback registered");
+    }
+
+    #[test]
+    fn a_jni_error_is_a_tool_error_envelope() {
+        let result: Value = serde_json::from_str(&jni_error_result(r#"said "no""#)).unwrap();
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["content"][0]["type"], "text");
+        assert_eq!(result["content"][0]["text"], r#"JNI error: said "no""#);
+    }
+}

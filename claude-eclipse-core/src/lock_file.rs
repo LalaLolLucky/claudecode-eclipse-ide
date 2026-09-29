@@ -153,3 +153,130 @@ fn lock_file_dir() -> PathBuf {
         .unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".claude").join("ide")
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::EnvGuard;
+    use serde_json::json;
+
+    /// Beyond every OS's PID range, so any check that really looks reports it dead.
+    const DEAD_PID: u32 = u32::MAX;
+
+    /// Every test that writes or deletes lock files points CLAUDE_CONFIG_DIR at a
+    /// throwaway folder first: the real ~/.claude/ide holds the live IDEs' lock files.
+    fn isolated_lock_dir(env: &mut EnvGuard) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        env.set("CLAUDE_CONFIG_DIR", tmp.path());
+        tmp
+    }
+
+    #[test]
+    fn claude_config_dir_moves_the_lock_directory() {
+        let mut env = EnvGuard::lock();
+        let tmp = isolated_lock_dir(&mut env);
+        assert_eq!(lock_file_dir(), tmp.path().join("ide"));
+    }
+
+    #[test]
+    fn without_claude_config_dir_the_lock_directory_is_under_home() {
+        let mut env = EnvGuard::lock();
+        env.set("CLAUDE_CONFIG_DIR", ""); // empty counts as unset
+        env.set("USERPROFILE", "profile-home");
+        env.set("HOME", "unix-home");
+        assert_eq!(
+            lock_file_dir(),
+            PathBuf::from("profile-home").join(".claude").join("ide"),
+            "USERPROFILE is checked before HOME, on every platform"
+        );
+        env.remove("USERPROFILE");
+        assert_eq!(lock_file_dir(), PathBuf::from("unix-home").join(".claude").join("ide"));
+        env.remove("HOME");
+        assert_eq!(lock_file_dir(), PathBuf::from(".").join(".claude").join("ide"));
+    }
+
+    #[test]
+    fn write_produces_the_lock_file_claude_reads_and_remove_deletes_it() {
+        let mut env = EnvGuard::lock();
+        let tmp = isolated_lock_dir(&mut env);
+
+        write(48123, "secret-token", "C:/ws", r#"["C:/ws/a","C:/ws/b"]"#);
+        let path = tmp.path().join("ide").join("48123.lock");
+        let lock: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(lock["port"], 48123);
+        assert_eq!(lock["authToken"], "secret-token");
+        assert_eq!(lock["ideName"], "Eclipse");
+        assert_eq!(lock["version"], "0.2.0");
+        assert_eq!(lock["pid"], std::process::id());
+        assert_eq!(lock["workspaceFolder"], "C:/ws");
+        assert_eq!(lock["workspaceFolders"], json!(["C:/ws/a", "C:/ws/b"]));
+
+        remove();
+        assert!(!path.exists(), "remove deletes the file write created");
+    }
+
+    #[test]
+    fn malformed_project_paths_become_an_empty_list() {
+        let mut env = EnvGuard::lock();
+        let tmp = isolated_lock_dir(&mut env);
+
+        write(48124, "t", "C:/ws", "not json");
+        let path = tmp.path().join("ide").join("48124.lock");
+        let lock: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(lock["workspaceFolders"], json!([]));
+        remove();
+    }
+
+    #[test]
+    fn this_process_counts_as_alive() {
+        assert!(is_pid_alive(std::process::id()));
+    }
+
+    #[test]
+    fn stale_cleanup_removes_only_lock_files_of_dead_processes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let put = |name: &str, body: String| std::fs::write(dir.join(name), body).unwrap();
+        put("dead.lock", json!({ "pid": DEAD_PID }).to_string());
+        put("live.lock", json!({ "pid": std::process::id() }).to_string());
+        put("dead.txt", json!({ "pid": DEAD_PID }).to_string());
+        put("garbage.lock", "not json".to_string());
+        put("no-pid.lock", json!({ "port": 1 }).to_string());
+
+        remove_stale_lock_files(dir);
+
+        for kept in ["live.lock", "dead.txt", "garbage.lock", "no-pid.lock"] {
+            assert!(dir.join(kept).exists(), "{kept} must be left alone");
+        }
+        #[cfg(windows)]
+        assert!(!dir.join("dead.lock").exists());
+        #[cfg(target_os = "linux")]
+        assert!(!dir.join("dead.lock").exists());
+        // Elsewhere is_pid_alive cannot check and treats every PID as alive.
+        #[cfg(not(any(windows, target_os = "linux")))]
+        assert!(dir.join("dead.lock").exists());
+    }
+
+    #[test]
+    fn remove_other_lock_files_keeps_ours_and_anything_not_a_lock() {
+        let mut env = EnvGuard::lock();
+        let tmp = isolated_lock_dir(&mut env);
+        let dir = tmp.path().join("ide");
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["100.lock", "200.lock", "notes.txt"] {
+            std::fs::write(dir.join(name), "{}").unwrap();
+        }
+
+        remove_other_lock_files(100);
+
+        assert!(dir.join("100.lock").exists());
+        assert!(dir.join("notes.txt").exists());
+        assert!(!dir.join("200.lock").exists());
+    }
+}

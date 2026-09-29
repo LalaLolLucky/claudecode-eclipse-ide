@@ -53,3 +53,6 @@ libloading      = "0.9"
 # The standard module layout (the Rust Book's idiomatic paths): src/<module>.rs next
 # to src/<module>/, never src/<module>/mod.rs.
 mod_module_files = "deny"
+
+[dev-dependencies]
+tempfile = "3.27.0"

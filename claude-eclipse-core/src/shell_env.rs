@@ -433,3 +433,146 @@ fn capture_impl() -> CapturedEnv {
     // proxy vars set system-wide are already visible.
     CapturedEnv::default()
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::EnvGuard;
+
+    const PROXY_VARS: [&str; 6] =
+        ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
+
+    /// Sets the preference overrides for one test and puts the old ones back after.
+    struct Overrides(ProxyOverrides);
+
+    impl Overrides {
+        fn set(http: Option<&str>, https: Option<&str>, no_proxy: Option<&str>) -> Self {
+            let previous = get_proxy_overrides();
+            set_proxy_overrides(http.map(str::to_string), https.map(str::to_string), no_proxy.map(str::to_string));
+            Overrides(previous)
+        }
+    }
+
+    impl Drop for Overrides {
+        fn drop(&mut self) {
+            let p = self.0.clone();
+            set_proxy_overrides(p.http_proxy, p.https_proxy, p.no_proxy);
+        }
+    }
+
+    /// No proxy variable in the process environment, and no preference override.
+    fn clean_slate() -> (EnvGuard, Overrides) {
+        let mut env = EnvGuard::lock();
+        for key in PROXY_VARS {
+            env.remove(key);
+        }
+        (env, Overrides::set(None, None, None))
+    }
+
+    fn captured(path: Option<&str>, http: Option<&str>, https: Option<&str>, no_proxy: Option<&str>) -> CapturedEnv {
+        CapturedEnv {
+            path: path.map(str::to_string),
+            http_proxy: http.map(str::to_string),
+            https_proxy: https.map(str::to_string),
+            no_proxy: no_proxy.map(str::to_string),
+        }
+    }
+
+    fn pairs(v: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
+        v.iter().map(|(k, v)| (*k, v.to_string())).collect()
+    }
+
+    #[test]
+    fn an_empty_no_proxy_gets_all_three_loopback_names() {
+        assert_eq!(ensure_localhost_in_no_proxy(None), "localhost,127.0.0.1,::1");
+        assert_eq!(ensure_localhost_in_no_proxy(Some(String::new())), "localhost,127.0.0.1,::1");
+    }
+
+    #[test]
+    fn missing_loopback_names_go_in_front_of_the_users_list() {
+        assert_eq!(
+            ensure_localhost_in_no_proxy(Some("corp.example.com".into())),
+            "localhost,127.0.0.1,::1,corp.example.com"
+        );
+        assert_eq!(ensure_localhost_in_no_proxy(Some("localhost".into())), "127.0.0.1,::1,localhost");
+    }
+
+    #[test]
+    fn a_complete_no_proxy_is_left_as_it_is_whatever_its_case() {
+        assert_eq!(
+            ensure_localhost_in_no_proxy(Some("LOCALHOST,127.0.0.1,::1".into())),
+            "LOCALHOST,127.0.0.1,::1"
+        );
+    }
+
+    #[test]
+    fn a_proxy_setting_comes_from_the_preference_then_the_environment_then_the_shell() {
+        // Keys of the test's own, so no real proxy variable is read or changed.
+        const UPPER: &str = "CLAUDE_ECLIPSE_TEST_PROXY_UPPER";
+        const LOWER: &str = "CLAUDE_ECLIPSE_TEST_PROXY_LOWER";
+        let keys = [UPPER, LOWER];
+        let shell = Some("http://shell".to_string());
+        let mut env = EnvGuard::lock();
+        env.set(UPPER, "http://env-upper");
+        env.set(LOWER, "http://env-lower");
+
+        let pref = Some("http://pref".to_string());
+        assert_eq!(resolve_proxy_var(&pref, &keys, &shell).as_deref(), Some("http://pref"));
+
+        let empty_pref = Some(String::new());
+        assert_eq!(
+            resolve_proxy_var(&empty_pref, &keys, &shell).as_deref(),
+            Some("http://env-upper"),
+            "an empty preference falls through, and the first key wins"
+        );
+
+        env.set(UPPER, "");
+        assert_eq!(resolve_proxy_var(&None, &keys, &shell).as_deref(), Some("http://env-lower"));
+
+        env.remove(LOWER);
+        assert_eq!(resolve_proxy_var(&None, &keys, &shell).as_deref(), Some("http://shell"));
+        assert_eq!(resolve_proxy_var(&None, &keys, &None), None);
+    }
+
+    #[test]
+    fn only_the_captured_path_is_injected_when_no_proxy_is_set() {
+        let _slate = clean_slate();
+        let env = captured(Some("/opt/bin:/usr/bin"), None, None, None);
+        assert_eq!(env.to_inject(), pairs(&[("PATH", "/opt/bin:/usr/bin")]));
+    }
+
+    #[test]
+    fn an_active_proxy_brings_loopback_into_no_proxy() {
+        let _slate = clean_slate();
+        let env = captured(None, None, Some("http://proxy:8080"), None);
+        assert_eq!(
+            env.to_inject(),
+            pairs(&[("HTTPS_PROXY", "http://proxy:8080"), ("NO_PROXY", "localhost,127.0.0.1,::1")])
+        );
+    }
+
+    #[test]
+    fn the_preference_beats_the_shell_and_no_proxy_keeps_the_users_hosts() {
+        let (_env, _overrides) = clean_slate();
+        let _pref = Overrides::set(Some("http://pref:3128"), None, None);
+        let env = captured(None, Some("http://shell:8080"), None, Some("corp.example.com"));
+        assert_eq!(
+            env.to_inject(),
+            pairs(&[
+                ("HTTP_PROXY", "http://pref:3128"),
+                ("NO_PROXY", "localhost,127.0.0.1,::1,corp.example.com"),
+            ])
+        );
+    }
+
+    #[test]
+    fn no_proxy_alone_passes_through_unchanged() {
+        let _slate = clean_slate();
+        let env = captured(None, None, None, Some("corp.example.com"));
+        assert_eq!(env.to_inject(), pairs(&[("NO_PROXY", "corp.example.com")]));
+    }
+}
