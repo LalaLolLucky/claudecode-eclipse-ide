@@ -74,6 +74,10 @@ pub unsafe extern "system" fn JNI_OnLoad(
     .unwrap_or(jni::sys::JNI_ERR)
 }
 
+// ===========================================================================
+// JNI helpers: string conversion, and the panic guard every export ends in
+// ===========================================================================
+
 /// The end of every JNI export. A panic must not unwind out of an `extern "system"`
 /// function: since Rust 1.81 that aborts the process, which here is Eclipse. So each
 /// export runs its body under `catch_unwind` and hands the outcome here: a normal
@@ -1337,6 +1341,10 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionR
     finish_export(&mut env, "sessionRename", result, jni::sys::JNI_FALSE)
 }
 
+// ===========================================================================
+// Composer @-mention JNI entry point
+// ===========================================================================
+
 /// The composer's `@` list for `query`: the files and folders under `root`, with
 /// the browser tabs after them when `with_browser` (see
 /// `mentions::with_browser_rows` for the order). Those tabs come from the last
@@ -1372,6 +1380,10 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_listMent
     finish_export(&mut env, "listMentions", result, std::ptr::null_mut())
 }
 
+// ===========================================================================
+// MCP servers window JNI entry point
+// ===========================================================================
+
 /// Adds or removes an MCP server with `claude mcp add|remove`, run in `cwd`.
 /// Returns `{"token","ok"}` or `{"token","ok":false,"error"}`.
 ///
@@ -1395,7 +1407,7 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_mcpEditC
 }
 
 // ===========================================================================
-// Debug mode JNI entry point
+// Debug and Auto mode JNI entry points
 // ===========================================================================
 
 #[no_mangle]
@@ -1613,9 +1625,9 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_teleport
     finish_export(&mut env, "teleportGitStatus", result, std::ptr::null_mut())
 }
 
-// ---------------------------------------------------------------------------
-// Dictation
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Dictation JNI entry points
+// ===========================================================================
 
 /// One capture per IDE: the composer that started dictation is the only one
 /// that can be typing into, and a second device open would fail anyway.
@@ -1717,6 +1729,10 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttNoCap
     }));
     finish_export(&mut env, "sttNoCaptureDevice", result, jni::sys::JNI_FALSE)
 }
+
+// ===========================================================================
+// FreeBSD setup guide JNI entry point
+// ===========================================================================
 
 /// FreeBSD only: the setup guide (Markdown) the GUI view shows when the `claude`
 /// CLI is missing. Empty elsewhere. See `freebsd_guide`.
