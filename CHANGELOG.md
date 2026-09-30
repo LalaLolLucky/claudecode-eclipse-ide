@@ -4,7 +4,34 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.9] — 2026-09-27 *(current)*
+## [3.2.10] — 2026-09-30 *(current)*
+
+### Added
+- New MCP tools: `debug`, `launches`, `errorLog`, `format` and `refactorResource`.
+- New MCP tools with JDT: `getSource`, `refactorJava` and `organizeImports`.
+- A context ring in the composer appears once 65% of the context is used; click it to compact.
+- The welcome screen links to the MCP servers window and to the Claude Terminal.
+
+### Changed
+- The composer border, send button and loader take the color of the permission mode.
+- A new loader animation while Claude is working, and a new icon for Bypass permissions.
+- A new welcome screen.
+- Read no longer shows the file's contents in the conversation.
+- Grep and Glob show the folder they searched.
+- The actions menu's command filter is at the top and ready to type in; the model menu has an effort slider.
+- Minor UI fixes.
+
+### Fixed
+- Placing the cursor without selecting text no longer shows "1 line selected".
+- The status bar no longer shows 0% context after a conversation is resumed.
+- A failed Eclipse tool call is no longer reported to Claude as a success.
+- Eclipse's MCP traffic no longer goes through a proxy when NO_PROXY lists a similar-looking host.
+- On Windows, console arguments that are empty, contain tabs, or end in a backslash are passed correctly.
+- An internal error in the native library now shows an error instead of closing Eclipse.
+
+---
+
+## [3.2.9] — 2026-09-27
 
 ### Added
 - /mcp opens an MCP servers window: see each server's status and tools, reconnect, enable or disable, sign in, and add or remove servers.
