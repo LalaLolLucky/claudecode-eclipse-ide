@@ -142,10 +142,18 @@ Claude has access to the following MCP tools, which it invokes automatically:
 | `clean` | Discard build output and problem markers |
 | `build` | Clean and/or rebuild projects and report the resulting compile errors |
 | `runAs` | Run a project the way **Run As** does, or a saved launch configuration by name |
+| `launches` | List running and finished launches, read a launch's console output, or stop it |
+| `errorLog` | Read Eclipse's error log (the Error Log view), newest first, filtered by severity or plug-in |
+| `debug` | Debug a program started in debug mode: threads, stack and variables, evaluate expressions, line breakpoints, resume and step |
+| `format` | Format a file with Eclipse's formatter for its language and the project's settings, then save it |
+| `refactorResource` | Rename or move a file, folder or project as an Eclipse refactoring — references follow, and Edit → Undo reverts it |
 | `findReferences` † | Find every reference to a Java type or member |
 | `getSymbolInfo` † | Resolve the Java symbol at a position — kind, declaring type, signature |
 | `getTypeHierarchy` † | Show a Java type's supertypes and subtypes |
 | `runTests` † | Run JUnit tests and report the results |
+| `getSource` † | Read the source of a Java type or member, including library classes inside JARs |
+| `refactorJava` † | Rename a Java type, method or field, or move a type to another package, updating every reference |
+| `organizeImports` † | Add missing imports, remove unused ones, and order them by the project's settings |
 
 † Requires the Java Development Tools (JDT). The plugin never hard-depends on JDT — these tools are simply absent from the tool list when it isn't installed, and everything else works without it.
 

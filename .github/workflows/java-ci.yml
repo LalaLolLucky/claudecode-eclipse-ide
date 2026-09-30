@@ -44,3 +44,32 @@ jobs:
           cp -r claude-eclipse-core/src/. com.anthropic.claudecode.eclipse/src/core/
 
       - run: mvn -B integration-test
+
+      # Install the site just built into a bare Eclipse Platform at the oldest
+      # supported release -- no JDT, CDT or PyDev -- with only the Eclipse
+      # update site a stock install already has. The p2 director is the
+      # resolver behind Install New Software, so this fails exactly where a
+      # user's install would: a hard dependency on optional language tooling
+      # (#47), or a version floor above what that release ships (#148).
+      #
+      # 4.37 (2025-09) is the first release with org.eclipse.terminal.*;
+      # 2025-06 only has the older org.eclipse.tm.terminal.* bundles.
+      - name: Install into a bare Eclipse Platform (oldest supported)
+        env:
+          PLATFORM_VERSION: "4.37"
+          PLATFORM_DROP: R-4.37-202509050730
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          tarball="eclipse-platform-${PLATFORM_VERSION}-linux-gtk-x86_64.tar.gz"
+          drop="https://download.eclipse.org/eclipse/downloads/drops4/${PLATFORM_DROP}"
+          curl -fsSL -o "$tarball" "$drop/$tarball"
+          curl -fsSL "$drop/checksum/eclipse-${PLATFORM_VERSION}-SUMSSHA512" \
+            | grep " \*${tarball}\$" | sha512sum -c -
+          tar -xzf "$tarball"
+          profile=$(sed -n 's/^eclipse\.p2\.profile=//p' eclipse/configuration/config.ini)
+          java -jar eclipse/plugins/org.eclipse.equinox.launcher_*.jar -nosplash -consoleLog \
+            -application org.eclipse.equinox.p2.director \
+            -repository "file://$GITHUB_WORKSPACE/com.anthropic.claudecode.eclipse.site/target/repository,https://download.eclipse.org/eclipse/updates/${PLATFORM_VERSION}" \
+            -installIU com.anthropic.claudecode.eclipse.feature.feature.group \
+            -destination "$RUNNER_TEMP/eclipse" -profile "$profile"

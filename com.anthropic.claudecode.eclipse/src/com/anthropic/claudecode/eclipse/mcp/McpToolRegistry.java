@@ -11,20 +11,29 @@ import com.anthropic.claudecode.eclipse.tools.BuildTool;
 import com.anthropic.claudecode.eclipse.tools.CheckDocumentDirtyTool;
 import com.anthropic.claudecode.eclipse.tools.CleanTool;
 import com.anthropic.claudecode.eclipse.tools.CloseAllDiffTabsTool;
+import com.anthropic.claudecode.eclipse.tools.DebugTool;
+import com.anthropic.claudecode.eclipse.tools.ErrorLogTool;
+import com.anthropic.claudecode.eclipse.tools.FormatTool;
 import com.anthropic.claudecode.eclipse.tools.GetCurrentSelectionTool;
 import com.anthropic.claudecode.eclipse.tools.GetDiagnosticsTool;
 import com.anthropic.claudecode.eclipse.tools.GetLatestSelectionTool;
 import com.anthropic.claudecode.eclipse.tools.GetOpenEditorsTool;
 import com.anthropic.claudecode.eclipse.tools.GetWorkspaceFoldersTool;
+import com.anthropic.claudecode.eclipse.tools.LaunchesTool;
 import com.anthropic.claudecode.eclipse.tools.OpenDiffTool;
 import com.anthropic.claudecode.eclipse.tools.OpenFileTool;
+import com.anthropic.claudecode.eclipse.tools.RefactorResourceTool;
 import com.anthropic.claudecode.eclipse.tools.RefreshTool;
 import com.anthropic.claudecode.eclipse.tools.RejectDiffTool;
 import com.anthropic.claudecode.eclipse.tools.RunAsTool;
 import com.anthropic.claudecode.eclipse.tools.SaveDocumentTool;
 import com.anthropic.claudecode.eclipse.tools.jdt.FindReferencesTool;
+import com.anthropic.claudecode.eclipse.tools.jdt.GetSourceTool;
 import com.anthropic.claudecode.eclipse.tools.jdt.GetSymbolInfoTool;
 import com.anthropic.claudecode.eclipse.tools.jdt.GetTypeHierarchyTool;
+import com.anthropic.claudecode.eclipse.tools.jdt.HotCodeReplaceMonitor;
+import com.anthropic.claudecode.eclipse.tools.jdt.OrganizeImportsTool;
+import com.anthropic.claudecode.eclipse.tools.jdt.RefactorJavaTool;
 import com.anthropic.claudecode.eclipse.tools.jdt.RunTestsTool;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -46,15 +55,24 @@ public class McpToolRegistry {
         register(new SaveDocumentTool());
         register(new GetDiagnosticsTool());
         register(new CloseAllDiffTabsTool());
-        // Unconditional: BuildTool needs only org.eclipse.core.resources and RunAsTool only
-        // org.eclipse.debug.{core,ui}, all of which are hard Require-Bundles. RunAsTool reaches
-        // the individual launchers (PDE's "Eclipse Application", JDT's "Java Application", …)
-        // through the extension registry, never an import, so a missing launcher is one absent
-        // list entry rather than a class-loading failure.
+        // Unconditional: BuildTool needs only org.eclipse.core.resources, RunAsTool only
+        // org.eclipse.debug.{core,ui}, LaunchesTool those plus org.eclipse.ui.console and
+        // org.eclipse.jface.text, ErrorLogTool only org.eclipse.core.runtime, DebugTool and
+        // FormatTool the platform debug model and editor bundles, and RefactorResourceTool
+        // org.eclipse.ltk.core.refactoring — all hard Require-Bundles in the base Platform.
+        // RunAsTool reaches the individual launchers (PDE's "Eclipse Application", JDT's "Java
+        // Application", …) through the extension registry, and DebugTool each language's
+        // debugger through the debug model's interfaces, never an import — so a missing
+        // launcher or debugger is an absent option rather than a class-loading failure.
         register(new RefreshTool());
         register(new CleanTool());
         register(new BuildTool());
         register(new RunAsTool());
+        register(new LaunchesTool());
+        register(new ErrorLogTool());
+        register(new DebugTool());
+        register(new FormatTool());
+        register(new RefactorResourceTool());
         register(new com.anthropic.claudecode.eclipse.tools.ApprovalPromptTool());
         register(new com.anthropic.claudecode.eclipse.tools.AskUserQuestionTool());
         registerJdtToolsIfAvailable();
@@ -77,8 +95,30 @@ public class McpToolRegistry {
             register(new FindReferencesTool());
             register(new GetTypeHierarchyTool());
             register(new GetSymbolInfoTool());
+            register(new GetSourceTool());
         } catch (LinkageError | RuntimeException e) {
             Activator.logError("JDT present but Java navigation tools could not be created; skipping", e);
+        }
+
+        // refactorJava and organizeImports need org.eclipse.jdt.core.manipulation, where JDT's
+        // refactoring descriptors and OrganizeImportsOperation live. It ships with JDT, but is
+        // checked on its own like the JUnit bundles below.
+        if (Platform.getBundle("org.eclipse.jdt.core.manipulation") != null) {
+            try {
+                register(new RefactorJavaTool());
+                register(new OrganizeImportsTool());
+            } catch (LinkageError | RuntimeException e) {
+                Activator.logError("JDT manipulation present but Java refactoring tools could not be created; skipping", e);
+            }
+        }
+
+        // Hot code replace outcomes, reported by the debug tool, come from org.eclipse.jdt.debug.
+        if (Platform.getBundle("org.eclipse.jdt.debug") != null) {
+            try {
+                HotCodeReplaceMonitor.install();
+            } catch (LinkageError | RuntimeException e) {
+                Activator.logError("JDT debug present but the hot code replace monitor could not be installed; skipping", e);
+            }
         }
 
         // runTests additionally needs the JUnit + launching tooling, which can be absent even
