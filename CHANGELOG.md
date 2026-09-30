@@ -9,21 +9,21 @@ All notable changes to Claude Code for Eclipse are documented here.
 ### Added
 - New MCP tools: `debug`, `launches`, `errorLog`, `format` and `refactorResource`.
 - New MCP tools with JDT: `getSource`, `refactorJava` and `organizeImports`.
-- A context ring in the composer appears once 65% of the context is used; click it to compact.
-- The welcome screen links to the MCP servers window and to the Claude Terminal.
+- A context ring in the composer appears once 65% of the context is used; click it to compact ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
+- The welcome screen links to the MCP servers window and to the Claude Terminal ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
 
 ### Changed
-- The composer border, send button and loader take the color of the permission mode.
-- A new loader animation while Claude is working, and a new icon for Bypass permissions.
-- A new welcome screen.
-- Read no longer shows the file's contents in the conversation.
-- Grep and Glob show the folder they searched.
-- The actions menu's command filter is at the top and ready to type in; the model menu has an effort slider.
-- Minor UI fixes.
+- The composer border, send button and loader take the color of the permission mode ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
+- A new loader animation while Claude is working, and a new icon for Bypass permissions ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
+- A new welcome screen ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
+- Read no longer shows the file's contents in the conversation ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
+- Grep and Glob show the folder they searched ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
+- The actions menu's command filter is at the top and ready to type in; the model menu has an effort slider ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
+- Minor UI fixes ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
 
 ### Fixed
-- Placing the cursor without selecting text no longer shows "1 line selected".
-- The status bar no longer shows 0% context after a conversation is resumed.
+- Placing the cursor without selecting text no longer shows "1 line selected" ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
+- The status bar no longer shows 0% context after a conversation is resumed ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #147).
 - A failed Eclipse tool call is no longer reported to Claude as a success.
 - Eclipse's MCP traffic no longer goes through a proxy when NO_PROXY lists a similar-looking host.
 - On Windows, console arguments that are empty, contain tabs, or end in a backslash are passed correctly.
