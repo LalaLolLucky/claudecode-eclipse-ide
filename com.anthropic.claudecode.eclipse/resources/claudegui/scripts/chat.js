@@ -1065,7 +1065,7 @@ function doSend() {
   // Mid-stream sends QUEUE onto THIS tab's own conversation; other tabs stream
   // independently (each has its own process), so they never block this send.
   const queueing = !!t.streaming;
-  const withCtx = !!(ctxEnabled && ctxData && ctxData.fileName);
+  const withCtx = !!(ctxEnabled && ctxData && ctxData.fileName && !ctxIsDismissed());
   const imagesJson = (typeof pendingImagesJson === 'function') ? pendingImagesJson(t) : '';
   addUserMessage(text, withCtx ? ctxChipLabel() : null, imgs, null, nowIso());
   if (!t.titled && text) setTabTitle(t, text);   // title from text; an image-only first turn stays untitled
