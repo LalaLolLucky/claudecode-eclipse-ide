@@ -33,6 +33,32 @@ function closeMenus() {
    its right edge to the button; everything else aligns its left edge. Then clamped. */
 function positionMenu(menu, anchor) {
   if (!menu || !anchor) return;
+  // Sized to the actual visible composer BOX (#input-wrap, the bordered element itself) —
+  // NOT #composer, which is a full-width outer container with its own 14px padding that
+  // #input-wrap sits inset within (and caps at max-width:700px besides), so #composer's
+  // rect is a different, larger box than what's actually on screen as "the composer".
+  // Inset by 10px on each side (matching #input-wrap/#composer-bar's own 10px horizontal
+  // padding, not an arbitrary gap) so this menu's border doesn't sit right on top of it.
+  // max-height is set from the actual space above the composer, not a fixed/viewport-wide
+  // guess. Anchored via `bottom`, NOT a `top` computed from offsetHeight: a `top` frozen at
+  // open time goes stale the moment content height changes afterward (e.g. #actions-menu's
+  // own filter box narrowing the Slash Commands list) — the box would then shrink from a
+  // fixed top edge, leaving its bottom drifting away from the composer instead of staying
+  // glued to it. `bottom` has no such problem: with `top`/`height` both left auto, the box
+  // just grows/shrinks upward from that fixed anchor on its own, no repositioning needed.
+  if (menu.id === 'actions-menu' || menu.id === 'model-menu') {
+    const c = document.getElementById('input-wrap').getBoundingClientRect();
+    const appBottom = document.getElementById('app').getBoundingClientRect().bottom;
+    menu.style.width = (c.width - 20) + 'px';
+    menu.style.left = (c.left + 10) + 'px';
+    // #actions-menu additionally caps at 400px even when more space is available above the
+    // composer — on a tall window the dynamic space-based cap alone let it stretch to fill
+    // nearly the whole height, which reads as sprawling rather than a normal dropdown.
+    const spaceAbove = c.top - 16;
+    menu.style.maxHeight = (menu.id === 'actions-menu' ? Math.min(spaceAbove, 400) : spaceAbove) + 'px';
+    menu.style.bottom = (appBottom - c.top + 6) + 'px';
+    return;
+  }
   const r = anchor.getBoundingClientRect();
   const mw = menu.offsetWidth, mh = menu.offsetHeight;
   const below = (menu.id === 'history-panel' || menu.id === 'msg-menu');
@@ -56,7 +82,7 @@ function toggleMenu(id, anchor) {
   if (id === 'actions-menu') {
     const filterInput = document.getElementById('actions-slash-filter');
     if (filterInput) filterInput.value = '';
-    if (typeof buildActionsSlash === 'function') buildActionsSlash('');
+    if (typeof filterActionsSlash === 'function') filterActionsSlash('');
     focusFilter = filterInput;
   }
   menu.classList.add('open');
