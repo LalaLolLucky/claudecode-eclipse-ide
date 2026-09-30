@@ -168,6 +168,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction loadSessionPrefsFn;
     @SuppressWarnings("unused") private BrowserFunction setPermissionModeFn;
     @SuppressWarnings("unused") private BrowserFunction updateCliFn;
+    @SuppressWarnings("unused") private BrowserFunction runManagedUpdateFn;
     @SuppressWarnings("unused") private BrowserFunction rewindListFn;
     @SuppressWarnings("unused") private BrowserFunction rewindPreviewFn;
     @SuppressWarnings("unused") private BrowserFunction rewindApplyFn;
@@ -773,6 +774,24 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                         // not by this re-check reporting "up to date".
                         checkCliVersionAsync();
                         scanCliModelsAsync();     // the new binary may support newer models
+                    }
+                }));
+            return null;
+        });
+        // The follow-up to _updateCli when `claude update` deferred to a package manager
+        // instead of updating directly — runs the exact command it printed (e.g. "brew
+        // upgrade claude-code"), reusing the same onCliUpdateDone callback since success/
+        // failure display is identical either way. USER-TRIGGERED ONLY, from the update
+        // banner's own follow-up prompt (cliversion.js), never automatically.
+        runManagedUpdateFn = new SimpleFunction(browser, "_runManagedUpdate", a -> {
+            String commandLine = a.length > 0 && a[0] instanceof String s ? s : "";
+            CliUpdateService.runCommandAsync(commandLine, res ->
+                Display.getDefault().asyncExec(() -> {
+                    if (browser == null || browser.isDisposed()) return;
+                    browser.execute("window.onCliUpdateDone && window.onCliUpdateDone('" + esc(res.toJson()) + "')");
+                    if (res.ok) {
+                        checkCliVersionAsync();
+                        scanCliModelsAsync();
                     }
                 }));
             return null;
