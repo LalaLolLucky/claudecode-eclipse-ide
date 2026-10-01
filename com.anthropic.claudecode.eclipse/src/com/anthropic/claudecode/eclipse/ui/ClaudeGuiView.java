@@ -1001,7 +1001,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         openFileInEditorFn = new SimpleFunction(browser, "_openFileInEditor", a -> {
             String path = a.length > 0 && a[0] instanceof String s ? s : null;
             String root = a.length > 1 && a[1] instanceof String s ? s : null;
-            if (path != null) openFileInEditor(path, root);
+            // A sent message's context pill also passes the lines it was sent with.
+            int startLine = a.length > 2 && a[2] instanceof Number n ? n.intValue() : 0;
+            int endLine = a.length > 3 && a[3] instanceof Number n ? n.intValue() : 0;
+            if (path != null) openFileInEditor(path, root, startLine, endLine);
             return null;
         });
         // "View full output"/"View full diff" on a capped tool IN/OUT block or a truncated
@@ -1709,7 +1712,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         }
     }
 
-    /** Current open file + selection as a JSON object literal (basename only; path stays in Eclipse). */
+    /**
+     * Current open file + selection as a JSON object literal. {@code fileName} is the
+     * basename the composer shows; {@code filePath} is the full path, which a sent
+     * message's context pill needs to reopen the file when clicked.
+     */
     private String currentContextJson() {
         try {
             var st = Activator.getDefault().getSelectionTracker();
@@ -1723,8 +1730,15 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             boolean isEmpty = sel.has("isEmpty") && sel.get("isEmpty").getAsBoolean();
             int sl = sel.has("startLine") ? sel.get("startLine").getAsInt() : 0;
             int el = sel.has("endLine") ? sel.get("endLine").getAsInt() : 0;
-            return "{\"fileName\":\"" + esc(fileName) + "\",\"hasSelection\":" + (!isEmpty)
-                    + ",\"startLine\":" + sl + ",\"endLine\":" + el + "}";
+            // Gson, not esc(): the page reads this through JSON.parse as well as a JS
+            // literal, and esc()'s \' is not valid JSON — a path can hold an apostrophe.
+            com.google.gson.JsonObject ctx = new com.google.gson.JsonObject();
+            ctx.addProperty("fileName", fileName);
+            ctx.addProperty("filePath", filePath);
+            ctx.addProperty("hasSelection", !isEmpty);
+            ctx.addProperty("startLine", sl);
+            ctx.addProperty("endLine", el);
+            return ctx.toString();
         } catch (Throwable t) {
             return "{\"fileName\":null}";
         }
@@ -2856,8 +2870,12 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      * doesn't resolve to an existing file: a stale reference (later deleted/renamed) is a
      * routine, expected outcome of clicking something from earlier in a conversation, not
      * an error worth surfacing.
+     *
+     * <p>{@code startLine}/{@code endLine} (1-based, 0 for none) select those whole lines
+     * once the file is open — a message's context pill reopening what it was sent with.
+     * Lines past the end of a file that has since shrunk are clamped to it.
      */
-    private static void openFileInEditor(String path, String root) {
+    private static void openFileInEditor(String path, String root, int startLine, int endLine) {
         // This callback runs synchronously inside SimpleFunction, i.e. inside WebKitGTK's
         // JS execution — which runs inside this process's single GTK main loop (SWT's
         // Browser on Linux is in-process, not a separate process like Windows' WebView2).
@@ -2868,7 +2886,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // fresh UI-thread dispatch cycle instead of running it inline.
         Display.getDefault().asyncExec(() -> {
             try {
-                Path p = Path.of(path);
+                // An editor on a file outside the workspace reports its path in URI form
+                // ("/C:/dir/file"), which Windows does not accept as a path.
+                Path p = Path.of(path.matches("^/[A-Za-z]:/.*") ? path.substring(1) : path);
                 if (!p.isAbsolute() && root != null && !root.isBlank()) {
                     p = Path.of(root).resolve(path);
                 }
@@ -2877,7 +2897,19 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 if (page == null) return;
                 org.eclipse.core.filesystem.IFileStore fileStore =
                         org.eclipse.core.filesystem.EFS.getLocalFileSystem().getStore(p.toUri());
-                org.eclipse.ui.ide.IDE.openEditorOnFileStore(page, fileStore);
+                org.eclipse.ui.IEditorPart editor = org.eclipse.ui.ide.IDE.openEditorOnFileStore(page, fileStore);
+                if (startLine < 1 || editor == null) return;
+                org.eclipse.ui.texteditor.ITextEditor textEditor =
+                        editor.getAdapter(org.eclipse.ui.texteditor.ITextEditor.class);
+                if (textEditor == null || textEditor.getDocumentProvider() == null) return;
+                org.eclipse.jface.text.IDocument doc =
+                        textEditor.getDocumentProvider().getDocument(textEditor.getEditorInput());
+                if (doc == null || doc.getNumberOfLines() == 0) return;
+                int first = Math.min(startLine, doc.getNumberOfLines()) - 1;
+                int last = Math.min(Math.max(endLine, startLine), doc.getNumberOfLines()) - 1;
+                int from = doc.getLineOffset(first);
+                org.eclipse.jface.text.IRegion lastLine = doc.getLineInformation(last);
+                textEditor.selectAndReveal(from, lastLine.getOffset() + lastLine.getLength() - from);
             } catch (Exception ignored) {
                 // Malformed path, no active page, or the open itself failed — the click
                 // just does nothing rather than popping an error over the conversation.

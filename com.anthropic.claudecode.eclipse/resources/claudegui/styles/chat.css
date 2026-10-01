@@ -139,6 +139,8 @@
   padding: 2px 8px; margin-bottom: 8px; font-size: 11.5px; color: var(--fg-dim);
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .user-msg .ctx-chip svg { flex-shrink: 0; opacity: .8; }
+.user-msg .ctx-chip.clickable { cursor: pointer; }
+.user-msg .ctx-chip.clickable:hover { color: var(--fg); background: var(--bg-hover); }
 /* pre-wrap, so the line breaks you typed survive into the bubble. textContent already
    carries them; without this they collapse to single spaces and a message written as
    paragraphs reads as one run-on line. Does NOT undo the containment fix: the

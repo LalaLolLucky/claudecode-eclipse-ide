@@ -51,10 +51,15 @@ function parseUserContent(s) {
   // The form sent since the context became its own block (the two above are what
   // older transcripts hold).
   const sel = s.match(/<ide_selection>The user selected the lines (\d+) to (\d+) from ([^\n]+):\n/);
-  if (sel && !chip) chip = sel[3].split(/[\\/]/).pop() + ':' + sel[1] + '-' + sel[2];
+  // Only this form gives the pill something to open (`target`); the older two stay a label.
+  let target = null;
+  if (sel && !chip) {
+    chip = sel[3].split(/[\\/]/).pop() + ':' + sel[1] + '-' + sel[2];
+    target = { file: sel[3], startLine: +sel[1], endLine: +sel[2] };
+  }
   const opened = s.match(/<ide_opened_file>The user opened the file (.+?) in the IDE\./);
-  if (opened && !chip) chip = opened[1].split(/[\\/]/).pop();
-  return { chip, text: stripMeta(s) };
+  if (opened && !chip) { chip = opened[1].split(/[\\/]/).pop(); target = { file: opened[1] }; }
+  return { chip, target, text: stripMeta(s) };
 }
 
 let histSessions = [], histLoading = false, histLoaded = false;
@@ -556,7 +561,7 @@ function loadHistory(id, title, targetTab) {
       if (/^\[Image:[^\]]*\]$/.test(marker)) return;
       // Messages sent with pasted images carry them as {media_type,data} blocks —
       // rebuild the same chips the live bubble showed.
-      if (!invisible) addUserMessage(p.text, p.chip, imgs, it.id, it.ts);
+      if (!invisible) addUserMessage(p.text, p.chip, imgs, it.id, it.ts, null, p.target);
       if (isCompactCmd) flushCompact();
     } else if (ty === 'answered') {
       flushCompact();

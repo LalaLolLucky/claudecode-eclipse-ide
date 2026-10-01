@@ -184,8 +184,10 @@ function absTime(iso) {
 /* @param pane optional target, for a message that belongs to a tab other than
    the one being looked at — a Remote Control conversation receives messages
    typed on another device whether or not its tab is in front. Omitted, it
-   behaves exactly as before and renders into the active tab. */
-function addUserMessage(text, ctx, images, id, ts, pane) {
+   behaves exactly as before and renders into the active tab.
+   @param ctxTarget optional {file, startLine, endLine} behind the context pill: with it
+   the pill opens that file on click, selecting the lines when it has them. */
+function addUserMessage(text, ctx, images, id, ts, pane, ctxTarget) {
   pane = pane || (activeTab() ? activeTab().pane : messagesEl);
   clearWelcome(pane);
   const turn = document.createElement('div'); turn.className = 'turn';
@@ -203,6 +205,11 @@ function addUserMessage(text, ctx, images, id, ts, pane) {
     const chip = document.createElement('span'); chip.className = 'ctx-chip';
     chip.innerHTML = ICONS.CODEICON + ' <span></span>';
     chip.querySelector('span').textContent = ctx;
+    if (ctxTarget && ctxTarget.file && window._openFileInEditor) {
+      chip.classList.add('clickable');
+      chip.onclick = () => window._openFileInEditor(ctxTarget.file, rootPathOf(activeTab()),
+        ctxTarget.startLine || 0, ctxTarget.endLine || 0);
+    }
     box.appendChild(chip);
   }
   if (images && images.length) {
@@ -1067,7 +1074,7 @@ function doSend() {
   const queueing = !!t.streaming;
   const withCtx = !!(ctxEnabled && ctxData && ctxData.fileName);
   const imagesJson = (typeof pendingImagesJson === 'function') ? pendingImagesJson(t) : '';
-  addUserMessage(text, withCtx ? ctxChipLabel() : null, imgs, null, nowIso());
+  addUserMessage(text, withCtx ? ctxChipLabel() : null, imgs, null, nowIso(), null, withCtx ? ctxChipTarget() : null);
   if (!t.titled && text) setTabTitle(t, text);   // title from text; an image-only first turn stays untitled
   input.value = ''; input.style.height = 'auto'; t.draft = ''; closeSlash();
   if (typeof closeMention === 'function') closeMention();

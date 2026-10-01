@@ -114,6 +114,14 @@ function ctxChipLabel() {
   const base = ctxBaseName();
   return ctxData.hasSelection ? (base + ':' + ctxData.startLine + '-' + ctxData.endLine) : base;
 }
+/* What a sent message's context pill opens when clicked: the file, and the selected
+   lines if there were any. */
+function ctxChipTarget() {
+  if (!ctxData || !ctxData.filePath) return null;
+  return ctxData.hasSelection
+    ? { file: ctxData.filePath, startLine: ctxData.startLine, endLine: ctxData.endLine }
+    : { file: ctxData.filePath };
+}
 function updateCtxChip() {
   const chip = document.getElementById('ctx-chip');
   const label = document.getElementById('ctx-label');
