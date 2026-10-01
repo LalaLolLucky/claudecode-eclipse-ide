@@ -55,12 +55,14 @@ function positionSlash() {
   // same as ui.js's #actions-menu treatment) — not an exact flush match, otherwise this
   // menu's own border sits right on top of the composer's with no visible gap.
   slashEl.style.width = (r.width - 20) + 'px';
-  slashEl.style.left = (r.left + 10) + 'px';
   // max-height from the actual space above the composer, not a fixed 260px guess (panels.css)
   // — read BEFORE offsetHeight below so a menu taller than that space is already capped
   // (and scrollable) by the time its height is measured for the top offset.
   slashEl.style.maxHeight = (r.top - 16) + 'px';
   slashEl.classList.add('open');
+  // Clamped like ui.js's positionMenu: the menu's own min-width wins once the composer is
+  // narrower than it. After `open`, since a hidden menu measures 0 wide.
+  slashEl.style.left = Math.max(8, Math.min(r.left + 10, window.innerWidth - slashEl.offsetWidth - 8)) + 'px';
   slashEl.style.top = (r.top - slashEl.offsetHeight - 4) + 'px';
 }
 function handleSlashKey(e) {

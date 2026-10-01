@@ -50,7 +50,10 @@ function positionMenu(menu, anchor) {
     const c = document.getElementById('input-wrap').getBoundingClientRect();
     const appBottom = document.getElementById('app').getBoundingClientRect().bottom;
     menu.style.width = (c.width - 20) + 'px';
-    menu.style.left = (c.left + 10) + 'px';
+    // Clamped like every other menu below: the menu's own min-width wins once the composer
+    // is narrower than it, and an unclamped left edge would then run it off the right side.
+    const mw = menu.offsetWidth;
+    menu.style.left = Math.max(8, Math.min(c.left + 10, window.innerWidth - mw - 8)) + 'px';
     // #actions-menu additionally caps at 400px even when more space is available above the
     // composer — on a tall window the dynamic space-based cap alone let it stretch to fill
     // nearly the whole height, which reads as sprawling rather than a normal dropdown.
