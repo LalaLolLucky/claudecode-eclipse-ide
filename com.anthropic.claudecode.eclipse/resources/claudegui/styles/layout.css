@@ -345,10 +345,10 @@ body { min-width: 120px; }
    an always-visible chip background (unlike .modes-btn's hover-only fill) with a status
    dot + live count, hidden entirely until this conversation has at least one agent
    (agents.js's updateAgentsBtn) — never shown empty. */
-.agents-pill { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
-  border-radius: 6px; background: var(--bg-chip); color: var(--fg-soft); cursor: pointer; font-size: 12px; }
+.agents-pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 9px;
+  border-radius: 999px; background: var(--bg-chip); color: var(--fg-soft); cursor: pointer; font-size: 11px; }
 .agents-pill:hover { background: var(--bg-hover); color: var(--fg); }
-.agents-pill .agents-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-faint); flex-shrink: 0; }
+.agents-pill .agents-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-faint); flex-shrink: 0; }
 .agents-pill .agents-dot.running { background: var(--accent); }
 /* narrow-width collapse (fitComposerBar): words hide, icons stay, nothing leaves the div.
    The mode label may NEVER wrap — it is either one line or hidden entirely. */

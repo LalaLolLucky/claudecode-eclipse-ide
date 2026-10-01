@@ -602,7 +602,17 @@ function buildActionsSlash(query) {
     c.appendChild(it);
   });
 }
-function filterActionsSlash(query) { buildActionsSlash(query); }
+/* A non-empty query hides the Context/Model/Effort/Thinking/Account/Customize/Appearance
+   sections — without this, they stayed rendered in full and pushed the actual filtered
+   matches down below everything else, defeating the point of filtering at all. */
+function filterActionsSlash(query) {
+  buildActionsSlash(query);
+  const hide = !!query.trim();
+  const extra1 = document.getElementById('actions-menu-extra');
+  const extra2 = document.getElementById('actions-menu-extra2');
+  if (extra1) extra1.hidden = hide;
+  if (extra2) extra2.hidden = hide;
+}
 
 /* Initialise: model config FIRST (so the first tab's default model is the user's
    configured one), then the first tab + context chip + slash list. */

@@ -157,27 +157,31 @@
   </div>
 
   <!-- actions menu (the / button): Context + Model sections + Slash Commands -->
-  <div class="menu" id="actions-menu" style="min-width:284px">
+  <div class="menu" id="actions-menu">
     <input id="actions-slash-filter" type="text" placeholder="Filter commands…" oninput="filterActionsSlash(this.value)">
-    <div class="head"><span class="h">Context</span></div>
-    <div class="item" onclick="openRewindDialog()"><span class="ic">__REWIND__</span><div class="txt"><span class="lbl">Rewind</span></div></div>
-    <div class="sep"></div>
-    <div class="head"><span class="h">Model</span></div>
-    <div class="item" onclick="openModelChooser(event)"><span class="ic">__SPARK__</span><div class="txt"><span class="lbl">Switch model <span id="cur-model" style="color:var(--fg-dim)">(Default)</span></span></div><span class="ic">__CHEVRON__</span></div>
-    <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span>Effort <span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span>
-      <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
-    <div class="item" onclick="toggleThinking(event)"><span class="ic">__BRAIN__</span><div class="txt"><span class="lbl">Thinking</span></div><span class="check" id="think-check">__CHECK__</span></div>
-    <div class="item" onclick="openAccount()"><span class="ic">__USER__</span><div class="txt"><span class="lbl">Account &amp; usage…</span></div></div>
-    <div class="sep"></div>
-    <div class="head"><span class="h">Customize</span></div>
-    <div class="item" onclick="openMcpServers()"><span class="ic">__PLUG__</span><div class="txt"><span class="lbl">MCP servers</span></div></div>
-    <div class="sep"></div>
+    <div id="actions-menu-extra">
+      <div class="head"><span class="h">Context</span></div>
+      <div class="item" onclick="openRewindDialog()"><span class="ic">__REWIND__</span><div class="txt"><span class="lbl">Rewind</span></div></div>
+      <div class="sep"></div>
+      <div class="head"><span class="h">Model</span></div>
+      <div class="item" onclick="openModelChooser(event)"><span class="ic">__SPARK__</span><div class="txt"><span class="lbl">Switch model <span id="cur-model" style="color:var(--fg-dim)">(Default)</span></span></div><span class="ic">__CHEVRON__</span></div>
+      <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span>Effort <span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span>
+        <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
+      <div class="item" onclick="toggleThinking(event)"><span class="ic">__BRAIN__</span><div class="txt"><span class="lbl">Thinking</span></div><span class="check" id="think-check">__CHECK__</span></div>
+      <div class="item" onclick="openAccount()"><span class="ic">__USER__</span><div class="txt"><span class="lbl">Account &amp; usage…</span></div></div>
+      <div class="sep"></div>
+      <div class="head"><span class="h">Customize</span></div>
+      <div class="item" onclick="openMcpServers()"><span class="ic">__PLUG__</span><div class="txt"><span class="lbl">MCP servers</span></div></div>
+      <div class="sep"></div>
+    </div>
     <div class="head"><span class="h">Slash Commands</span></div>
     <div id="actions-slash"></div>
-    <div class="sep"></div>
-    <div class="head"><span class="h">Appearance</span></div>
-    <div class="effort"><span class="lbl"><span class="ic">__ZOOM__</span>Zoom level <span class="zoom-lbl" style="color:var(--fg-dim)">(100%)</span></span>
-      <span class="slider zoom-slider" title="Zoom level" onmousedown="zoomDown(event)"><span class="track"></span><span class="fill zoom-fill"></span><span class="knob zoom-knob"></span></span></div>
+    <div id="actions-menu-extra2">
+      <div class="sep"></div>
+      <div class="head"><span class="h">Appearance</span></div>
+      <div class="effort"><span class="lbl"><span class="ic">__ZOOM__</span>Zoom level <span class="zoom-lbl" style="color:var(--fg-dim)">(100%)</span></span>
+        <span class="slider zoom-slider" title="Zoom level" onmousedown="zoomDown(event)"><span class="track"></span><span class="fill zoom-fill"></span><span class="knob zoom-knob"></span></span></div>
+    </div>
   </div>
 
   <!-- model chooser -->
