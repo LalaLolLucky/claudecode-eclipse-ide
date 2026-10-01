@@ -367,7 +367,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 this.lastThinking = !"0".equals(thinking);
                 ChatProcessManager mgr = managerFor(tabId);
                 mgr.setRoot(root);
-                String outgoing = withCtx ? buildContextPreamble() + s : s;
+                final String attachments = withCtx ? concatJsonArrays(buildContextItem(), imagesJson) : imagesJson;
                 if (s.contains("@browser")) {
                     // A browser mention switches the browser on for the tab's process (so
                     // the process has to be up first) and may open a Chrome tab — both
@@ -389,11 +389,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                             ClaudeCodeView.debug("[BROWSER] no browser instruction in this send: the browser was "
                                     + "already on for this conversation, or the instruction was not found in the CLI");
                         }
-                        mgr.sendMessage(outgoing, resumeId, permMode, effort, fModel, fThinking,
-                                concatJsonArrays(imagesJson, blocks));
+                        mgr.sendMessage(s, resumeId, permMode, effort, fModel, fThinking,
+                                concatJsonArrays(attachments, blocks));
                     }, "claude-browser-send").start();
                 } else {
-                    mgr.sendMessage(outgoing, resumeId, permMode, effort, model, thinking, imagesJson);
+                    mgr.sendMessage(s, resumeId, permMode, effort, model, thinking, attachments);
                 }
             }
             return null;
@@ -1672,13 +1672,14 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     }
 
     /**
-     * Build the editor-context preamble injected ahead of the user's message so
-     * Claude actually receives the current selection/file. The interactive CLI
-     * gets this via the live MCP {@code selection_changed} push, but {@code claude -p}
-     * (what the chat uses) doesn't hold that subscription — so we inline it, the
-     * same way the VSCode plugin does (an {@code ide_selection} block).
+     * The editor context sent along with the user's message so Claude actually
+     * receives the current selection/file, as a one-entry JSON array for the
+     * message's attachments ("" when there is none). The interactive CLI gets this
+     * via the live MCP {@code selection_changed} push, but {@code claude -p} (what
+     * the chat uses) doesn't hold that subscription. The native side turns the
+     * entry into its own text block, so it never becomes part of the typed text.
      */
-    private String buildContextPreamble() {
+    private String buildContextItem() {
         try {
             var st = Activator.getDefault().getSelectionTracker();
             if (st == null) return "";
@@ -1691,12 +1692,18 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             int sl = sel.has("startLine") ? sel.get("startLine").getAsInt() : 0;
             int el = sel.has("endLine") ? sel.get("endLine").getAsInt() : 0;
             String text = (sel.has("text") && !sel.get("text").isJsonNull()) ? sel.get("text").getAsString() : "";
+            com.google.gson.JsonObject item = new com.google.gson.JsonObject();
+            item.addProperty("type", "ide_context");
+            item.addProperty("filePath", filePath);
             if (!isEmpty && text != null && !text.isBlank()) {
                 if (text.length() > 16000) text = text.substring(0, 16000) + "\n…(truncated)";
-                return "<ide_selection file=\"" + filePath + "\" startLine=\"" + sl + "\" endLine=\"" + el + "\">\n"
-                        + text + "\n</ide_selection>\n\n";
+                item.addProperty("startLine", sl);
+                item.addProperty("endLine", el);
+                item.addProperty("text", text);
             }
-            return "<ide_context openFile=\"" + filePath + "\" />\n\n";
+            com.google.gson.JsonArray items = new com.google.gson.JsonArray();
+            items.add(item);
+            return items.toString();
         } catch (Throwable t) {
             return "";
         }

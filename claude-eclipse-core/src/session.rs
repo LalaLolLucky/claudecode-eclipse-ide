@@ -2155,6 +2155,38 @@ mod tests {
         assert_eq!(sessions[0]["display"], serde_json::json!("what is this"));
     }
 
+    /// The editor context sent as its own leading text block: the reloaded item
+    /// keeps it (the GUI builds the chip from it) and the list title skips it.
+    #[test]
+    fn editor_context_block_stays_out_of_the_title() {
+        let mut env = EnvGuard::lock();
+        let home = std::env::temp_dir().join("claude-eclipse-session-ctxblock-home");
+        let root = r"C:\ctxws";
+        let dir = home.join(".claude").join("projects").join("C--ctxws");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("sessc.jsonl"), concat!(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<ide_opened_file>The user opened the file /C:/a/B.java in the IDE. This may or may not be related to the current task.</ide_opened_file>"},{"type":"text","text":"what is this"}]},"timestamp":"2026-07-30T01:00:00.000Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<ide_selection>The user selected the lines 3 to 5 from /C:/a/B.java:\nint x;\n\nThis may or may not be related to the current task.</ide_selection>"},{"type":"text","text":"fix it"}]},"timestamp":"2026-07-30T01:00:05.000Z"}"#, "\n",
+        )).unwrap();
+
+        env.set_home(&home);
+        let loaded = super::load_session_history(root, "sessc");
+        let listed = super::list_sessions(root);
+        let _ = fs::remove_dir_all(&home);
+
+        let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let want: serde_json::Value = serde_json::from_str(r#"[
+            {"t":"user","content":"<ide_opened_file>The user opened the file /C:/a/B.java in the IDE. This may or may not be related to the current task.</ide_opened_file>\nwhat is this","ts":"2026-07-30T01:00:00.000Z"},
+            {"t":"user","content":"<ide_selection>The user selected the lines 3 to 5 from /C:/a/B.java:\nint x;\n\nThis may or may not be related to the current task.</ide_selection>\nfix it","ts":"2026-07-30T01:00:05.000Z"}
+        ]"#).unwrap();
+        assert_eq!(got, want, "editor-context session render items");
+
+        let sessions: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(sessions[0]["display"], serde_json::json!("what is this"));
+    }
+
     /// An uploaded file comes back as a document its chip can redraw and open, and
     /// the browser blocks a `@browser` message carries stay out of the bubble and
     /// the title.

@@ -48,6 +48,12 @@ function parseUserContent(s) {
   }
   const c = s.match(/<ide_context\b[^>]*openFile="([^"]*)"[^>]*\/>/i);
   if (c && !chip) chip = c[1].split(/[\\/]/).pop();
+  // The form sent since the context became its own block (the two above are what
+  // older transcripts hold).
+  const sel = s.match(/<ide_selection>The user selected the lines (\d+) to (\d+) from ([^\n]+):\n/);
+  if (sel && !chip) chip = sel[3].split(/[\\/]/).pop() + ':' + sel[1] + '-' + sel[2];
+  const opened = s.match(/<ide_opened_file>The user opened the file (.+?) in the IDE\./);
+  if (opened && !chip) chip = opened[1].split(/[\\/]/).pop();
   return { chip, text: stripMeta(s) };
 }
 

@@ -1242,8 +1242,9 @@ impl Drop for ChatManager {
 /// attachment in order. `images_json` is a JSON array whose entries are either a
 /// pasted image as `{"media_type","data"}` (data = raw base64), or a ready block:
 /// `{"type":"document",…}` for an uploaded file, `{"type":"text","text"}` for
-/// context such as the browser blocks. Malformed / empty input degrades to the
-/// plain-string form.
+/// context such as the browser blocks. An `{"type":"ide_context",…}` entry is the
+/// editor context: it becomes a text block AHEAD of the message, wherever it was
+/// listed. Malformed / empty input degrades to the plain-string form.
 fn build_user_content(message: &str, images_json: &str) -> serde_json::Value {
     let items: Vec<serde_json::Value> = if images_json.trim().is_empty() {
         Vec::new()
@@ -1251,10 +1252,18 @@ fn build_user_content(message: &str, images_json: &str) -> serde_json::Value {
         serde_json::from_str(images_json).unwrap_or_default()
     };
     let mut content: Vec<serde_json::Value> = Vec::new();
+    let mut attached = 0;
+    for item in &items {
+        if item.get("type").and_then(|v| v.as_str()) == Some("ide_context") {
+            if let Some(text) = editor_context_text(item) {
+                content.push(serde_json::json!({ "type": "text", "text": text }));
+                attached += 1;
+            }
+        }
+    }
     if !message.is_empty() {
         content.push(serde_json::json!({ "type": "text", "text": message }));
     }
-    let mut attached = 0;
     for item in &items {
         let block = match item.get("type").and_then(|v| v.as_str()) {
             Some("document") => {
@@ -1287,6 +1296,25 @@ fn build_user_content(message: &str, images_json: &str) -> serde_json::Value {
         return serde_json::Value::String(message.to_string());
     }
     serde_json::Value::Array(content)
+}
+
+/// The editor context (`{filePath, startLine, endLine, text}`) in the wording the
+/// CLI's other IDE clients send. Viewers of the conversation outside this plugin
+/// (claude.ai, the mobile app) only recognise this exact form and show anything
+/// else as part of what the user typed, so it must stay byte-exact.
+fn editor_context_text(item: &serde_json::Value) -> Option<String> {
+    let path = item["filePath"].as_str().filter(|p| !p.is_empty())?;
+    let selected = item["text"].as_str().unwrap_or("");
+    if selected.is_empty() {
+        return Some(format!(
+            "<ide_opened_file>The user opened the file {path} in the IDE. This may or may not be related to the current task.</ide_opened_file>"
+        ));
+    }
+    let start = item["startLine"].as_i64().unwrap_or(0);
+    let end = item["endLine"].as_i64().unwrap_or(0);
+    Some(format!(
+        "<ide_selection>The user selected the lines {start} to {end} from {path}:\n{selected}\n\nThis may or may not be related to the current task.</ide_selection>"
+    ))
 }
 
 fn run_turn(
@@ -3293,6 +3321,40 @@ mod tests {
                 { "type": "text", "text": "<browser tabGroupId=\"1\" tabId=\"2\"></browser>" }
             ])
         );
+    }
+
+    #[test]
+    fn an_open_file_goes_first_as_its_own_block() {
+        let items = r#"[{"type":"ide_context","filePath":"/C:/ws/My Project/A.java"}]"#;
+        assert_eq!(
+            build_user_content("hi", items),
+            json!([
+                { "type": "text", "text": "<ide_opened_file>The user opened the file /C:/ws/My Project/A.java in the IDE. This may or may not be related to the current task.</ide_opened_file>" },
+                { "type": "text", "text": "hi" }
+            ])
+        );
+    }
+
+    #[test]
+    fn a_selection_goes_first_with_its_lines_wherever_it_was_listed() {
+        let items = r#"[
+            {"media_type":"image/png","data":"QUJD"},
+            {"type":"ide_context","filePath":"/C:/ws/A.java","startLine":3,"endLine":5,"text":"int x;\nint y;"}
+        ]"#;
+        assert_eq!(
+            build_user_content("fix it", items),
+            json!([
+                { "type": "text", "text": "<ide_selection>The user selected the lines 3 to 5 from /C:/ws/A.java:\nint x;\nint y;\n\nThis may or may not be related to the current task.</ide_selection>" },
+                { "type": "text", "text": "fix it" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "QUJD" } }
+            ])
+        );
+    }
+
+    #[test]
+    fn editor_context_without_a_file_is_dropped() {
+        assert_eq!(build_user_content("hi", r#"[{"type":"ide_context"}]"#), json!("hi"));
+        assert_eq!(build_user_content("hi", r#"[{"type":"ide_context","filePath":""}]"#), json!("hi"));
     }
 
     // ---- /usage parsing -------------------------------------------------
