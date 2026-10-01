@@ -1,6 +1,6 @@
 Manifest-Version: 1.0
 Bundle-ManifestVersion: 2
-Bundle-Name: Claude Code for Eclipse
+Bundle-Name: Claude Code for Eclipse IDE (Unofficial)
 Bundle-SymbolicName: com.anthropic.claudecode.eclipse;singleton:=true
 Bundle-Version: 3.2.10.qualifier
 Bundle-Activator: com.anthropic.claudecode.eclipse.Activator

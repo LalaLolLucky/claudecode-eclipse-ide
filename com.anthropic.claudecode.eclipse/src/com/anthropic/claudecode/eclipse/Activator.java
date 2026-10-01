@@ -85,14 +85,14 @@ public class Activator extends AbstractUIPlugin {
     public void start(BundleContext context) throws Exception {
         super.start(context);
         instance = this;
-        LOG.info("Claude Code for Eclipse starting...");
+        LOG.info("Claude Code for Eclipse IDE (Unofficial) starting...");
         // Note: dictation captures the mic natively (cpal) in the core, so there
         // is no WebView2 getUserMedia permission to grant here.
     }
 
     @Override
     public void stop(BundleContext context) throws Exception {
-        LOG.info("Claude Code for Eclipse stopping...");
+        LOG.info("Claude Code for Eclipse IDE (Unofficial) stopping...");
         shutdown();
         instance = null;
         super.stop(context);

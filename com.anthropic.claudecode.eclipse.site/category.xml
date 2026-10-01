@@ -3,7 +3,7 @@
    <feature id="com.anthropic.claudecode.eclipse.feature">
       <category name="com.anthropic.claudecode.eclipse.category"/>
    </feature>
-   <category-def name="com.anthropic.claudecode.eclipse.category" label="Claude Code for Eclipse IDE">
+   <category-def name="com.anthropic.claudecode.eclipse.category" label="Claude Code for Eclipse IDE (Unofficial)">
       <description>
          Unofficial community plugin integrating Claude Code AI assistant into Eclipse IDE.
          Not affiliated with or endorsed by Anthropic.

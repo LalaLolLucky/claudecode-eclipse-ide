@@ -10,7 +10,7 @@ An Eclipse IDE plugin that integrates [Claude Code](https://claude.ai/code) — 
 2. Click **Add** and enter:
    - Name: `Claude Code`
    - URL: `https://eilonwy06.github.io/claudecode-eclipse-ide/com.anthropic.claudecode.eclipse.site/`
-3. Select the **Claude Code for Eclipse IDE** feature and follow the install prompts
+3. Select the **Claude Code for Eclipse IDE (Unofficial)** feature and follow the install prompts
 4. Restart Eclipse when prompted
 
 ## Prerequisites

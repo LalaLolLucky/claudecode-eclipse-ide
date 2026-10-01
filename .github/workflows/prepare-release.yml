@@ -66,9 +66,13 @@ jobs:
 
           # The version banner the plugin itself prints on startup -- every
           # past manual release commit has bumped this same line by hand
-          # (grep the source for other hardcoded "Claude Code for Eclipse v"
-          # strings if this ever needs revisiting).
-          sed -i "s/Claude Code for Eclipse v${OLD}/Claude Code for Eclipse v${VERSION}/" \
+          # (grep the source for other hardcoded "(Unofficial) v" strings if
+          # this ever needs revisiting). sed exits 0 when nothing matches, so
+          # the grep fails the job if the banner wording has drifted from
+          # this pattern instead of releasing with the old version on it.
+          sed -i "s/Claude Code for Eclipse IDE (Unofficial) v${OLD}/Claude Code for Eclipse IDE (Unofficial) v${VERSION}/" \
+            com.anthropic.claudecode.eclipse/src/com/anthropic/claudecode/eclipse/ui/ClaudeCodeView.java
+          grep -qF "Claude Code for Eclipse IDE (Unofficial) v${VERSION}" \
             com.anthropic.claudecode.eclipse/src/com/anthropic/claudecode/eclipse/ui/ClaudeCodeView.java
 
       - name: Insert changelog entry
