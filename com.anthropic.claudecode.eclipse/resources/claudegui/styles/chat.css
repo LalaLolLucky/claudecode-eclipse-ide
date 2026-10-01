@@ -489,12 +489,14 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
    destroyed and recreated on every turn, so styling off a body class is correct regardless
    of when it happens to exist, rather than needing the class re-applied at every
    (re)creation). */
-.working { display: flex; align-items: center; gap: 9px; padding: 8px 0 8px 2px; color: var(--fg); font-weight: 600; }
+.working { display: flex; align-items: center; gap: 3px; padding: 8px 0 8px 2px; color: var(--fg); font-weight: 600; }
 /* .sb no longer rotates an SVG — working.js's global interval cycles its textContent through
    a fixed glyph sequence (· ✢ * ✶ ✻ ✽ and back down) instead. font-family/size/width here
-   are the real reference app's own .icon_hc5dvw rule, not a guess. */
-.working .sb { display: inline-block; text-align: center; width: 1.5em; font-family: monospace;
-  font-size: 1.5em; color: var(--mode-manual); }
+   are the real reference app's own .icon_hc5dvw rule, not a guess. height/line-height are
+   ours: the glyphs come from different fallback fonts with different metrics, and without a
+   fixed box the taller ones grow the row, which shakes the gerund and the transcript above. */
+.working .sb { display: inline-block; text-align: center; width: 1.5em; height: 1.2em; line-height: 1.2em;
+  font-family: monospace; font-size: 1.5em; color: var(--mode-manual); }
 body.mode-acceptEdits .working .sb { color: var(--mode-accept-edits); }
 body.mode-plan .working .sb { color: var(--mode-plan); }
 body.mode-auto .working .sb { color: var(--mode-auto); }
