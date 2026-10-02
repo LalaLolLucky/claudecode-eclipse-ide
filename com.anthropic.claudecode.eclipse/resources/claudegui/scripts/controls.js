@@ -65,7 +65,9 @@ function updateContextRing() {
   const CTX_RING_THRESHOLD = 65;   // hidden below this — only worth surfacing once it matters
   const has = !!(ctxRingData && typeof ctxRingData.contextPct === 'number' && ctxRingData.contextWindow
       && ctxRingData.contextPct >= CTX_RING_THRESHOLD);
+  const shown = btn.style.display !== 'none';
   btn.style.display = has ? '' : 'none';
+  if (shown !== has) fitComposerBar();   // one control more or fewer — re-check the narrow-width collapse
   if (!has) { hideCtxRingTip(); return; }
   const pct = Math.min(100, Math.max(0, ctxRingData.contextPct));
   const fill = btn.querySelector('.ctx-ring-fill');
@@ -145,12 +147,14 @@ function toggleContext() {
    applied only if the bar still overflows after the previous one:
      1. mode label ("Manual", …) — hidden the moment it can't fit on
         ONE line, so it never renders wrapped; it goes before the context label
-     2. context filename — icon only
+     2. context filename — icon only; the agents pill's count goes with it, leaving its dot
      3. send/stop button — minimized
      4. label padding tightens
      5. every control a size smaller and the gaps close
-     6. smaller again, into the input box's padding — the last resort, for a view
-        squeezed by a minimized Eclipse
+     6. smaller again, into the input box's padding, for a view squeezed by a
+        minimized Eclipse
+     7. the send button leaves the bar and stacks under the mic — the last resort, only
+        reached with the context ring or the agents pill also in the bar
    Widening re-runs from the full state, so everything comes back. */
 function fitComposerBar() {
   const bar = document.getElementById('composer-bar');
@@ -159,11 +163,18 @@ function fitComposerBar() {
   const modes = document.getElementById('modes-btn');
   const modesLbl = document.getElementById('modes-lbl');
   const sendBtn = document.getElementById('send');
-  if (!bar || !chip || !ctxLbl || !modes || !modesLbl || !sendBtn) return;
+  const slot = document.getElementById('send-slot');
+  const side = document.getElementById('input-side');
+  const pill = document.getElementById('agents-btn');
+  if (!bar || !chip || !ctxLbl || !modes || !modesLbl || !sendBtn || !slot || !side || !pill) return;
   chip.classList.remove('icon-only');
   modes.classList.remove('icon-only');
-  sendBtn.classList.remove('mini');
-  bar.classList.remove('compact', 'tight', 'tiny');
+  pill.classList.remove('icon-only');
+  // The slot is measured in the button's stead: it holds the button's room in the bar
+  // whether the button is in it or up beside the input, so every stage below reads the
+  // same either way and the button itself only moves when the outcome changes.
+  slot.classList.remove('mini'); sendBtn.classList.remove('mini');
+  bar.classList.remove('compact', 'tight', 'tiny', 'send-up');
   const overflowing = () => bar.scrollWidth > bar.clientWidth + 1;
   // The mode label goes as soon as the bar gets tight: either it already
   // overflows, or the context chip is being squeezed below its natural width
@@ -173,13 +184,32 @@ function fitComposerBar() {
   const chipSqueezed = ctxLbl.scrollWidth > ctxLbl.clientWidth + 1
                     && chip.offsetWidth < chipMax - 1;
   if (chipSqueezed || overflowing()) modes.classList.add('icon-only');
-  if (overflowing()) chip.classList.add('icon-only');
-  if (overflowing()) sendBtn.classList.add('mini');
+  if (overflowing()) { chip.classList.add('icon-only'); pill.classList.add('icon-only'); }
+  if (overflowing()) { slot.classList.add('mini'); sendBtn.classList.add('mini'); }
   if (overflowing()) bar.classList.add('compact');
   if (overflowing()) bar.classList.add('tight');
   if (overflowing()) bar.classList.add('tiny');
-  // icon-only mode button still tells you the mode on hover
+  if (overflowing()) bar.classList.add('send-up');
+  // Up beside the input it has the column to itself, so it is full size there.
+  const up = bar.classList.contains('send-up');
+  const home = up ? side : slot;
+  if (sendBtn.parentNode !== home) home.appendChild(sendBtn);
+  sendBtn.classList.toggle('mini', !up && slot.classList.contains('mini'));
+  // While the button is up the textarea has a taller floor (layout.css), and ui.js pins
+  // the textarea's height in px on every keystroke — so a keystroke made up there pins it
+  // AT that floor. Only that pin is re-taken when the button goes back down, or the box
+  // would stay two rows tall; any other height was right before and still is.
+  const row = side.parentNode, inp = document.getElementById('input');
+  const floor = row.classList.contains('send-up') && inp ? parseFloat(getComputedStyle(inp).minHeight) : 0;
+  row.classList.toggle('send-up', up);
+  if (floor && !up && parseFloat(inp.style.height) === floor) {
+    inp.style.height = 'auto';
+    inp.style.height = Math.min(inp.scrollHeight, 160) + 'px';
+  }
+  // icon-only mode button still tells you the mode on hover; so does the pill, its count
   modes.title = modes.classList.contains('icon-only') ? (modesLbl.textContent || '') : '';
+  const count = document.getElementById('agents-count');
+  pill.title = pill.classList.contains('icon-only') && count ? (count.textContent || 'Agents') : 'Agents';
 }
 window.addEventListener('resize', fitComposerBar);   // synchronous with the resize
 new ResizeObserver(() => requestAnimationFrame(fitComposerBar))

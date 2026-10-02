@@ -341,12 +341,18 @@ function updateAgentsBtn() {
   const btn = document.getElementById('agents-btn');
   if (!btn) return;
   const agents = collectAgents();
-  if (!agents.length) { btn.style.display = 'none'; return; }
-  btn.style.display = '';
-  const dot = document.getElementById('agents-dot');
-  if (dot) dot.classList.toggle('running', agents.some(agentIsActive));
   const count = document.getElementById('agents-count');
-  if (count) count.textContent = agents.length + ' agent' + (agents.length === 1 ? '' : 's');
+  const text = agents.length ? agents.length + ' agent' + (agents.length === 1 ? '' : 's') : '';
+  // The pill coming, going or changing width is a control more or fewer in the composer
+  // bar, so the bar's narrow-width collapse (controls.js) has to be worked out again.
+  const changed = (btn.style.display !== 'none') !== !!agents.length || (count && count.textContent !== text);
+  btn.style.display = agents.length ? '' : 'none';
+  if (count) count.textContent = text;
+  if (agents.length) {
+    const dot = document.getElementById('agents-dot');
+    if (dot) dot.classList.toggle('running', agents.some(agentIsActive));
+  }
+  if (changed && typeof fitComposerBar === 'function') fitComposerBar();
 }
 window.updateAgentsBtn = updateAgentsBtn;
 

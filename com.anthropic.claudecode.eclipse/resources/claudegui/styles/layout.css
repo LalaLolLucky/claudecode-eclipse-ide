@@ -3,15 +3,17 @@
 html, body { height: 100%; background: var(--bg); color: var(--fg);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; overflow: hidden; }
 .mono { font-family: 'Cascadia Code', 'Consolas', 'Fira Code', monospace; }
-/* The narrowest the view lays itself out for: the composer's last stage fits at 132px —
-   its five controls take 86px, and the 46px around them (composer padding, input box
-   border and padding, less the bar's reach into that padding) leaves the send button as
+/* The narrowest the view lays itself out for: the composer's last stage fits at 150px
+   whatever the bar holds. Its widest row there is add, commands, context ring, file chip,
+   mode and send — 104px; with the agents dot as well the send button has stacked under
+   the mic and the six left take 102px. The 46px around them (composer padding, input box
+   border and padding, less the bar's reach into that padding) leaves the last control as
    far from the box's right edge as the add button is from its left.
    An Eclipse window squeezed below even that scrolls the whole view sideways rather than
-   crushing it further. Above 132px nothing changes — the scrollbar only exists under the
+   crushing it further. Above 150px nothing changes — the scrollbar only exists under the
    media query. */
-body { min-width: 132px; }
-@media (max-width: 131.98px) { html { overflow-x: auto; } }
+body { min-width: 150px; }
+@media (max-width: 149.98px) { html { overflow-x: auto; } }
 
 #app { display: flex; flex-direction: column; height: 100%; position: relative; }
 /* Zoom-scaled content wrapper. Sized to 100%/z then scaled by z (transform-origin 0 0)
@@ -260,6 +262,12 @@ body { min-width: 132px; }
 #input-wrap.mode-bypassPermissions { border-color: var(--mode-auto); }
 #input-wrap.blur { border-color: var(--border); }
 .input-row { display: flex; align-items: flex-start; gap: 8px; }
+/* The column right of the textarea: the mic, and under it the send button once the bar
+   below has no room left for it (fitComposerBar's last stage). The textarea then stands
+   as tall as the pair, so the box has no dead strip beside them. */
+#input-side { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
+#input-side #send { margin-left: 0; }
+.input-row.send-up #input { min-height: 53px; }
 #input { flex: 1; background: transparent; border: none; outline: none; resize: none; color: var(--fg);
   font-family: inherit; font-size: 13px; line-height: 1.5; max-height: 160px; min-height: 22px; }
 #input::placeholder { color: var(--fg-faint); }
@@ -349,7 +357,8 @@ body { min-width: 132px; }
    dot + live count, hidden entirely until this conversation has at least one agent
    (agents.js's updateAgentsBtn) — never shown empty. */
 .agents-pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 9px;
-  border-radius: 999px; background: var(--bg-chip); color: var(--fg-soft); cursor: pointer; font-size: 11px; }
+  border-radius: 999px; background: var(--bg-chip); color: var(--fg-soft); cursor: pointer; font-size: 11px;
+  white-space: nowrap; flex-shrink: 0; }   /* one line or none: a wrapped count hides the overflow fitComposerBar measures */
 .agents-pill:hover { background: var(--bg-hover); color: var(--fg); }
 .agents-pill .agents-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-faint); flex-shrink: 0; }
 .agents-pill .agents-dot.running { background: var(--accent); }
@@ -358,8 +367,15 @@ body { min-width: 132px; }
 #modes-lbl { white-space: nowrap; }
 #ctx-chip.icon-only #ctx-label { display: none; }
 #modes-btn.icon-only #modes-lbl { display: none; }
+/* The agents pill goes with the file chip: its count hides, the dot stays as a round button. */
+#agents-btn.icon-only #agents-count { display: none; }
+#agents-btn.icon-only { width: 20px; padding: 0; justify-content: center; }
 #send.mini { width: 22px; height: 22px; border-radius: 5px; }
 #send.mini svg { width: 12px; height: 12px; }
+/* The send button's footprint (its box plus its 2px margin), held in the bar whether the
+   button is in it or up in #input-side — see fitComposerBar. */
+#send-slot { display: inline-flex; justify-content: flex-end; flex-shrink: 0; width: 28px; }
+#send-slot.mini { width: 24px; }
 #composer-bar.compact .modes-btn, #composer-bar.compact .file-chip { padding: 0 4px; }
 /* Last stage, for the narrowest view: every control a size smaller, never tinier, and the
    bar reaches 4px into the input box's side padding (the text above keeps its own). */
@@ -367,14 +383,20 @@ body { min-width: 132px; }
 #composer-bar.tight .cb-left, #composer-bar.tight .cb-right { gap: 0; }
 #composer-bar.tight .pill, #composer-bar.tight .pill svg { width: 22px; height: 22px; }
 #composer-bar.tight .modes-btn, #composer-bar.tight .file-chip { padding: 0 3px; }
+#composer-bar.tight .agents-pill { width: 18px; height: 18px; }
 /* Past even that (a minimized Eclipse squeezing the view): 18px boxes, the glyphs scaled
    down with them, reaching 8px into the input box's 10px side padding. */
 #composer-bar.tiny { margin-left: -8px; margin-right: -8px; }
 #composer-bar.tiny .pill, #composer-bar.tiny .pill svg { width: 18px; height: 18px; }
 #composer-bar.tiny .modes-btn, #composer-bar.tiny .file-chip { height: 18px; padding: 0 1px; }
 #composer-bar.tiny .modes-btn svg, #composer-bar.tiny .file-chip svg { width: 14px; height: 14px; }
+#composer-bar.tiny .agents-pill { width: 16px; height: 16px; }
 #composer-bar.tiny #send.mini { width: 18px; height: 18px; margin-left: 0; border-radius: 4px; }
 #composer-bar.tiny #send.mini svg { width: 10px; height: 10px; }
+#composer-bar.tiny #send-slot.mini { width: 18px; }
+/* And when even that overflows — the context ring or the agents pill is in the bar too —
+   the send button's place closes up and the button itself stacks under the mic. */
+#composer-bar.send-up #send-slot { display: none; }
 /* Square with its siblings (the extension's 26px send), not the old 28x32. Background
    mirrors #input-wrap's per-mode border color (same mode-* classes, toggled together by
    controls.js's applyModeUI) — Manual has no class of its own, so this base rule IS its

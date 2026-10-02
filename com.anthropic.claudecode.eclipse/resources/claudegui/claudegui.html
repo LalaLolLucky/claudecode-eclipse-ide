@@ -101,10 +101,14 @@
              top-right as the textarea grows to two lines, matching the reference.
              While recording the dock gains a panel behind BOTH the meter and the
              button, which is how the reference draws it; at rest there is no panel
-             and no meter, just the outline glyph. -->
-        <span id="mic-dock">
-          <span id="mic-level" hidden><i></i><i></i><i></i></span>
-          <span id="mic-btn" title="Click to record (Ctrl+D)">__MIC__</span>
+             and no meter, just the outline glyph.
+             #input-side is the column the dock heads: on the narrowest view the send
+             button leaves the bar and stacks under it (controls.js's fitComposerBar). -->
+        <span id="input-side">
+          <span id="mic-dock">
+            <span id="mic-level" hidden><i></i><i></i><i></i></span>
+            <span id="mic-btn" title="Click to record (Ctrl+D)">__MIC__</span>
+          </span>
         </span>
       </div>
       <div id="composer-bar">
@@ -124,7 +128,9 @@
         </div>
         <div class="cb-right">
           <span class="modes-btn" id="modes-btn" onclick="toggleMenu('modes-menu', this)"><span id="modes-ic">__HAND__</span> <span id="modes-lbl">Manual</span></span>
-          <span id="send" class="disabled" title="Send">__SEND__</span>
+          <!-- The send button's place in the bar. It keeps that room while the button is up
+               in #input-side, so fitComposerBar can still tell when it would fit back. -->
+          <span id="send-slot"><span id="send" class="disabled" title="Send">__SEND__</span></span>
         </div>
       </div>
     </div>
