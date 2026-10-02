@@ -396,13 +396,14 @@
 .copy-btn:hover { background: var(--bg-hover); color: var(--fg); }
 .copy-btn.copied { color: var(--green); border-color: var(--green); }
 /* .tpath-wrap is plain inline (wraps like text, needed so a long path can continue on the
-   tool name's line) — absolute positioning breaks on a wrapped inline element (the child
-   anchors to whatever tiny fragment box it wraps into), so this copy button is static/
-   in-flow instead, and revealed via .tool-line (the full-row block) rather than
-   .tpath-wrap itself so hovering across the gap to a wrapped second line doesn't drop it. */
-.tool-line .tpath-wrap .copy-btn { position: static; display: none; opacity: 1;
-  vertical-align: middle; margin-left: 6px; }
-.tool-line:hover .tpath-wrap .copy-btn { display: inline-flex; align-items: center; }
+   tool name's line), so it can't anchor the copy button's top/right the way a box does.
+   With both set to auto the button stays absolutely positioned — it takes no space, so
+   revealing it never moves the line — and sits where it would have fallen in the text:
+   the end of the last wrapped line. translateX pulls it back over the text's end, as it
+   always sat, so it can't hang past the view's right edge; nowrap because it would
+   otherwise shrink to the room left on that line and stack its label letter by letter. */
+.tool-line .tpath-wrap .copy-btn { top: auto; right: auto; transform: translateX(-100%);
+  white-space: nowrap; }
 /* Why a tool failed. Clamped to ONE line here as well as in the summariser: real
    results run to 100+ lines, and the transcript stays scannable only if a failure
    costs exactly one row. */

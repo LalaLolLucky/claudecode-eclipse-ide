@@ -730,13 +730,16 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
       // Grep/Glob's own `path` merely scopes the search (preferPatternOverPath already
       // outranked it for `detail` above) — shown as a faint suffix after the pattern so a
       // scoped search reads differently from an unscoped one instead of looking identical.
-      if (preferPatternOverPath && path && path !== detail) {
+      const hasScope = preferPatternOverPath && path && path !== detail;
+      if (hasScope) {
         const scope = document.createElement('span');
         scope.className = 'tscope';
         scope.textContent = ' (in: ' + path + ')';
         line.querySelector('.tpath-wrap').appendChild(scope);
       }
-      if (detail) line.querySelector('.tpath-wrap').appendChild(makeCopyBtn(() => detail));
+      // A scoped search copies the folder it searched, the same kind of value every other
+      // line's button gives — not the pattern, which only outranked it for display.
+      if (detail) line.querySelector('.tpath-wrap').appendChild(makeCopyBtn(() => hasScope ? path : detail));
     }
   }
   // A boxed IN row for input that .tpath's one-line fallback chain can't represent well:
