@@ -97,7 +97,23 @@ function hideCtxRingTip() {
 /* ---- file context chip ---- */
 let ctxData = { fileName: null };
 let ctxEnabled = true;
-window.onContextChanged = function(c) { ctxData = c || { fileName: null }; updateCtxChip(); };
+// Dismissing (the X) is per-snapshot, unlike ctxEnabled's persistent on/off: it hides
+// THIS file/selection only, and clears itself the moment the tracked file or selection
+// range actually changes — ctxEnabled instead stays however the user last left it
+// regardless of what file is open.
+let ctxDismissed = false;
+let ctxDismissKey = '';
+function ctxKey() {
+  return (ctxData && ctxData.fileName)
+    ? ctxData.fileName + ':' + (ctxData.startLine || 0) + '-' + (ctxData.endLine || 0)
+    : '';
+}
+function ctxIsDismissed() { return ctxDismissed && ctxKey() === ctxDismissKey; }
+window.onContextChanged = function(c) {
+  ctxData = c || { fileName: null };
+  if (ctxDismissed && ctxKey() !== ctxDismissKey) ctxDismissed = false;
+  updateCtxChip();
+};
 try { ctxData = JSON.parse(window._currentContext()); } catch (e) {}
 function ctxBaseName() {
   return ctxData && ctxData.fileName ? ctxData.fileName.split(/[\\/]/).pop() : '';
@@ -128,8 +144,8 @@ function updateCtxChip() {
   const chip = document.getElementById('ctx-chip');
   const label = document.getElementById('ctx-label');
   if (!chip || !label) return;
-  const has = !!(ctxData && ctxData.fileName);
-  label.textContent = ctxLabelText();
+  const has = !!(ctxData && ctxData.fileName) && !ctxIsDismissed();
+  label.textContent = has ? ctxLabelText() : 'No file open';
   chip.classList.toggle('empty', !has);
   chip.classList.toggle('off', has && !ctxEnabled);
   const ic = document.getElementById('ctx-ic');
@@ -137,8 +153,18 @@ function updateCtxChip() {
   fitComposerBar();   // label text changed — re-check the narrow-width collapse
 }
 function toggleContext() {
-  if (!ctxData || !ctxData.fileName) return;
+  if (!ctxData || !ctxData.fileName || ctxIsDismissed()) return;
   ctxEnabled = !ctxEnabled;
+  updateCtxChip();
+}
+/** The chip's X — removes the CURRENT file/selection from context (unlike toggleContext's
+ *  persistent eye icon, this un-dismisses itself the moment onContextChanged reports a
+ *  genuinely different file or selection, so it never permanently hides the chip). */
+function dismissContext(e) {
+  if (e) e.stopPropagation();
+  if (!ctxData || !ctxData.fileName) return;
+  ctxDismissed = true;
+  ctxDismissKey = ctxKey();
   updateCtxChip();
 }
 
