@@ -115,7 +115,7 @@ public final class ClaudeStatusBar extends Canvas {
 
         addPaintListener(this::onPaint);
         addMouseMoveListener(e -> { updateTooltip(e.x); updateCursor(e.x); });
-        addListener(SWT.MouseUp, e -> { if (e.button == 1) openRemoteControlUrl(e.x); });
+        addListener(SWT.MouseUp, e -> { if (e.button == 1) click(e.x); });
         addListener(SWT.Resize, e -> redraw());
         addDisposeListener(e -> {
             ctxColor.dispose();
@@ -279,7 +279,8 @@ public final class ClaudeStatusBar extends Canvas {
             g.setFont(before);
             // Recorded during paint, when the real x is known — the same moment
             // hover regions are recorded, and for the same reason.
-            clickRegions.add(new ClickRegion(x, x + ext.x, remoteControlUrl));
+            final String url = remoteControlUrl;
+            clickRegions.add(new ClickRegion(x, x + ext.x, () -> openRemoteControlUrl(url)));
         };
         return seg;
     }
@@ -293,8 +294,20 @@ public final class ClaudeStatusBar extends Canvas {
         return boldFont;
     }
 
-    /** Hand cursor over the Remote Control label, so it reads as clickable
-     *  before it is clicked. */
+    /** What a click on the model and effort text does; {@code null} leaves that text
+     *  plain, which is how the Terminal view has it. */
+    private Runnable modelClickHandler;
+
+    /** Makes the model and effort text clickable. The GUI view passes the action that
+     *  opens its model chooser; a host with no chooser never calls this. */
+    public void setModelClickHandler(Runnable handler) {
+        if (isDisposed()) return;
+        modelClickHandler = handler;
+        redraw();
+    }
+
+    /** Hand cursor over anything clickable, so it reads as clickable before it
+     *  is clicked. */
     private void updateCursor(int mouseX) {
         boolean over = false;
         for (ClickRegion r : clickRegions) {
@@ -303,22 +316,27 @@ public final class ClaudeStatusBar extends Canvas {
         setCursor(getDisplay().getSystemCursor(over ? SWT.CURSOR_HAND : SWT.CURSOR_ARROW));
     }
 
-    /** Opens the conversation on claude.ai. Failures are swallowed: a browser
-     *  that will not open is not worth an error dialog over a status indicator. */
-    private void openRemoteControlUrl(int mouseX) {
+    /** Runs whichever clickable region the pointer was released over, if any. */
+    private void click(int mouseX) {
         for (ClickRegion r : clickRegions) {
             if (mouseX >= r.x0() && mouseX < r.x1()) {
-                try {
-                    org.eclipse.ui.PlatformUI.getWorkbench().getBrowserSupport()
-                        .getExternalBrowser().openURL(new java.net.URI(r.url()).toURL());
-                } catch (Exception ignored) { }
+                r.action().run();
                 return;
             }
         }
     }
 
-    /** A clickable region [{@code x0}, {@code x1}) and where it leads. */
-    private record ClickRegion(int x0, int x1, String url) {}
+    /** Opens the conversation on claude.ai. Failures are swallowed: a browser
+     *  that will not open is not worth an error dialog over a status indicator. */
+    private static void openRemoteControlUrl(String url) {
+        try {
+            org.eclipse.ui.PlatformUI.getWorkbench().getBrowserSupport()
+                .getExternalBrowser().openURL(new java.net.URI(url).toURL());
+        } catch (Exception ignored) { }
+    }
+
+    /** A clickable region [{@code x0}, {@code x1}) and what a click on it does. */
+    private record ClickRegion(int x0, int x1, Runnable action) {}
     private void updateTooltip(int mouseX) {
         String tip = null;
         for (HoverRegion r : hoverRegions) {
@@ -512,6 +530,9 @@ public final class ClaudeStatusBar extends Canvas {
                 cx += partW[i];
                 drawn = true;
             }
+            // Recorded during paint, like the Remote Control label's, and only where the
+            // host gave the text something to do.
+            if (modelClickHandler != null) clickRegions.add(new ClickRegion(x, cx, modelClickHandler));
         };
         seg.tooltip = buildModelTooltip(model, s);
         return seg;

@@ -4,6 +4,11 @@
 /* floating decision / question card — sticks to the bottom of the scroll area so
    messages scroll behind it; full message-column width (like user messages). */
 .card-dock { position: sticky; bottom: 8px; z-index: 30; margin: 16px 0 4px; }
+/* Whatever docks at the bottom (#bottom-card, layout.css) takes at most 70% of the view's
+   height — the dock's own 20px of padding included — and scrolls inside itself past that.
+   Uncapped, a tall card on a short view (the /advisor card, a long plan) ran up over the
+   whole transcript with its top out of reach. */
+#bottom-card > * { max-height: calc(70vh - 20px); overflow-x: hidden; overflow-y: auto; }
 
 .decision { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft);
   padding: 12px 12px 10px; box-shadow: 0 6px 22px var(--shadow); }
@@ -19,7 +24,7 @@
 .decision .dec-opt:hover .num, .decision .dec-opt.sel .num { color: rgba(255,255,255,.75); }
 .decision .dec-instead { display: flex; align-items: center; gap: 9px; padding: 4px 0 0; margin-top: 4px; }
 .decision .dec-instead .num { color: var(--fg-faint); font-size: 11.5px; min-width: 12px; padding-left: 11px; }
-.decision .dec-instead input { flex: 1; background: var(--bg-code); border: 1px solid var(--border);
+.decision .dec-instead input { flex: 1; min-width: 0; background: var(--bg-code); border: 1px solid var(--border);
   border-radius: 6px; padding: 7px 10px; color: var(--fg); font-size: 12.5px; outline: none; font-family: inherit; }
 .decision .dec-instead input:focus { border-color: var(--sel); }
 .decision .dec-instead input::placeholder { color: var(--fg-faint); }

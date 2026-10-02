@@ -16,23 +16,26 @@
    1px border + 4px padding below were added ON TOP of those values instead of counted
    within them, rendering 10px wider/taller than intended and defeating the height cap. */
 .menu { position: absolute; z-index: 40; background: var(--menu-bg); border: 1px solid var(--border);
-  border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); padding: 4px; min-width: 210px;
+  border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); padding: 4px;
+  min-width: min(210px, calc(100vw - 16px));   /* a floor, but never wider than the view can show */
   box-sizing: border-box; display: none; }
 .menu.open { display: block; }
-/* #actions-menu bundles Rewind/Model/Effort/Thinking/Account/Slash Commands/Appearance
-   into one dropdown (unlike the focused, already-scrollable #slash-menu below) — with no
-   cap of its own it could grow taller than the viewport, and positionMenu's clamp (ui.js)
-   only keeps its TOP edge on-screen, not its bottom, so it would render past the bottom
-   edge with nothing to scroll it into view. Viewport-relative, NOT a fixed px guess like
-   #slash-menu's 260px below — that menu is always short; this one has grown past what any
-   one fixed number fits on every window size, so a fixed cap either clips on a small window
-   or scrolls needlessly on a tall one. 100vh-40px mirrors positionMenu's own 8px+8px
-   top/bottom viewport margin (ui.js) with a little extra breathing room. */
-/* min-width, not the removed inline width:284px — positionMenu (ui.js) now sets an
-   explicit width matching #composer's own, but the composer can shrink narrower than
-   that at small window sizes, and the menu's internal rows (Effort/Model labels) still
-   need this floor to lay out sanely. */
-#actions-menu { max-height: calc(100vh - 40px); overflow-y: auto; min-width: 284px; }
+/* The two popouts that span the composer (the / button's menu and the model chooser).
+   No width floor: positionMenu (ui.js) sizes them to the composer whatever its width, and
+   their rows give way inside — labels to an ellipsis, the sliders narrowing last.
+   One height for both: positionMenu sets the smaller of 400px and the room above the
+   composer; the 400px here is only what holds before it has run.
+   The menu itself never scrolls. It is a column whose .menu-scroll child does, so the
+   rows outside that child stay put: the filter box above the actions, the effort row
+   below the models. */
+#actions-menu, #model-menu { min-width: 0; max-height: 400px; overflow: hidden; }
+#actions-menu.open, #model-menu.open { display: flex; flex-direction: column; }
+.menu-scroll { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; }
+#actions-menu > #actions-slash-filter, #model-menu > .sep, #model-menu > .effort { flex-shrink: 0; }
+/* Opened from a button and as wide as their content, so these keep a floor — but never
+   one the view cannot show. */
+#modes-menu { min-width: min(264px, calc(100vw - 16px)); }
+#modes-menu, #plus-menu { max-width: calc(100vw - 16px); }
 /* calc(100% - 12px), not 100%: box-sizing:border-box only folds the input's OWN
    padding/border into that 100%, never its margin — the 6px left + 6px right margin
    below is still added ON TOP, so it has to be subtracted here too or the real box would
@@ -43,22 +46,36 @@
 .menu .item { display: flex; align-items: flex-start; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
 .menu .item:hover { background: var(--menu-hover); }
 .menu .item .ic { margin-top: 1px; color: var(--fg-dim); flex-shrink: 0; }
-.menu .item .txt { display: flex; flex-direction: column; gap: 1px; }
+.menu .item .txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }   /* min-width: may go narrower than its text */
 .menu .item .txt .lbl { color: var(--fg); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
 .menu .item .txt .desc { color: var(--fg-dim); font-size: 10.5px; line-height: 1.3; }
 .menu .item .check { margin-left: auto; color: var(--accent); }
 .menu .head { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px 3px; }
-.menu .head .h { color: var(--fg-dim); font-size: 11px; text-transform: none; }
+.menu .head .h { color: var(--fg-dim); font-size: 11px; text-transform: none;
+  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* An action's label is one line, cut with an ellipsis when the menu is narrower than it.
+   Block, not the flex row .lbl is elsewhere: a flex container's own text takes no
+   ellipsis. #cur-model's margin stands in for the 6px gap that row gave it. */
+#actions-menu .item .txt .lbl { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#cur-model { margin-left: 6px; }
 .menu .head .hint { color: var(--fg-faint); font-size: 10.5px; }
 .menu .sep { height: 1px; background: var(--border-soft); margin: 4px 4px; }
-.menu .effort { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; }
+.menu .effort { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; }
 /* gap was 6px with the icon glued into the .lbl text as a bare character (no element, no
    spacing) — "Effort"/"Zoom level" sat closer to the left edge than "Switch model" etc.,
    whose .item rows give the icon a real gap (line 31). Now .ic is a real child here
    too, so this gap actually applies to it, matched to .item's for the same indentation. */
 .menu .effort .lbl { color: var(--fg); font-size: 12.5px; display:flex; align-items:center; gap:10px; }
 .menu .effort .lbl .ic { color: var(--fg-dim); flex-shrink: 0; }
-.slider { width: 84px; height: 16px; position: relative; cursor: pointer; }
+/* Narrow menu: the slider narrows first, to a width that can still be dragged; then the
+   label gives way, its text cut with an ellipsis, down to its bare icon. .lbl-t is the
+   text as one run so it can take that ellipsis — the value's margin is the gap it had as
+   a flex child. The two floors and the gap come to 58px, which the narrowest menu (102px
+   at the 150px view) still has beside its scrollbar. */
+.menu .effort .lbl { flex: 0 1 auto; min-width: 14px; overflow: hidden; }
+.menu .effort .lbl-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.menu .effort .lbl-t .eff-lbl, .menu .effort .lbl-t .zoom-lbl { margin-left: 10px; }
+.slider { width: 84px; flex: 0 1000 84px; min-width: 36px; height: 16px; position: relative; cursor: pointer; }
 .slider .track { position: absolute; top: 7px; left: 0; right: 0; height: 3px; background: var(--track); border-radius: 2px; }
 .slider .fill { position: absolute; top: 7px; left: 0; width: 50%; height: 3px; background: var(--accent); border-radius: 2px; }
 .slider .knob { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); width: 12px; height: 12px; border-radius: 50%; background: var(--knob); }
@@ -76,10 +93,12 @@
 
 
 /* slash command menu */
-#slash-menu { min-width: 260px; max-height: 260px; overflow-y: auto; }
-/* Its own effort slider (kept even though the model+effort composer pill was dropped —
-   see the model chooser's own inline min-width:320px) needs room to breathe. */
-#model-menu { max-height: 320px; overflow-y: auto; }
+#slash-menu { min-width: 0; max-height: 260px; overflow-y: auto; }   /* the composer's width, like the two above */
+/* A command and its description share one line; the description is cut first. */
+#slash-menu .item .cmd, #actions-slash .item .cmd { flex: 0 1 auto; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#slash-menu .item .d, #actions-slash .item .d { flex: 0 100 auto; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #slash-menu .item .cmd { font-family: 'Cascadia Code','Consolas',monospace; color: var(--fg); font-size: 12.5px; }
 #slash-menu .item .d { color: var(--fg-dim); font-size: 11px; margin-left: auto; }
 #slash-menu .item.sel { background: var(--menu-hover); }
@@ -150,8 +169,8 @@
 /* model chooser items */
 #model-list .item { align-items: flex-start; }
 #model-list .m-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-#model-list .m-title { color: var(--fg); font-size: 12.5px; }
-#model-list .m-desc { color: var(--fg-dim); font-size: 11px; line-height: 1.35; }
+#model-list .m-title { color: var(--fg); font-size: 12.5px; overflow-wrap: anywhere; }   /* names and descriptions wrap, even mid-word */
+#model-list .m-desc { color: var(--fg-dim); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 #model-list .item.disabled { opacity: .5; cursor: default; }
 #model-list .item.disabled:hover { background: transparent; }
 #model-list .item .check { margin-left: auto; color: var(--accent); flex-shrink: 0; }

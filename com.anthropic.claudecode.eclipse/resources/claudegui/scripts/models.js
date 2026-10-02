@@ -93,6 +93,17 @@ function openModelChooser(e) {
   positionMenu(menu, anchor);
   openMenuEl = menu; openAnchor = anchor;
 }
+/** The status bar's model and effort text (ClaudeStatusBar, an SWT canvas under the page)
+ *  was clicked: the same chooser "Switch model" and /model open, shut again by a second
+ *  click. Nothing while a card stands in for the composer — the chooser hangs off the
+ *  composer, and the card is waiting on an answer of its own. */
+window.toggleModelChooser = function() {
+  const menu = document.getElementById('model-menu');
+  if (menu && menu.classList.contains('open')) { closeMenus(); return; }
+  const composer = document.getElementById('composer');
+  if (!composer || composer.offsetParent === null) return;
+  openModelChooser();
+};
 function renderModelList() {
   const list = document.getElementById('model-list');
   list.innerHTML = '';

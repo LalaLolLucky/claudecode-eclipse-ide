@@ -153,7 +153,7 @@
   </div>
 
   <!-- modes menu -->
-  <div class="menu" id="modes-menu" style="min-width:264px">
+  <div class="menu" id="modes-menu">
     <div class="head"><span class="h">Modes</span></div>
     <div class="item" data-mode="default" data-icon="HAND" onclick="selectMode(this)"><span class="ic">__HAND__</span><div class="txt"><span class="lbl">Manual</span><span class="desc">Claude shows each edit in a diff to accept or reject</span></div><span class="check">__CHECK__</span></div>
     <div class="item" data-mode="acceptEdits" data-icon="PENCIL" onclick="selectMode(this)"><span class="ic">__PENCIL__</span><div class="txt"><span class="lbl">Edit automatically</span><span class="desc">Claude applies edits without asking</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
@@ -161,20 +161,22 @@
     <div class="item" data-mode="auto" data-icon="BOLT" onclick="selectMode(this)"><span class="ic">__BOLT__</span><div class="txt"><span class="lbl">Auto</span><span class="desc">Claude will approve actions that pass a safety check and pause for anything risky</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
     <div class="item" id="mode-bypass" data-mode="bypassPermissions" data-icon="BYPASS" onclick="selectMode(this)"><span class="ic">__BYPASS__</span><div class="txt"><span class="lbl">Bypass permissions</span><span class="desc">Claude will not ask for approval before running potentially dangerous commands</span></div><span class="check" style="visibility:hidden">__CHECK__</span></div>
     <div class="sep"></div>
-    <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span>Effort <span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span>
+    <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span><span class="lbl-t">Effort<span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span></span>
       <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
   </div>
 
-  <!-- actions menu (the / button): Context + Model sections + Slash Commands -->
+  <!-- actions menu (the / button): Context + Model sections + Slash Commands. The filter
+       box stays put; everything under it is the one part that scrolls (.menu-scroll). -->
   <div class="menu" id="actions-menu">
     <input id="actions-slash-filter" type="text" placeholder="Filter commands…" oninput="filterActionsSlash(this.value)">
+    <div class="menu-scroll">
     <div id="actions-menu-extra">
       <div class="head"><span class="h">Context</span></div>
       <div class="item" onclick="openRewindDialog()"><span class="ic">__REWIND__</span><div class="txt"><span class="lbl">Rewind</span></div></div>
       <div class="sep"></div>
       <div class="head"><span class="h">Model</span></div>
-      <div class="item" onclick="openModelChooser(event)"><span class="ic">__SPARK__</span><div class="txt"><span class="lbl">Switch model <span id="cur-model" style="color:var(--fg-dim)">(Default)</span></span></div><span class="ic">__CHEVRON__</span></div>
-      <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span>Effort <span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span>
+      <div class="item" onclick="openModelChooser(event)"><span class="ic">__SPARK__</span><div class="txt"><span class="lbl">Switch model<span id="cur-model" style="color:var(--fg-dim)">(Default)</span></span></div><span class="ic">__CHEVRON__</span></div>
+      <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span><span class="lbl-t">Effort<span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span></span>
         <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
       <div class="item" onclick="toggleThinking(event)"><span class="ic">__BRAIN__</span><div class="txt"><span class="lbl">Thinking</span></div><span class="check" id="think-check">__CHECK__</span></div>
       <div class="item" onclick="openAccount()"><span class="ic">__USER__</span><div class="txt"><span class="lbl">Account &amp; usage…</span></div></div>
@@ -188,17 +190,21 @@
     <div id="actions-menu-extra2">
       <div class="sep"></div>
       <div class="head"><span class="h">Appearance</span></div>
-      <div class="effort"><span class="lbl"><span class="ic">__ZOOM__</span>Zoom level <span class="zoom-lbl" style="color:var(--fg-dim)">(100%)</span></span>
+      <div class="effort"><span class="lbl"><span class="ic">__ZOOM__</span><span class="lbl-t">Zoom level<span class="zoom-lbl" style="color:var(--fg-dim)">(100%)</span></span></span>
         <span class="slider zoom-slider" title="Zoom level" onmousedown="zoomDown(event)"><span class="track"></span><span class="fill zoom-fill"></span><span class="knob zoom-knob"></span></span></div>
+    </div>
     </div>
   </div>
 
-  <!-- model chooser -->
-  <div class="menu" id="model-menu" style="min-width:320px">
-    <div class="head"><span class="h">Select a model</span></div>
-    <div id="model-list"></div>
+  <!-- model chooser: the heading and the list scroll together (.menu-scroll); the effort
+       row under them stays put. -->
+  <div class="menu" id="model-menu">
+    <div class="menu-scroll">
+      <div class="head"><span class="h">Select a model</span></div>
+      <div id="model-list"></div>
+    </div>
     <div class="sep"></div>
-    <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span>Effort <span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span>
+    <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span><span class="lbl-t">Effort<span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span></span>
       <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
   </div>
 

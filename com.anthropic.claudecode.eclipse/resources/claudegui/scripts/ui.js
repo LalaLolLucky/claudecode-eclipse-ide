@@ -50,15 +50,15 @@ function positionMenu(menu, anchor) {
     const c = document.getElementById('input-wrap').getBoundingClientRect();
     const appBottom = document.getElementById('app').getBoundingClientRect().bottom;
     menu.style.width = (c.width - 20) + 'px';
-    // Clamped like every other menu below: the menu's own min-width wins once the composer
-    // is narrower than it, and an unclamped left edge would then run it off the right side.
+    // Clamped like every other menu below, so a left edge can never run it off the right side.
     const mw = menu.offsetWidth;
     menu.style.left = Math.max(8, Math.min(c.left + 10, window.innerWidth - mw - 8)) + 'px';
-    // #actions-menu additionally caps at 400px even when more space is available above the
-    // composer — on a tall window the dynamic space-based cap alone let it stretch to fill
-    // nearly the whole height, which reads as sprawling rather than a normal dropdown.
+    // One height for both: the room above the composer, capped at 400px — on a tall window
+    // the space-based cap alone let a menu stretch to fill nearly the whole height, which
+    // reads as sprawling rather than a normal dropdown. Past it the menu's .menu-scroll
+    // child scrolls (panels.css); the filter box and the effort row stay where they are.
     const spaceAbove = c.top - 16;
-    menu.style.maxHeight = (menu.id === 'actions-menu' ? Math.min(spaceAbove, 400) : spaceAbove) + 'px';
+    menu.style.maxHeight = Math.min(spaceAbove, 400) + 'px';
     menu.style.bottom = (appBottom - c.top + 6) + 'px';
     return;
   }

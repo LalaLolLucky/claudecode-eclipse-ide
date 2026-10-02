@@ -325,6 +325,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // from this GUI's own stream plus the account-global limits in the store.
         statusBar = new ClaudeStatusBar(parent);
         statusBar.setLayoutData(new org.eclipse.swt.layout.GridData(SWT.FILL, SWT.CENTER, true, false));
+        // The model and effort text opens the page's model chooser, as "Switch model" and
+        // /model do (models.js's toggleModelChooser). The bar is outside the webview, so
+        // the click is handed across the same way a toolbar Action's is.
+        statusBar.setModelClickHandler(() -> pushToolbarAction("toggleModelChooser"));
         applyStatusBarEnabled();
         startStatusTimer();
         // Seed the Session/Weekly percentages now, so a user who only ever opens
