@@ -4,7 +4,31 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.10] — 2026-09-30 *(current)*
+## [3.2.11] — 2026-10-02 *(current)*
+
+### Added
+- Copy buttons on search result lists, agent log text and agent responses ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #163).
+- Clicking the file pill on a sent message opens the file and selects its lines.
+- Clicking the model in the status bar opens the model menu.
+- The update banner offers the package manager's own command for Homebrew, WinGet and apk installs ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #165).
+
+### Changed
+- The file chip in the composer has an X that stops sending the open file or selection; it comes back on a new selection or another file ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #161).
+- Copy buttons are icons, with a checkmark once copied ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #163).
+- The actions, model and slash menus are as wide as the composer, and the Agents panel has more room ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #164).
+- The update banner follows the release channel set for Claude Code ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #165).
+
+### Fixed
+- In a narrow view, a tool's path no longer shares a line with the tool name, and its copy button no longer covers short text ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #162).
+- In a narrow view, the composer's controls stay inside the box: the agents pill shrinks to a dot and the send button moves under the mic.
+- Menus and cards fit a narrow or short view; a long plan or permission card scrolls inside itself.
+- Messages sent from Eclipse no longer show the raw editor context tag on web and mobile.
+- The working text no longer shakes as its glyph changes.
+- Minor UI fixes and improvements.
+
+---
+
+## [3.2.10] — 2026-09-30
 
 ### Added
 - New MCP tools: `debug`, `launches`, `errorLog`, `format` and `refactorResource`.
