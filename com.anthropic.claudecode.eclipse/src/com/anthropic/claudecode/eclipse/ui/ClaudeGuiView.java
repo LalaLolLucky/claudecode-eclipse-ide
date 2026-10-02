@@ -779,13 +779,14 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             return null;
         });
         // The follow-up to _updateCli when `claude update` deferred to a package manager
-        // instead of updating directly — runs the exact command it printed (e.g. "brew
-        // upgrade claude-code"), reusing the same onCliUpdateDone callback since success/
-        // failure display is identical either way. USER-TRIGGERED ONLY, from the update
-        // banner's own follow-up prompt (cliversion.js), never automatically.
+        // instead of updating directly — runs that manager's update (e.g. "brew upgrade
+        // claude-code"), reusing the same onCliUpdateDone callback since success/failure
+        // display is identical either way. TAKES NO ARGUMENT, on purpose: the page says
+        // "run it", and CliUpdateService runs the command IT recognized in the CLI's
+        // output — nothing the page passes could ever choose the program. USER-TRIGGERED
+        // ONLY, from the update banner's own follow-up prompt (cliversion.js).
         runManagedUpdateFn = new SimpleFunction(browser, "_runManagedUpdate", a -> {
-            String commandLine = a.length > 0 && a[0] instanceof String s ? s : "";
-            CliUpdateService.runCommandAsync(commandLine, res ->
+            CliUpdateService.runManagedAsync(res ->
                 Display.getDefault().asyncExec(() -> {
                     if (browser == null || browser.isDisposed()) return;
                     browser.execute("window.onCliUpdateDone && window.onCliUpdateDone('" + esc(res.toJson()) + "')");

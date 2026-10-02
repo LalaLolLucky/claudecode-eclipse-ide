@@ -326,13 +326,22 @@ public final class CliVersionService {
             try (InputStream in = conn.getInputStream()) {
                 body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             }
-            JsonObject root = JsonParser.parseString(body).getAsJsonObject();
-            String tag = updateChannel();
-            return (root.has(tag) && root.get(tag).isJsonPrimitive())
-                    ? root.get(tag).getAsString() : "";
+            return versionForChannel(JsonParser.parseString(body).getAsJsonObject(), updateChannel());
         } catch (Throwable t) {
             return "";   // offline / registry blocked
         }
+    }
+
+    /**
+     * The version the registry's dist-tags hold for {@code channel}. A channel the registry
+     * has no tag for falls back to {@code latest}: the CLI knows channels npm does not
+     * ({@code rc}), and answering "unknown" for those would silence the banner for good
+     * where it used to compare against {@code latest}.
+     */
+    static String versionForChannel(JsonObject tags, String channel) {
+        String tag = (channel != null && tags.has(channel) && tags.get(channel).isJsonPrimitive())
+                ? channel : "latest";
+        return (tags.has(tag) && tags.get(tag).isJsonPrimitive()) ? tags.get(tag).getAsString() : "";
     }
 
     /** {@code ~/.claude/settings.json} — the same user-scope file
@@ -342,31 +351,35 @@ public final class CliVersionService {
     }
 
     /**
-     * The npm dist-tag matching the user's configured {@code autoUpdatesChannel}, read through
-     * verbatim rather than mapped against a fixed set — the registry currently publishes at
-     * least three ({@code stable}, {@code latest}, {@code next}), and passing an unrecognized
-     * value through is harmless: {@link #latestVersion} already treats a tag absent from the
-     * registry response as unknown ({@code ""}), the same as an unreachable registry.
-     * Defaults to {@code "stable"} — deliberately NOT the CLI's own default of {@code latest} —
-     * for an absent, malformed, unreadable, or blank settings value: an update banner is a nag
-     * by nature, and defaulting to the conservative tag when the actual channel can't be
-     * determined means we never push a bleeding-edge version on someone we don't know is
-     * tracking it.
+     * The user's configured {@code autoUpdatesChannel}, read through verbatim rather than
+     * mapped against a fixed set ({@link #versionForChannel} settles what the registry
+     * makes of it). Defaults to {@code "latest"} for an absent, malformed, unreadable, or
+     * blank value — the CLI's own default ({@code autoUpdatesChannel ?? "latest"}), so with
+     * nothing configured the banner offers exactly what {@code claude update} would install.
      */
     private static String updateChannel() {
         try {
             Path p = userSettingsPath();
-            if (!Files.exists(p)) return "stable";
-            JsonElement root = JsonParser.parseString(Files.readString(p, StandardCharsets.UTF_8));
-            if (!root.isJsonObject()) return "stable";
+            if (!Files.exists(p)) return "latest";
+            return channelFrom(Files.readString(p, StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return "latest";
+        }
+    }
+
+    /** {@link #updateChannel} for the text of a settings file. */
+    static String channelFrom(String settingsJson) {
+        try {
+            JsonElement root = JsonParser.parseString(settingsJson);
+            if (!root.isJsonObject()) return "latest";
             JsonElement ch = root.getAsJsonObject().get("autoUpdatesChannel");
             if (ch != null && ch.isJsonPrimitive()) {
                 String v = ch.getAsString().trim();
                 if (!v.isEmpty()) return v;
             }
-            return "stable";
+            return "latest";
         } catch (Exception e) {
-            return "stable";
+            return "latest";
         }
     }
 

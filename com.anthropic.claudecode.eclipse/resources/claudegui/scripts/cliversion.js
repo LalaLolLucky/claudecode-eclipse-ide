@@ -80,9 +80,11 @@ function dismissUpdateBanner() {
 }
 
 /* Set once `claude update` reports it deferred to a package manager instead of updating
-   directly (onCliUpdateDone below) — the exact follow-up command it printed, e.g. "brew
-   upgrade claude-code". While set, the banner's button runs THAT instead of `claude
-   update` again, which would just print the same advice a second time. */
+   directly (onCliUpdateDone below) — the follow-up command it printed, e.g. "brew upgrade
+   claude-code". While set, the banner's button runs THAT instead of `claude update`
+   again, which would just print the same advice a second time.
+   This copy is for the button's label only. Java recognized the command and holds what
+   will actually run (CliUpdateService); nothing here is passed back to it. */
 let pendingManagedCommand = null;
 
 /** Runs `claude update` (the CLI's own updater — install-method agnostic), or, once a
@@ -97,7 +99,7 @@ function runCliUpdate() {
     const cmd = pendingManagedCommand;
     if (btn) { btn.classList.add('busy'); btn.textContent = 'Running…'; }
     if (txt) txt.textContent = 'Running ' + cmd + ' — this can take a minute.';
-    try { if (window._runManagedUpdate) window._runManagedUpdate(cmd); } catch (e) {}
+    try { if (window._runManagedUpdate) window._runManagedUpdate(); } catch (e) {}
     return;
   }
   if (btn) { btn.classList.add('busy'); btn.textContent = 'Updating…'; }
@@ -119,10 +121,12 @@ window.onCliUpdateDone = function (json) {
   // CLI's own "is managed by" phrasing rather than trusting the exit code. Guarded on
   // !pendingManagedCommand so this only ever fires off `claude update`'s OWN output, not
   // a second time off whatever the follow-up command itself printed.
+  // res.managed is the follow-up command, present only when Java recognized one it can
+  // run; a manager it doesn't know (or an install already up to date) leaves it out, and
+  // the banner then just says who manages the install.
   if (!pendingManagedCommand && res && res.output && /is managed by/i.test(res.output)) {
     const lines = String(res.output).split('\n').map(l => l.trim()).filter(Boolean);
-    const howToIdx = lines.findIndex(l => /^to update/i.test(l));
-    const cmd = howToIdx >= 0 ? lines[howToIdx + 1] : null;
+    const cmd = res.managed || null;
     updateRunState = 'failed';   // not really a failure, but keeps the banner from being swept as "done"
     if (cmd) {
       pendingManagedCommand = cmd;
