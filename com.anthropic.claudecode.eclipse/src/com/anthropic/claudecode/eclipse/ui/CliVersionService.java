@@ -13,6 +13,7 @@ import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -308,9 +309,11 @@ public final class CliVersionService {
     }
 
     /**
-     * Latest published version from the npm registry. Uses the {@code latest}
-     * dist-tag, which is what {@code npm install} and the CLI's own updater track
-     * (note {@code stable} can legitimately lag {@code latest}).
+     * Latest published version from the npm registry, under the dist-tag matching the CLI's
+     * own {@code autoUpdatesChannel} setting ({@code ~/.claude/settings.json}) — {@code stable}
+     * is a real, separate dist-tag that legitimately lags {@code latest} by design (it skips
+     * releases with major regressions), so a stable-channel install must be compared against
+     * {@code stable}, not the bleeding-edge tag it was never going to move to.
      */
     private static String latestVersion() {
         try {
@@ -324,10 +327,46 @@ public final class CliVersionService {
                 body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             }
             JsonObject root = JsonParser.parseString(body).getAsJsonObject();
-            return (root.has("latest") && root.get("latest").isJsonPrimitive())
-                    ? root.get("latest").getAsString() : "";
+            String tag = updateChannel();
+            return (root.has(tag) && root.get(tag).isJsonPrimitive())
+                    ? root.get(tag).getAsString() : "";
         } catch (Throwable t) {
             return "";   // offline / registry blocked
+        }
+    }
+
+    /** {@code ~/.claude/settings.json} — the same user-scope file
+     *  {@link com.anthropic.claudecode.eclipse.SpinnerVerbs} reads. */
+    private static Path userSettingsPath() {
+        return Paths.get(System.getProperty("user.home"), ".claude", "settings.json");
+    }
+
+    /**
+     * The npm dist-tag matching the user's configured {@code autoUpdatesChannel}, read through
+     * verbatim rather than mapped against a fixed set — the registry currently publishes at
+     * least three ({@code stable}, {@code latest}, {@code next}), and passing an unrecognized
+     * value through is harmless: {@link #latestVersion} already treats a tag absent from the
+     * registry response as unknown ({@code ""}), the same as an unreachable registry.
+     * Defaults to {@code "stable"} — deliberately NOT the CLI's own default of {@code latest} —
+     * for an absent, malformed, unreadable, or blank settings value: an update banner is a nag
+     * by nature, and defaulting to the conservative tag when the actual channel can't be
+     * determined means we never push a bleeding-edge version on someone we don't know is
+     * tracking it.
+     */
+    private static String updateChannel() {
+        try {
+            Path p = userSettingsPath();
+            if (!Files.exists(p)) return "stable";
+            JsonElement root = JsonParser.parseString(Files.readString(p, StandardCharsets.UTF_8));
+            if (!root.isJsonObject()) return "stable";
+            JsonElement ch = root.getAsJsonObject().get("autoUpdatesChannel");
+            if (ch != null && ch.isJsonPrimitive()) {
+                String v = ch.getAsString().trim();
+                if (!v.isEmpty()) return v;
+            }
+            return "stable";
+        } catch (Exception e) {
+            return "stable";
         }
     }
 

@@ -79,14 +79,28 @@ function dismissUpdateBanner() {
   renderUpdateBanner();
 }
 
-/** Runs `claude update` (the CLI's own updater — install-method agnostic). */
+/* Set once `claude update` reports it deferred to a package manager instead of updating
+   directly (onCliUpdateDone below) — the exact follow-up command it printed, e.g. "brew
+   upgrade claude-code". While set, the banner's button runs THAT instead of `claude
+   update` again, which would just print the same advice a second time. */
+let pendingManagedCommand = null;
+
+/** Runs `claude update` (the CLI's own updater — install-method agnostic), or, once a
+ *  prior run deferred to a package manager, that manager's own update command instead. */
 function runCliUpdate() {
   const bar = document.getElementById('update-banner');
   if (!bar) return;
   updateRunState = 'running';   // from here the banner is ours until dismissed
   const btn = bar.querySelector('.ub-btn');
-  if (btn) { btn.classList.add('busy'); btn.textContent = 'Updating…'; }
   const txt = bar.querySelector('.ub-text');
+  if (pendingManagedCommand) {
+    const cmd = pendingManagedCommand;
+    if (btn) { btn.classList.add('busy'); btn.textContent = 'Running…'; }
+    if (txt) txt.textContent = 'Running ' + cmd + ' — this can take a minute.';
+    try { if (window._runManagedUpdate) window._runManagedUpdate(cmd); } catch (e) {}
+    return;
+  }
+  if (btn) { btn.classList.add('busy'); btn.textContent = 'Updating…'; }
   if (txt) txt.textContent = 'Running claude update — this can take a minute.';
   try { if (window._updateCli) window._updateCli(); } catch (e) {}
 }
@@ -98,6 +112,29 @@ window.onCliUpdateDone = function (json) {
   if (!bar) return;
   const btn = bar.querySelector('.ub-btn');
   const txt = bar.querySelector('.ub-text');
+  // "claude update" defers entirely to the system package manager when one owns the
+  // install (Homebrew, apt, ...): it prints manual instructions and does no actual
+  // update, but apparently still exits 0 (it isn't an error, just advice) — so `res.ok`
+  // alone can't tell "updated" from "told you to go run brew yourself". Detected by the
+  // CLI's own "is managed by" phrasing rather than trusting the exit code. Guarded on
+  // !pendingManagedCommand so this only ever fires off `claude update`'s OWN output, not
+  // a second time off whatever the follow-up command itself printed.
+  if (!pendingManagedCommand && res && res.output && /is managed by/i.test(res.output)) {
+    const lines = String(res.output).split('\n').map(l => l.trim()).filter(Boolean);
+    const howToIdx = lines.findIndex(l => /^to update/i.test(l));
+    const cmd = howToIdx >= 0 ? lines[howToIdx + 1] : null;
+    updateRunState = 'failed';   // not really a failure, but keeps the banner from being swept as "done"
+    if (cmd) {
+      pendingManagedCommand = cmd;
+      if (btn) { btn.classList.remove('busy'); btn.textContent = 'Run: ' + cmd; }
+    } else if (btn) {
+      btn.classList.remove('busy'); btn.style.display = 'none';   // nothing parsed to run
+    }
+    if (txt) txt.textContent = lines.find(l => /is managed by/i.test(l))
+      || 'Claude is managed by your system package manager.';
+    return;
+  }
+  pendingManagedCommand = null;
   if (res && res.ok) {
     // Restart matters: long-lived per-tab processes keep running the OLD binary.
     // Stays on screen (updateRunState) until the user closes it, so this doesn't

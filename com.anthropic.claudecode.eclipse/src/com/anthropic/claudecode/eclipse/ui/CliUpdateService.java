@@ -16,6 +16,11 @@ import com.google.gson.JsonObject;
  * {@code npm i -g @anthropic-ai/claude-code} against a native install would leave
  * two different binaries on PATH.
  *
+ * <p>{@code claude update} itself defers to the system package manager when one owns
+ * the install (Homebrew, apt, ...), printing a command like {@code "brew upgrade
+ * claude-code"} rather than updating directly — {@link #runCommandAsync} runs exactly
+ * that follow-up command, still only from an explicit second click.
+ *
  * <p>This mutates the user's system, so it is only ever invoked from an explicit
  * user action (the update button in the Claude Code view) — never automatically,
  * and never as a side effect of the version check.
@@ -58,13 +63,45 @@ public final class CliUpdateService {
                 ? com.anthropic.claudecode.eclipse.Constants.DEFAULT_CLAUDE_CMD : claudeCmd;
         // Same PATHEXT caveat as the version check: CreateProcess won't find
         // `claude.cmd` from the bare name "claude".
-        final String cmd = CliVersionService.resolveOnPath(raw);
+        String[] argv = { CliVersionService.resolveOnPath(raw), "update" };
+        runAsync(argv, "claude-cli-update", cb);
+    }
+
+    /**
+     * Runs the exact command {@code claude update} itself printed when it deferred to a
+     * system package manager (Homebrew, apt, ...) instead of updating directly — e.g.
+     * {@code "brew upgrade claude-code"}. Still only ever reached from that same explicit
+     * user action (clicking through the update banner's follow-up prompt), never
+     * automatically.
+     *
+     * <p>Runs as argv, not through a shell, so there is nothing for shell metacharacters
+     * in the parsed text to do even in principle — {@code commandLine} is split on
+     * whitespace and executed as a literal program + arguments, exactly like {@link
+     * #updateAsync}. The first token is resolved on PATH the same way {@code claude}
+     * itself is, since a package manager binary (e.g. Homebrew's {@code brew}) has the
+     * identical "not on the JVM's inherited PATH" problem on a Finder-launched Eclipse.app.
+     *
+     * @param commandLine e.g. {@code "brew upgrade claude-code"}; a no-op failure if blank
+     */
+    public static void runCommandAsync(String commandLine, Consumer<Result> cb) {
+        String[] parts = commandLine == null ? new String[0] : commandLine.trim().split("\\s+");
+        if (parts.length == 0 || parts[0].isEmpty()) {
+            Result r = new Result(false, "No command to run.");
+            try { cb.accept(r); } catch (Throwable ignored) {}
+            return;
+        }
+        parts[0] = CliVersionService.resolveOnPath(parts[0]);
+        runAsync(parts, "claude-managed-update", cb);
+    }
+
+    /** Shared spawn/capture/timeout logic for {@link #updateAsync} and {@link #runCommandAsync}. */
+    private static void runAsync(String[] argv, String threadName, Consumer<Result> cb) {
         Thread t = new Thread(() -> {
             Result r;
             try {
-                ProcessBuilder pb = new ProcessBuilder(cmd, "update");
-                // The update reaches the npm registry and may shell out to npm, so
-                // it needs the user's proxy vars and PATH, not the JVM's sparse ones.
+                ProcessBuilder pb = new ProcessBuilder(argv);
+                // Reaches the registry / package manager, so it needs the user's proxy
+                // vars and PATH, not the JVM's sparse ones.
                 CliVersionService.applyShellEnv(pb);
                 pb.redirectErrorStream(true);
                 Process p = pb.start();
@@ -84,7 +121,7 @@ public final class CliUpdateService {
             }
             if (r.ok) CliVersionService.invalidate();
             try { cb.accept(r); } catch (Throwable ignored) {}
-        }, "claude-cli-update");
+        }, threadName);
         t.setDaemon(true);
         t.start();
     }
