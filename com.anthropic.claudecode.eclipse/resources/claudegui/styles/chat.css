@@ -316,7 +316,6 @@
 .tool-line .tpath { color: var(--fg-dim); word-break: break-all; white-space: pre-wrap; }
 .tool-line .tpath.clickable { cursor: pointer; }
 .tool-line .tpath.clickable:hover { color: var(--fg); text-decoration: underline; }
-.tool-line .tpath-wrap { position: relative; display: inline-block; max-width: 100%; }
 .tool-sub { font-size: 11.5px; color: var(--fg-faint); margin-top: 2px; margin-bottom: 6px; }
 
 /* ── Tool IN/OUT blocks ───────────────────────────────────────────────────
@@ -396,6 +395,14 @@
 .io-row:hover .copy-btn, .tpath-wrap:hover .copy-btn, .code-block:hover .copy-btn { opacity: 1; }
 .copy-btn:hover { background: var(--bg-hover); color: var(--fg); }
 .copy-btn.copied { color: var(--green); border-color: var(--green); }
+/* .tpath-wrap is plain inline (wraps like text, needed so a long path can continue on the
+   tool name's line) — absolute positioning breaks on a wrapped inline element (the child
+   anchors to whatever tiny fragment box it wraps into), so this copy button is static/
+   in-flow instead, and revealed via .tool-line (the full-row block) rather than
+   .tpath-wrap itself so hovering across the gap to a wrapped second line doesn't drop it. */
+.tool-line .tpath-wrap .copy-btn { position: static; display: none; opacity: 1;
+  vertical-align: middle; margin-left: 6px; }
+.tool-line:hover .tpath-wrap .copy-btn { display: inline-flex; align-items: center; }
 /* Why a tool failed. Clamped to ONE line here as well as in the summariser: real
    results run to 100+ lines, and the transcript stays scannable only if a failure
    costs exactly one row. */
