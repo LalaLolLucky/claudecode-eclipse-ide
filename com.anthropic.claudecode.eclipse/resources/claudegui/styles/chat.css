@@ -394,13 +394,13 @@
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-chip); border: 1px solid var(--border); color: var(--fg-dim);
   border-radius: 4px; padding: 3px; cursor: pointer; line-height: 0; }
-.copy-btn svg { display: block; }
-/* Agent log text/thinking entries (chat.js's buildAgentLogItemEl) place the button in
-   normal flow below the text instead of floating over a corner of it — this is prose, not
-   a boxed IN/OUT/diff, so an overlay would sit awkwardly across the text's own line(s)
-   rather than in a code block's unused margin. */
-.a-item.muted .copy-btn { position: static; display: inline-flex; width: fit-content;
-  margin-top: 4px; }
+/* One size for both icons: ICONS.CHECK is drawn 1px larger than ICONS.COPY, which grew
+   the button — and the code-fence header around it — for the length of the flash. */
+.copy-btn svg, .a-body pre .cb-head button svg { display: block; width: 14px; height: 14px; }
+/* Agent log text/thinking entries (chat.js's buildAgentLogItemEl): the same corner overlay
+   as everywhere else, lifted 4px so it centres on a one-line entry. Kept out of the flow —
+   an in-flow button holds a blank row open under every entry even while it is hidden. */
+.a-item.muted > .copy-btn { top: -1px; }
 .io-row:hover .copy-btn, .tpath-wrap:hover .copy-btn, .code-block:hover .copy-btn,
 .result-list:hover .copy-btn, .a-item.muted:hover .copy-btn { opacity: 1; }
 .copy-btn:hover { background: var(--bg-hover); color: var(--fg); }

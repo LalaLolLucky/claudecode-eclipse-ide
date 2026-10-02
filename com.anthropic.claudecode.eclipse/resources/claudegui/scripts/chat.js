@@ -616,9 +616,7 @@ function buildAgentLogItemEl(item) {
   el.className = 'a-item muted' + (item.kind === 'thinking' ? ' agent-log-think' : '');
   el.innerHTML = '<span class="dot gray"></span><span class="a-body"></span>';
   el.querySelector('.a-body').innerHTML = renderMarkdown(item.text);
-  // Below the text, not overlapping it in a corner (chat.css's .a-item.muted .copy-btn
-  // override) — this is short-form conversational text, not a boxed IN/OUT/diff, so a
-  // floating overlay would sit awkwardly over prose rather than a code block's margin.
+  // Hover-revealed in the entry's top-right corner (chat.css's .a-item.muted > .copy-btn).
   if (item.text) el.appendChild(makeCopyBtn(() => item.text));
   return el;
 }

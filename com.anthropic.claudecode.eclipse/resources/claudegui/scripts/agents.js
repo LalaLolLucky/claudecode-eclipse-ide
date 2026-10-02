@@ -237,7 +237,9 @@ function renderAgentDetail(agent) {
     // "**bold**"/code-fence characters shown literally.
     const respBody = document.createElement('div'); respBody.className = 'ap-response a-body';
     respBody.innerHTML = renderMarkdown(response);
-    respBody.appendChild(makeCopyBtn(() => response));   // hover-revealed, chat.css's #agents-win .ap-response rule
+    // First, not last: it is sticky (panels.css's #agents-win .ap-response .copy-btn), and a
+    // sticky box only pins while scrolling PAST where it sits — at the end it would never pin.
+    respBody.prepend(makeCopyBtn(() => response));
     body.appendChild(label);
     body.appendChild(respBody);
   }
