@@ -94,24 +94,35 @@ function hideCtxRingTip() {
   if (tip) tip.classList.remove('open');
 }
 
-/* ---- file context chip ---- */
+/* ---- file context chip ----
+   The chip is in the bar exactly while the editor's file (or selection) will go out with
+   the next message: it is absent with no file open, and absent once its X is clicked.
+   What brings a dismissed chip back is the user pointing at something new — the rules
+   below follow the extension's composer (RemoteSystemsTempFiles/ref/joebiden.mp4):
+     - a selection that differs from the one showing when the X was clicked;
+     - another file.
+   Moving the caret, or letting go of the dismissed selection, does NOT bring it back —
+   the editor reports the caret's line on every poll, so anything keyed on the line range
+   alone would undo the dismissal within a second. */
 let ctxData = { fileName: null };
-let ctxEnabled = true;
-// Dismissing (the X) is per-snapshot, unlike ctxEnabled's persistent on/off: it hides
-// THIS file/selection only, and clears itself the moment the tracked file or selection
-// range actually changes — ctxEnabled instead stays however the user last left it
-// regardless of what file is open.
 let ctxDismissed = false;
-let ctxDismissKey = '';
-function ctxKey() {
-  return (ctxData && ctxData.fileName)
-    ? ctxData.fileName + ':' + (ctxData.startLine || 0) + '-' + (ctxData.endLine || 0)
-    : '';
+let ctxDismissedFile = '';   // the file showing when the X was clicked
+let ctxDismissedSel = '';    // and its selection, '' for none
+function ctxFileKey(c) { return c && c.fileName ? (c.filePath || c.fileName) : ''; }
+function ctxSelKey(c) {
+  return c && c.fileName && c.hasSelection ? (c.startLine || 0) + '-' + (c.endLine || 0) : '';
 }
-function ctxIsDismissed() { return ctxDismissed && ctxKey() === ctxDismissKey; }
+/** Whether the editor context goes out with a message sent now — the chip shows exactly then. */
+function ctxActive() { return !!(ctxData && ctxData.fileName) && !ctxDismissed; }
 window.onContextChanged = function(c) {
   ctxData = c || { fileName: null };
-  if (ctxDismissed && ctxKey() !== ctxDismissKey) ctxDismissed = false;
+  if (ctxDismissed) {
+    const file = ctxFileKey(ctxData), sel = ctxSelKey(ctxData);
+    // "No file" is not another file: the editor losing focus must not undo the dismissal.
+    if (file && file !== ctxDismissedFile) ctxDismissed = false;
+    else if (sel && sel !== ctxDismissedSel) ctxDismissed = false;
+    else if (file && !sel) ctxDismissedSel = '';   // let go of: selecting it again is new
+  }
   updateCtxChip();
 };
 try { ctxData = JSON.parse(window._currentContext()); } catch (e) {}
@@ -119,7 +130,7 @@ function ctxBaseName() {
   return ctxData && ctxData.fileName ? ctxData.fileName.split(/[\\/]/).pop() : '';
 }
 function ctxLabelText() {
-  if (!ctxData || !ctxData.fileName) return 'No file open';
+  if (!ctxData || !ctxData.fileName) return '';
   const base = ctxBaseName();
   if (ctxData.hasSelection) {
     const n = Math.max(1, (ctxData.endLine || 0) - (ctxData.startLine || 0) + 1);
@@ -144,28 +155,29 @@ function updateCtxChip() {
   const chip = document.getElementById('ctx-chip');
   const label = document.getElementById('ctx-label');
   if (!chip || !label) return;
-  const has = !!(ctxData && ctxData.fileName) && !ctxIsDismissed();
-  label.textContent = has ? ctxLabelText() : 'No file open';
-  chip.classList.toggle('empty', !has);
-  chip.classList.toggle('off', has && !ctxEnabled);
-  const ic = document.getElementById('ctx-ic');
-  if (ic) ic.innerHTML = (has && !ctxEnabled) ? ICONS.EYEOFF : ICONS.FILEICON;
+  const has = ctxActive();
+  label.textContent = has ? ctxLabelText() : '';
+  // The chip and the divider in front of it come and go together.
+  chip.classList.toggle('gone', !has);
+  const divider = document.getElementById('ctx-divider');
+  if (divider) divider.classList.toggle('gone', !has);
   fitComposerBar();   // label text changed — re-check the narrow-width collapse
 }
-function toggleContext() {
-  if (!ctxData || !ctxData.fileName || ctxIsDismissed()) return;
-  ctxEnabled = !ctxEnabled;
-  updateCtxChip();
-}
-/** The chip's X — removes the CURRENT file/selection from context (unlike toggleContext's
- *  persistent eye icon, this un-dismisses itself the moment onContextChanged reports a
- *  genuinely different file or selection, so it never permanently hides the chip). */
+/** The chip's X — takes the current file/selection out of the next message. See the
+ *  rules above onContextChanged for what brings the chip back. */
 function dismissContext(e) {
   if (e) e.stopPropagation();
   if (!ctxData || !ctxData.fileName) return;
   ctxDismissed = true;
-  ctxDismissKey = ctxKey();
+  ctxDismissedFile = ctxFileKey(ctxData);
+  ctxDismissedSel = ctxSelKey(ctxData);
   updateCtxChip();
+}
+/** On a narrow view the chip is its icon alone, with no room for a separate X: there the
+ *  icon turns into the X under the pointer (layout.css) and the whole chip is the button. */
+function ctxChipClick(e) {
+  const chip = document.getElementById('ctx-chip');
+  if (chip && chip.classList.contains('icon-only')) dismissContext(e);
 }
 
 /* Collapse the composer bar progressively at narrow widths so nothing is ever
@@ -173,7 +185,8 @@ function dismissContext(e) {
    applied only if the bar still overflows after the previous one:
      1. mode label ("Manual", …) — hidden the moment it can't fit on
         ONE line, so it never renders wrapped; it goes before the context label
-     2. context filename — icon only; the agents pill's count goes with it, leaving its dot
+     2. context filename — icon only, its divider and X with it; the agents pill's count
+        goes at the same time, leaving its dot
      3. send/stop button — minimized
      4. label padding tightens
      5. every control a size smaller and the gaps close
@@ -192,8 +205,10 @@ function fitComposerBar() {
   const slot = document.getElementById('send-slot');
   const side = document.getElementById('input-side');
   const pill = document.getElementById('agents-btn');
-  if (!bar || !chip || !ctxLbl || !modes || !modesLbl || !sendBtn || !slot || !side || !pill) return;
+  const divider = document.getElementById('ctx-divider');
+  if (!bar || !chip || !ctxLbl || !modes || !modesLbl || !sendBtn || !slot || !side || !pill || !divider) return;
   chip.classList.remove('icon-only');
+  divider.classList.remove('narrow');
   modes.classList.remove('icon-only');
   pill.classList.remove('icon-only');
   // The slot is measured in the button's stead: it holds the button's room in the bar
@@ -210,7 +225,7 @@ function fitComposerBar() {
   const chipSqueezed = ctxLbl.scrollWidth > ctxLbl.clientWidth + 1
                     && chip.offsetWidth < chipMax - 1;
   if (chipSqueezed || overflowing()) modes.classList.add('icon-only');
-  if (overflowing()) { chip.classList.add('icon-only'); pill.classList.add('icon-only'); }
+  if (overflowing()) { chip.classList.add('icon-only'); divider.classList.add('narrow'); pill.classList.add('icon-only'); }
   if (overflowing()) { slot.classList.add('mini'); sendBtn.classList.add('mini'); }
   if (overflowing()) bar.classList.add('compact');
   if (overflowing()) bar.classList.add('tight');
@@ -234,6 +249,7 @@ function fitComposerBar() {
   }
   // icon-only mode button still tells you the mode on hover; so does the pill, its count
   modes.title = modes.classList.contains('icon-only') ? (modesLbl.textContent || '') : '';
+  chip.title = chip.classList.contains('icon-only') ? (ctxLbl.textContent || '') : '';
   const count = document.getElementById('agents-count');
   pill.title = pill.classList.contains('icon-only') && count ? (count.textContent || 'Agents') : 'Agents';
 }

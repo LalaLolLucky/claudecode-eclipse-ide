@@ -336,6 +336,9 @@ body { min-width: 150px; }
    same 8px as margin-left here (and none on the right, since the chip already supplies it)
    balances the two sides instead of leaving the left one looking flush. */
 .cb-divider { width: 1px; height: 16px; background: var(--border-soft); margin-left: 8px; flex-shrink: 0; }
+/* It belongs to the chip: gone with it, and gone once the chip is down to its icon, where
+   its 9px are the first room the bar takes back (fitComposerBar). */
+.cb-divider.gone, .cb-divider.narrow, .file-chip.gone { display: none; }
 .pill { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
   padding: 0; flex-shrink: 0; border-radius: 5px; color: var(--fg-dim); cursor: pointer; }
 .pill svg { display: block; flex-shrink: 0; }
@@ -349,17 +352,24 @@ body { min-width: 150px; }
 .ctx-ring-fill { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round;
   stroke-dasharray: 50.27; stroke-dashoffset: 50.27; transition: stroke-dashoffset .2s linear; }
 .file-chip { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
-  font-size: 12px; color: var(--fg-dim); border-radius: 6px; cursor: pointer; max-width: 220px; }
-.file-chip:hover { background: var(--bg-hover); color: var(--fg); }
+  font-size: 12px; color: var(--fg-dim); border-radius: 6px; cursor: default; max-width: 220px; }
 .file-chip svg { opacity: .8; flex-shrink: 0; }
 .file-chip #ctx-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.file-chip.off { opacity: .55; }
-.file-chip.empty { opacity: .5; cursor: default; }
-.file-chip.empty:hover { background: transparent; color: var(--fg-dim); }
-.file-chip .ctx-x { display: none; align-items: center; opacity: .6; border-radius: 3px; flex-shrink: 0; margin-left: 1px; }
-.file-chip .ctx-x:hover { opacity: 1; background: var(--hover-veil); }
-.file-chip:not(.empty) .ctx-x { display: inline-flex; }
-#ctx-chip.icon-only .ctx-x { display: none; }   /* narrow-width collapse (fitComposerBar) has no room for it */
+/* The chip itself is a label; its X is the one thing on it to click. The X's 18px box
+   reaches 4px into the chip's own right padding, so the pair sits as close as the
+   reference's and the chip is no wider for the hover square. */
+.file-chip .ctx-x { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 18px; height: 18px; margin: 0 -4px 0 -1px; border-radius: 4px; cursor: pointer; }
+.file-chip .ctx-x:hover { background: var(--hover-veil); color: var(--fg); }
+.file-chip .ctx-x:hover svg { opacity: 1; }
+/* Narrow-width collapse (fitComposerBar): no room for the label or a separate X, so the
+   icon itself becomes the X under the pointer — the same box, so nothing moves — and the
+   whole chip is the button (controls.js's ctxChipClick). */
+#ctx-chip.icon-only { cursor: pointer; }
+#ctx-chip.icon-only:hover { background: var(--bg-hover); color: var(--fg); }
+#ctx-chip.icon-only .ctx-x { display: none; width: auto; height: auto; margin: 0; background: none; }
+#ctx-chip.icon-only:hover .ctx-x { display: inline-flex; }
+#ctx-chip.icon-only:hover #ctx-ic { display: none; }
 .modes-btn { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px;
   border-radius: 6px; color: var(--fg-soft); cursor: pointer; font-size: 12px; }
 .modes-btn:hover { background: var(--bg-hover); }
