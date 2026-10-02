@@ -406,17 +406,17 @@ function copyToClipboard(btn, text) {
   else if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
   if (!btn) return;
   clearTimeout(btn._copyTimer);
-  // Captured once: a second click inside the flash would otherwise record "Copied" as
-  // the label to restore, and the button would stay stuck on it.
-  if (btn._copyLabel === undefined) btn._copyLabel = btn.textContent;
-  const original = btn._copyLabel;
-  btn.textContent = 'Copied'; btn.classList.add('copied');
-  btn._copyTimer = setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 1200);
+  // Captured once: a second click inside the flash would otherwise record the checkmark as
+  // the icon to restore, and the button would stay stuck on it.
+  if (btn._copyIcon === undefined) btn._copyIcon = btn.innerHTML;
+  const original = btn._copyIcon;
+  btn.innerHTML = ICONS.CHECK; btn.classList.add('copied');
+  btn._copyTimer = setTimeout(() => { btn.innerHTML = original; btn.classList.remove('copied'); }, 1200);
 }
-/** A small "Copy" button, hover-revealed by the caller's own CSS (.io-row:hover / .tpath-wrap:hover). */
+/** A small copy-icon button, hover-revealed by the caller's own CSS (.io-row:hover / .tpath-wrap:hover). */
 function makeCopyBtn(getText) {
   const btn = document.createElement('button');
-  btn.type = 'button'; btn.className = 'copy-btn'; btn.textContent = 'Copy';
+  btn.type = 'button'; btn.className = 'copy-btn'; btn.title = 'Copy'; btn.innerHTML = ICONS.COPY;
   btn.onclick = (e) => { e.stopPropagation(); copyToClipboard(btn, getText()); };
   return btn;
 }
@@ -476,6 +476,7 @@ function buildResultList(text, root) {
   if (lines.length > MAX_ROWS) {
     list.appendChild(makeMoreHint('+' + (lines.length - MAX_ROWS) + ' more — view all', () => text));
   }
+  list.appendChild(makeCopyBtn(() => text));   // full result text, not just the capped rows shown
   return list;
 }
 /** Structured checklist for TodoWrite — its meaningful payload is the INPUT
@@ -615,6 +616,10 @@ function buildAgentLogItemEl(item) {
   el.className = 'a-item muted' + (item.kind === 'thinking' ? ' agent-log-think' : '');
   el.innerHTML = '<span class="dot gray"></span><span class="a-body"></span>';
   el.querySelector('.a-body').innerHTML = renderMarkdown(item.text);
+  // Below the text, not overlapping it in a corner (chat.css's .a-item.muted .copy-btn
+  // override) — this is short-form conversational text, not a boxed IN/OUT/diff, so a
+  // floating overlay would sit awkwardly over prose rather than a code block's margin.
+  if (item.text) el.appendChild(makeCopyBtn(() => item.text));
   return el;
 }
 /** (Re)builds one log item's DOM node and places/replaces it inside the LIVE inline

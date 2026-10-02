@@ -369,7 +369,7 @@
    reuses the same open-in-editor bridge .tpath already calls (chat.js). margin-left is 0,
    not 22px — same double-indent bug as .io-block above (.tool-line's own 22px padding-left
    already accounts for it). */
-.result-list { margin: 6px 0 2px 0; border: 1px solid var(--border-soft); border-radius: 6px;
+.result-list { position: relative; margin: 6px 0 2px 0; border: 1px solid var(--border-soft); border-radius: 6px;
   background: var(--bg-code); padding: 3px 0; overflow: hidden; }
 .result-item { padding: 4px 10px; font-size: 12px; color: var(--fg-soft); }
 .result-item.clickable { color: var(--link); cursor: pointer; }
@@ -388,11 +388,21 @@
   transition: color .1s, background .1s; }
 .more-hint:hover { color: var(--fg-soft); background: var(--bg-hover); }
 
-/* hover-revealed copy button — shared by .io-row and the compact .tpath-wrap one-liner */
+/* hover-revealed copy button — shared by .io-row and the compact .tpath-wrap one-liner.
+   Icon-only (ICONS.COPY, swapped for ICONS.CHECK briefly on click by copyToClipboard). */
 .copy-btn { position: absolute; top: 3px; right: 3px; opacity: 0; transition: opacity .1s;
+  display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-chip); border: 1px solid var(--border); color: var(--fg-dim);
-  border-radius: 3px; font-size: 10.5px; padding: 1px 6px; cursor: pointer; line-height: 1.6; }
-.io-row:hover .copy-btn, .tpath-wrap:hover .copy-btn, .code-block:hover .copy-btn { opacity: 1; }
+  border-radius: 4px; padding: 3px; cursor: pointer; line-height: 0; }
+.copy-btn svg { display: block; }
+/* Agent log text/thinking entries (chat.js's buildAgentLogItemEl) place the button in
+   normal flow below the text instead of floating over a corner of it — this is prose, not
+   a boxed IN/OUT/diff, so an overlay would sit awkwardly across the text's own line(s)
+   rather than in a code block's unused margin. */
+.a-item.muted .copy-btn { position: static; display: inline-flex; width: fit-content;
+  margin-top: 4px; }
+.io-row:hover .copy-btn, .tpath-wrap:hover .copy-btn, .code-block:hover .copy-btn,
+.result-list:hover .copy-btn, .a-item.muted:hover .copy-btn { opacity: 1; }
 .copy-btn:hover { background: var(--bg-hover); color: var(--fg); }
 .copy-btn.copied { color: var(--green); border-color: var(--green); }
 /* .tpath-wrap is plain inline (wraps like text, needed so a long path can continue on the
@@ -598,7 +608,10 @@ body.mode-bypassPermissions .working .gerund .cursor { color: var(--mode-auto); 
 .a-body td { color: var(--fg-soft); }
 .a-body pre { margin: 8px 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: var(--bg-code); }
 .a-body pre .cb-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; background: var(--cb-head-bg); font-size: 11px; color: var(--fg-dim); }
-.a-body pre .cb-head button { background: none; border: none; color: var(--fg-dim); cursor: pointer; font-size: 11px; }
+.a-body pre .cb-head button { display: flex; align-items: center; background: none; border: none;
+  color: var(--fg-dim); cursor: pointer; padding: 2px; border-radius: 4px; }
+.a-body pre .cb-head button:hover { background: var(--bg-hover); color: var(--fg); }
+.a-body pre .cb-head button.copied { color: var(--green); }
 /* Fenced code keeps `white-space: pre` and scrolls INSIDE itself — a long line
    must never wrap here (it would corrupt the listing) and never widen the
    transcript either. overflow-wrap:normal is stated explicitly: `pre` already

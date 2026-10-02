@@ -432,9 +432,11 @@ body.teleporting #composer { display: none; }
   color: var(--fg-faint); margin-top: 12px; flex-shrink: 0; }
 /* No white-space:pre-wrap — this holds rendered markdown HTML (.a-body), not raw text,
    so the source's own newlines are already expressed as real p/br elements. */
-#agents-win .ap-response { margin-top: 4px; padding: 8px 10px; background: var(--bg-soft);
+#agents-win .ap-response { position: relative; margin-top: 4px; padding: 8px 10px; background: var(--bg-soft);
   border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; color: var(--fg);
   max-height: 36vh; overflow-y: auto; flex-shrink: 0; }
+/* Top-right corner overlay (the shared .copy-btn default), hover-revealed on the box. */
+#agents-win .ap-response:hover .copy-btn { opacity: 1; }
 #agents-win .ap-list { flex: 0 1 auto; min-height: 0; overflow-y: auto; margin-top: 10px; }
 #agents-win .ap-list::-webkit-scrollbar { width: 9px; }
 #agents-win .ap-list::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 5px; }
