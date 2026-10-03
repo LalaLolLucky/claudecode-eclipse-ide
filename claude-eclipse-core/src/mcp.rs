@@ -12,6 +12,7 @@ use crate::server::{AppState, SseEvent};
 
 pub async fn handle_message(
     state: Arc<AppState>,
+    session_id: String,
     sender: UnboundedSender<SseEvent>,
     body: String,
 ) {
@@ -30,7 +31,7 @@ pub async fn handle_message(
     }
 
     if msg.get("method").is_some() {
-        handle_request(state, sender, msg).await;
+        handle_request(state, &session_id, sender, msg).await;
     }
     // Responses (result/error) from Claude are informational only; we ignore them.
 }
@@ -41,6 +42,7 @@ pub async fn handle_message(
 
 async fn handle_request(
     state: Arc<AppState>,
+    session_id: &str,
     sender: UnboundedSender<SseEvent>,
     msg: Value,
 ) {
@@ -48,7 +50,7 @@ async fn handle_request(
     let id = msg.get("id").cloned();
 
     match method {
-        "initialize" => handle_initialize(Arc::clone(&state), sender, id),
+        "initialize" => handle_initialize(Arc::clone(&state), session_id, sender, id, &msg["params"]["clientInfo"]),
         "initialized" => {} // notification, no response
         "tools/list" => handle_tools_list(state, sender, id).await,
         "tools/call" => handle_tools_call(state, sender, id, &msg).await,
@@ -70,11 +72,53 @@ async fn handle_request(
 // initialize
 // ---------------------------------------------------------------------------
 
-fn handle_initialize(state: Arc<AppState>, sender: UnboundedSender<SseEvent>, id: Option<Value>) {
+/// Claude Code 2.1.181 and later count selection lines from 0 (they add 1 before
+/// showing them); 2.1.179 and earlier show them as given. Only a client that says it
+/// is one of the newer ones is sent lines from 0: anything unknown or unreadable keeps
+/// the numbering every client got before this check existed.
+fn counts_lines_from_zero(client_info: &Value) -> bool {
+    if client_info["name"].as_str() != Some("claude-code") {
+        return false;
+    }
+    let Some(version) = client_info["version"].as_str() else { return false };
+    // "2.1.290-dev.1" reads as 2.1.290: each part's leading digits.
+    let mut parts = version.split('.').map(|part| {
+        let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse::<u64>().ok()
+    });
+    match (parts.next().flatten(), parts.next().flatten(), parts.next().flatten()) {
+        (Some(major), Some(minor), Some(patch)) => (major, minor, patch) >= (2, 1, 181),
+        _ => false,
+    }
+}
+
+fn handle_initialize(
+    state: Arc<AppState>,
+    session_id: &str,
+    sender: UnboundedSender<SseEvent>,
+    id: Option<Value>,
+    client_info: &Value,
+) {
     let id = match id {
         Some(id) => id,
         None => return,
     };
+
+    // Before the reply, so a selection broadcast right after it is already in the
+    // numbering this client reads.
+    let from_zero = counts_lines_from_zero(client_info);
+    if from_zero {
+        state.sessions_counting_from_zero.lock().unwrap().insert(session_id.to_string());
+    }
+    if crate::is_debug() {
+        eprintln!(
+            "MCP: initialize from {} {}: selection lines sent {}",
+            client_info["name"].as_str().unwrap_or("?"),
+            client_info["version"].as_str().unwrap_or("?"),
+            if from_zero { "counted from 0" } else { "as given" }
+        );
+    }
+
     let result = json!({
         "protocolVersion": "2024-11-05",
         "capabilities": { "tools": { "listChanged": false } },
@@ -84,8 +128,10 @@ fn handle_initialize(state: Arc<AppState>, sender: UnboundedSender<SseEvent>, id
 
     // Replay the last known editor selection so Claude knows the active file the
     // moment it connects — without the user having to move the cursor first. The
-    // cached message is already in the CLI's "selection_changed" shape.
-    if let Some(sel) = state.last_selection.lock().unwrap().clone() {
+    // cached messages are already in the CLI's "selection_changed" shape, one per
+    // line numbering.
+    let cached = if from_zero { &state.last_selection_from_zero } else { &state.last_selection };
+    if let Some(sel) = cached.lock().unwrap().clone() {
         let _ = sender.send(SseEvent {
             event_type: "message".to_string(),
             data: sel,
@@ -530,6 +576,12 @@ mod tests {
     /// Server state as it is before Eclipse registers its tool callback, so nothing
     /// here reaches Java.
     fn state(last_selection: Option<&str>) -> Arc<AppState> {
+        state_with(last_selection, None)
+    }
+
+    /// `last_selection` as sent to a CLI that shows lines as given, `from_zero` as sent
+    /// to one that counts them from 0.
+    fn state_with(last_selection: Option<&str>, from_zero: Option<&str>) -> Arc<AppState> {
         Arc::new(AppState {
             clients: Mutex::new(HashMap::new()),
             auth_token: "token".to_string(),
@@ -537,13 +589,18 @@ mod tests {
             status_callback: Mutex::new(None),
             preferred_port: None,
             last_selection: Mutex::new(last_selection.map(str::to_string)),
+            last_selection_from_zero: Mutex::new(from_zero.map(str::to_string)),
+            sessions_counting_from_zero: Mutex::new(HashSet::new()),
         })
     }
+
+    /// The session every message in these tests arrives on.
+    const SESSION: &str = "s1";
 
     /// Everything the server sent back over SSE for one incoming message.
     async fn replies(state: Arc<AppState>, body: &str) -> Vec<SseEvent> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        handle_message(state, tx, body.to_string()).await;
+        handle_message(state, SESSION.to_string(), tx, body.to_string()).await;
         let mut out = Vec::new();
         while let Ok(event) = rx.try_recv() {
             out.push(event);
@@ -575,6 +632,52 @@ mod tests {
         assert_eq!(out.len(), 2, "the reply, then the cached selection");
         assert_eq!(out[1].event_type, "message");
         assert_eq!(out[1].data, cached);
+    }
+
+    /// An initialize request from a client announcing `client_info`.
+    fn initialize_from(client_info: Value) -> String {
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo": client_info}}).to_string()
+    }
+
+    #[test]
+    fn claude_code_from_2_1_181_on_counts_selection_lines_from_zero() {
+        for version in ["2.1.181", "2.1.287", "2.1.300", "2.2.0", "3.0.0", "2.1.290-dev.1"] {
+            let info = json!({"name": "claude-code", "title": "Claude Code", "version": version});
+            assert!(counts_lines_from_zero(&info), "{version}");
+        }
+    }
+
+    #[test]
+    fn older_unknown_or_unreadable_clients_keep_lines_as_given() {
+        for version in ["2.1.179", "2.1.173", "2.1.0", "2.0.999", "1.99.999", "2.1", "", "abc", "2.x.181"] {
+            let info = json!({"name": "claude-code", "version": version});
+            assert!(!counts_lines_from_zero(&info), "{version:?}");
+        }
+        assert!(!counts_lines_from_zero(&json!({"name": "claude-code"})), "no version");
+        assert!(!counts_lines_from_zero(&json!({"name": "other-client", "version": "2.1.287"})), "another client");
+        assert!(!counts_lines_from_zero(&json!({"version": "2.1.287"})), "no name");
+        assert!(!counts_lines_from_zero(&Value::Null), "no clientInfo at all");
+    }
+
+    #[tokio::test]
+    async fn initialize_from_a_cli_counting_from_zero_replays_that_version_and_remembers_the_session() {
+        let as_given = r#"{"jsonrpc":"2.0","method":"selection_changed","params":{"line":22}}"#;
+        let from_zero = r#"{"jsonrpc":"2.0","method":"selection_changed","params":{"line":21}}"#;
+        let state = state_with(Some(as_given), Some(from_zero));
+        let out = replies(Arc::clone(&state), &initialize_from(json!({"name": "claude-code", "version": "2.1.287"}))).await;
+        assert_eq!(out.len(), 2, "the reply, then the cached selection");
+        assert_eq!(out[1].data, from_zero);
+        assert!(state.sessions_counting_from_zero.lock().unwrap().contains(SESSION));
+    }
+
+    #[tokio::test]
+    async fn initialize_from_an_older_cli_replays_lines_as_given_and_remembers_nothing() {
+        let as_given = r#"{"jsonrpc":"2.0","method":"selection_changed","params":{"line":22}}"#;
+        let from_zero = r#"{"jsonrpc":"2.0","method":"selection_changed","params":{"line":21}}"#;
+        let state = state_with(Some(as_given), Some(from_zero));
+        let out = replies(Arc::clone(&state), &initialize_from(json!({"name": "claude-code", "version": "2.1.179"}))).await;
+        assert_eq!(out[1].data, as_given);
+        assert!(state.sessions_counting_from_zero.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

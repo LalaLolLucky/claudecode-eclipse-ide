@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -68,6 +68,12 @@ pub struct AppState {
     /// Last "selection_changed" notification JSON, cached so a CLI that connects
     /// after a selection happened can be replayed it on initialize.
     pub last_selection: Mutex<Option<String>>,
+    /// The same notification with its lines counted from 0, for the sessions in
+    /// `sessions_counting_from_zero` (see `selection_message`).
+    pub last_selection_from_zero: Mutex<Option<String>>,
+    /// Sessions whose client announced itself as a CLI that counts selection lines
+    /// from 0. Every other session is sent lines as Eclipse labels them.
+    pub sessions_counting_from_zero: Mutex<HashSet<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +89,43 @@ struct SelectionArgs {
     start_col: i32,
     end_col: i32,
     is_empty: bool,
+}
+
+/// The "selection_changed" notification the CLI reads live editor context from:
+/// snake_case, shaped `{ selection:{start,end}, text, filePath }`. Lines arrive from
+/// Java as Eclipse labels them (from 1); columns are real 0-based offsets in the line.
+///
+/// The CLI's consumer has read the lines two ways (both checked in the binaries):
+///     lineCount = end.line - start.line + 1;
+///     if (end.character === 0) lineCount--;     // ended at a line start
+///     lineStart = start.line;                    // up to 2.1.179: shown as given
+///     lineStart = start.line + 1;                // 2.1.181 on: counted from 0
+///     lineEnd   = lineStart + lineCount - 1;
+/// So `from_zero` moves both lines up one for a CLI that adds it back; every other
+/// client gets them as given. Columns must stay real: a hardcoded end character 0
+/// makes the `=== 0` rule drop the last selected line.
+/// A bare caret (no highlighted text) is sent as a null range so Claude still
+/// learns the active file via filePath.
+fn selection_message(args: &SelectionArgs, from_zero: bool) -> String {
+    let line = |n: i32| if from_zero { (n - 1).max(0) } else { n };
+    let selection = if args.is_empty {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!({
+            "start": { "line": line(args.start_line), "character": args.start_col },
+            "end":   { "line": line(args.end_line),   "character": args.end_col }
+        })
+    };
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "selection_changed",
+        "params": {
+            "selection": selection,
+            "text": args.text,
+            "filePath": args.file_path
+        }
+    })
+    .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +174,8 @@ impl Server {
             status_callback: Mutex::new(None),
             preferred_port,
             last_selection: Mutex::new(None),
+            last_selection_from_zero: Mutex::new(None),
+            sessions_counting_from_zero: Mutex::new(HashSet::new()),
         });
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -242,6 +287,7 @@ impl Server {
         // Drop all SSE senders first so their streams return Poll::Ready(None)
         // and the Axum tasks complete before the runtime shuts down.
         self.state.clients.lock().unwrap().clear();
+        self.state.sessions_counting_from_zero.lock().unwrap().clear();
 
         // Signal Axum to stop accepting new connections, giving in-flight responses
         // the chance to finish on their own.
@@ -296,52 +342,25 @@ impl Server {
         let join_handle = self.runtime.spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-            // Claude CLI ingests live editor context from a bare "selection_changed"
-            // notification (snake_case) shaped { selection:{start,end}, text, filePath }.
-            // Verified against the v2.1.173 binary, the CLI's consumer is:
-            //     lineCount = end.line - start.line + 1;
-            //     if (end.character === 0) lineCount--;      // ended at a line start
-            //     lineStart = start.line;                     // displayed AS-IS (no +1)
-            //     lineEnd   = lineStart + lineCount - 1;
-            // So lines must be 1-based editor labels (passed through from Java
-            // unchanged) and columns must be REAL 0-based offsets — hardcoding
-            // character 0 made every selection lose its last line, and an extra -1
-            // here shifted the whole range down one.
-            // A bare cursor (no highlighted text) is sent as a null range so Claude
-            // still learns the active file via filePath.
-            let selection = if args.is_empty {
-                serde_json::Value::Null
-            } else {
-                serde_json::json!({
-                    "start": { "line": args.start_line, "character": args.start_col },
-                    "end":   { "line": args.end_line,   "character": args.end_col }
-                })
-            };
-            let json = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "selection_changed",
-                "params": {
-                    "selection": selection,
-                    "text": args.text,
-                    "filePath": args.file_path
-                }
-            })
-            .to_string();
+            // One message per way the CLI reads lines; see selection_message.
+            let as_given = selection_message(&args, false);
+            let from_zero = selection_message(&args, true);
 
             // Cache for replay to clients that connect later (open file -> start
             // Claude). Stored even when no client is connected yet.
-            *state.last_selection.lock().unwrap() = Some(json.clone());
+            *state.last_selection.lock().unwrap() = Some(as_given.clone());
+            *state.last_selection_from_zero.lock().unwrap() = Some(from_zero.clone());
 
-            // Broadcast to any currently-connected clients.
+            // Broadcast to any currently-connected clients, each in its own numbering.
+            let counting_from_zero = state.sessions_counting_from_zero.lock().unwrap().clone();
             let mut clients = state.clients.lock().unwrap();
             if clients.is_empty() {
                 return;
             }
-            let event = SseEvent {
-                event_type: "message".to_string(),
-                data: json,
-            };
-            clients.retain(|_, tx| tx.send(event.clone()).is_ok());
+            clients.retain(|session, tx| {
+                let data = if counting_from_zero.contains(session) { &from_zero } else { &as_given };
+                tx.send(SseEvent { event_type: "message".to_string(), data: data.clone() }).is_ok()
+            });
         });
 
         *self.selection_debounce.lock().unwrap() = Some(join_handle);
@@ -528,7 +547,7 @@ async fn messages_handler(
 
     // Respond 202 immediately; the actual JSON-RPC reply arrives over SSE.
     tokio::spawn(async move {
-        crate::mcp::handle_message(state, sender, body_str).await;
+        crate::mcp::handle_message(state, session_id, sender, body_str).await;
     });
 
     (StatusCode::ACCEPTED, "Accepted").into_response()
@@ -641,6 +660,7 @@ struct ClientGuard {
 impl Drop for ClientGuard {
     fn drop(&mut self) {
         self.state.clients.lock().unwrap().remove(&self.session_id);
+        self.state.sessions_counting_from_zero.lock().unwrap().remove(&self.session_id);
 
         // Close any pending Eclipse diff tabs when this MCP client disconnects.
         // Spawn a plain OS thread so JNI can safely attach — drop() is synchronous
@@ -828,6 +848,98 @@ mod tests {
         read_until(&mut sse, &mut seen, "\n");
         assert!(seen.contains("event: message"), "{seen}");
         assert!(seen.contains(r#""protocolVersion":"2024-11-05""#), "{seen}");
+    }
+
+    fn selection(start_line: i32, end_line: i32, start_col: i32, end_col: i32) -> SelectionArgs {
+        SelectionArgs {
+            file_path: "C:/a.rs".to_string(),
+            text: "x".to_string(),
+            start_line,
+            end_line,
+            start_col,
+            end_col,
+            is_empty: false,
+        }
+    }
+
+    #[test]
+    fn selection_lines_as_given_are_sent_exactly_as_before() {
+        assert_eq!(
+            selection_message(&selection(22, 23, 4, 77), false),
+            r#"{"jsonrpc":"2.0","method":"selection_changed","params":{"filePath":"C:/a.rs","selection":{"end":{"character":77,"line":23},"start":{"character":4,"line":22}},"text":"x"}}"#
+        );
+    }
+
+    #[test]
+    fn selection_lines_from_zero_move_both_lines_up_one_and_keep_the_columns() {
+        let as_given: serde_json::Value = serde_json::from_str(&selection_message(&selection(22, 23, 4, 77), false)).unwrap();
+        let from_zero: serde_json::Value = serde_json::from_str(&selection_message(&selection(22, 23, 4, 77), true)).unwrap();
+        assert_eq!(from_zero["params"]["selection"]["start"], serde_json::json!({"line": 21, "character": 4}));
+        assert_eq!(from_zero["params"]["selection"]["end"], serde_json::json!({"line": 22, "character": 77}));
+        assert_eq!(from_zero["params"]["filePath"], as_given["params"]["filePath"]);
+        assert_eq!(from_zero["params"]["text"], as_given["params"]["text"]);
+        assert_eq!(from_zero["method"], "selection_changed");
+    }
+
+    #[test]
+    fn a_line_from_zero_never_goes_below_zero() {
+        let from_zero: serde_json::Value = serde_json::from_str(&selection_message(&selection(0, 0, 0, 1), true)).unwrap();
+        assert_eq!(from_zero["params"]["selection"]["start"]["line"], 0);
+        assert_eq!(from_zero["params"]["selection"]["end"]["line"], 0);
+    }
+
+    #[test]
+    fn a_bare_caret_is_the_same_message_either_way() {
+        let caret = SelectionArgs { is_empty: true, ..selection(22, 22, 5, 5) };
+        assert_eq!(selection_message(&caret, false), selection_message(&caret, true));
+        let msg: serde_json::Value = serde_json::from_str(&selection_message(&caret, false)).unwrap();
+        assert!(msg["params"]["selection"].is_null(), "a caret is sent as a null range");
+    }
+
+    /// Opens an SSE stream, initializes it as a client announcing `client_info`, and
+    /// returns the stream once the answer to initialize has arrived.
+    fn initialized_client(port: u16, client_info: &str) -> (TcpStream, String) {
+        let local = format!("127.0.0.1:{port}");
+        let mut sse = connect(port);
+        write!(sse, "GET /sse HTTP/1.1\r\nHost: {local}\r\nAccept: text/event-stream\r\n\r\n").unwrap();
+        let mut seen = String::new();
+        read_until(&mut sse, &mut seen, "sessionId=");
+        read_until(&mut sse, &mut seen, "\n");
+        let endpoint = seen.lines().find_map(|l| l.strip_prefix("data: ")).unwrap().trim().to_string();
+        let init = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"clientInfo":{client_info}}}}}"#);
+        assert_eq!(request(port, "POST", &endpoint, &local, "", &init).0, 202);
+        read_until(&mut sse, &mut seen, "protocolVersion");
+        (sse, seen)
+    }
+
+    /// The first selection_changed message on an SSE stream.
+    fn next_selection(sse: &mut TcpStream, seen: &mut String) -> serde_json::Value {
+        read_until(sse, seen, "selection_changed");
+        let at = seen.find("selection_changed").unwrap();
+        let mut buf = [0u8; 4096];
+        while !seen[at..].contains('\n') {
+            let n = sse.read(&mut buf).expect("the stream stays open and delivers");
+            assert!(n > 0, "the server closed the stream mid-message");
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        let line = seen.lines().find(|l| l.contains("selection_changed")).unwrap();
+        serde_json::from_str(line.strip_prefix("data: ").unwrap()).unwrap()
+    }
+
+    #[test]
+    fn each_client_gets_the_selection_in_the_line_numbering_it_reads() {
+        let (server, port) = start_server();
+        let (mut new_cli, mut new_seen) = initialized_client(port, r#"{"name":"claude-code","version":"2.1.287"}"#);
+        let (mut old_cli, mut old_seen) = initialized_client(port, r#"{"name":"claude-code","version":"2.1.179"}"#);
+
+        server.notify_selection("C:/a.rs".to_string(), "x".to_string(), 22, 22, 0, 77, false);
+
+        let to_new = next_selection(&mut new_cli, &mut new_seen);
+        let to_old = next_selection(&mut old_cli, &mut old_seen);
+        assert_eq!(to_new["params"]["selection"]["start"]["line"], 21, "2.1.181+ adds 1 itself");
+        assert_eq!(to_old["params"]["selection"]["start"]["line"], 22, "older CLIs show it as given");
+        assert_eq!(to_new["params"]["selection"]["end"]["character"], 77);
+        assert_eq!(to_old["params"]["selection"]["end"]["character"], 77);
     }
 
     #[test]

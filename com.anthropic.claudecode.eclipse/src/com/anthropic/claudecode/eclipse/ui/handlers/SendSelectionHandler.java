@@ -10,6 +10,7 @@ import org.eclipse.ui.handlers.HandlerUtil;
 import org.eclipse.ui.texteditor.ITextEditor;
 
 import com.anthropic.claudecode.eclipse.Activator;
+import com.anthropic.claudecode.eclipse.editor.EditorParts;
 import com.anthropic.claudecode.eclipse.ui.ClaudeCliView;
 
 /**
@@ -24,7 +25,8 @@ public class SendSelectionHandler extends AbstractHandler {
     public Object execute(ExecutionEvent event) throws ExecutionException {
         try {
             IEditorPart editor = HandlerUtil.getActiveEditor(event);
-            if (!(editor instanceof ITextEditor textEditor)) return null;
+            ITextEditor textEditor = EditorParts.textEditorOf(editor);
+            if (textEditor == null) return null;
 
             ISelection selection = textEditor.getSelectionProvider().getSelection();
             if (!(selection instanceof ITextSelection textSelection) || textSelection.isEmpty()) {

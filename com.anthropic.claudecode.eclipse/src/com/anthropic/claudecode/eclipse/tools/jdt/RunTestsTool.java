@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.NullProgressMonitor;
@@ -13,11 +14,15 @@ import org.eclipse.debug.core.ILaunchConfiguration;
 import org.eclipse.debug.core.ILaunchConfigurationType;
 import org.eclipse.debug.core.ILaunchConfigurationWorkingCopy;
 import org.eclipse.debug.core.ILaunchManager;
+import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IMethod;
 import org.eclipse.jdt.core.IPackageFragment;
+import org.eclipse.jdt.core.IPackageFragmentRoot;
 import org.eclipse.jdt.core.IType;
+import org.eclipse.jdt.core.JavaModelException;
+import org.eclipse.jdt.internal.junit.launcher.TestKindRegistry;
 import org.eclipse.jdt.junit.JUnitCore;
 import org.eclipse.jdt.junit.TestRunListener;
 import org.eclipse.jdt.junit.model.ITestCaseElement;
@@ -157,29 +162,65 @@ public class RunTestsTool implements McpTool {
 		IJavaElement element = JdtUtils.resolveElement(target);
 		if (element instanceof IMethod method) {
 			IType type = method.getDeclaringType();
-			IJavaProject jp = type.getJavaProject();
-			return new TestTarget(jp.getProject(), type.getFullyQualifiedName(), method.getElementName());
+			return new TestTarget(type, type.getFullyQualifiedName(), method.getElementName());
 		}
 
 		// Try as type
 		if (element instanceof IType type) {
-			IJavaProject jp = type.getJavaProject();
-			return new TestTarget(jp.getProject(), type.getFullyQualifiedName(), null);
+			return new TestTarget(type, type.getFullyQualifiedName(), null);
 		}
 
-		// Try as package
-		if (element instanceof IPackageFragment pkg) {
-			IJavaProject jp = pkg.getJavaProject();
-			return new TestTarget(jp.getProject(), null, null, pkg.getElementName());
-		}
-
-		// Try as project name
-		for (IJavaProject jp : JdtUtils.getJavaProjects()) {
+		// Try as project name, before packages: a plug-in project is usually named
+		// after its root package, and that name has always meant the whole project
+		List<IJavaProject> projects = JdtUtils.getJavaProjects();
+		for (IJavaProject jp : projects) {
 			if (jp.getElementName().equals(target)) {
-				return new TestTarget(jp.getProject(), null, null);
+				return new TestTarget(jp, null, null);
 			}
 		}
 
+		// Try as package
+		IPackageFragment pkg = findPackage(projects, target);
+		if (pkg != null) {
+			return new TestTarget(pkg, null, null);
+		}
+
+		return null;
+	}
+
+	/**
+	 * The package named {@code name} to run tests from, or null. A package can sit in
+	 * several source folders (src and test) and several projects, and a launch takes one of
+	 * them: the first project that has it with Java files, and there a folder marked as test
+	 * code before any other.
+	 */
+	static IPackageFragment findPackage(List<IJavaProject> projects, String name) {
+		for (IJavaProject project : projects) {
+			try {
+				IPackageFragment first = null;
+				for (IPackageFragmentRoot root : project.getPackageFragmentRoots()) {
+					if (root.getKind() != IPackageFragmentRoot.K_SOURCE) {
+						continue;
+					}
+					IPackageFragment pkg = root.getPackageFragment(name);
+					if (pkg == null || !pkg.exists() || !pkg.containsJavaResources()) {
+						continue;
+					}
+					IClasspathEntry entry = root.getRawClasspathEntry();
+					if (entry != null && entry.isTest()) {
+						return pkg;
+					}
+					if (first == null) {
+						first = pkg;
+					}
+				}
+				if (first != null) {
+					return first;
+				}
+			} catch (JavaModelException e) {
+				// Continue to next project
+			}
+		}
 		return null;
 	}
 
@@ -195,8 +236,7 @@ public class RunTestsTool implements McpTool {
 
 		config.setAttribute(IJavaLaunchConfigurationConstants.ATTR_PROJECT_NAME, target.project.getName());
 
-		// Detect JUnit version (prefer JUnit 5)
-		String testKind = detectTestKind(target);
+		String testKind = testKindFor(target.element, RunTestsTool::jdtTestKind);
 		config.setAttribute("org.eclipse.jdt.junit.TEST_KIND", testKind);
 
 		if (target.className != null) {
@@ -204,22 +244,44 @@ public class RunTestsTool implements McpTool {
 			if (target.methodName != null) {
 				config.setAttribute("org.eclipse.jdt.junit.TESTNAME", target.methodName);
 			}
-		} else if (target.packageName != null) {
-			config.setAttribute("org.eclipse.jdt.junit.CONTAINER", target.packageName);
 		} else {
-			// Run all tests in project
-			config.setAttribute("org.eclipse.jdt.junit.CONTAINER", "=" + target.project.getName());
+			// Run all tests in the package or project: JDT reads this back with
+			// JavaCore.create(String), which takes an element handle, not a name
+			config.setAttribute("org.eclipse.jdt.junit.CONTAINER", target.element.getHandleIdentifier());
 		}
 
 		return config;
 	}
 
-	private String detectTestKind(TestTarget target) {
-		// Check if JUnit 5 is available
+	/**
+	 * The JUnit runner to launch {@code element} with. JDT picks it, the way Run As &gt; JUnit Test
+	 * does, so it is whichever JUnit the project is on (3, 4, 5, 6, or one newer than this tool)
+	 * and one this IDE has a runner for. JDT refuses a launch whose runner does not match the
+	 * JUnit on the build path, so a choice made here can be turned down; its own cannot.
+	 *
+	 * <p>{@code jdtChoice} is a seam: JDT's chooser needs a workspace.
+	 */
+	static String testKindFor(IJavaElement element, Function<IJavaElement, String> jdtChoice) {
 		try {
-			IJavaProject jp = org.eclipse.jdt.core.JavaCore.create(target.project);
-			IType junit5 = jp.findType("org.junit.jupiter.api.Test");
-			if (junit5 != null) {
+			String kind = jdtChoice.apply(element);
+			if (kind != null && !kind.isBlank()) {
+				return kind;
+			}
+		} catch (RuntimeException | LinkageError e) {
+			// JDT's chooser is internal: one that is gone or fails leaves the guess below.
+		}
+		return guessTestKind(element.getJavaProject());
+	}
+
+	@SuppressWarnings("restriction") // org.eclipse.jdt.internal.junit.launcher — the chooser behind Run As > JUnit Test (no public JDT equivalent)
+	private static String jdtTestKind(IJavaElement element) {
+		return TestKindRegistry.getContainerTestKindId(element);
+	}
+
+	/** JUnit 5 when the Jupiter API is on the build path, else JUnit 4. */
+	private static String guessTestKind(IJavaProject project) {
+		try {
+			if (project.findType("org.junit.jupiter.api.Test") != null) {
 				return JUNIT5_KIND;
 			}
 		} catch (Exception e) {
@@ -229,20 +291,17 @@ public class RunTestsTool implements McpTool {
 	}
 
 	private static class TestTarget {
+		/** What to run: a type (also for a single method), a package, or a project. */
+		final IJavaElement element;
 		final IProject project;
 		final String className;
 		final String methodName;
-		final String packageName;
 
-		TestTarget(IProject project, String className, String methodName) {
-			this(project, className, methodName, null);
-		}
-
-		TestTarget(IProject project, String className, String methodName, String packageName) {
-			this.project = project;
+		TestTarget(IJavaElement element, String className, String methodName) {
+			this.element = element;
+			this.project = element.getJavaProject().getProject();
 			this.className = className;
 			this.methodName = methodName;
-			this.packageName = packageName;
 		}
 	}
 

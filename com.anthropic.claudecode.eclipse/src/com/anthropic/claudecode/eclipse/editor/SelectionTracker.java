@@ -107,17 +107,20 @@ public class SelectionTracker {
     }
 
     private void onSelectionChanged(IWorkbenchPart part, ISelection selection) {
-        if (!active || !(part instanceof ITextEditor textEditor)) return;
+        if (!active) return;
         if (!(selection instanceof ITextSelection textSelection)) return;
+        ITextEditor textEditor = EditorParts.textEditorOf(part);
+        if (textEditor == null) return;
 
         IEditorInput input = textEditor.getEditorInput();
-        String filePath = getFilePath(input);
+        String filePath = EditorParts.pathOf(input);
         if (filePath == null) return;
 
-        // Lines are 1-based editor labels; columns are 0-based offsets in their line.
-        // Computed from the document so the end position is exact: the CLI shows the
-        // line numbers as-is and treats endColumn == 0 as "the selection stops before
-        // this line", so a hardcoded 0 silently dropped the last selected line.
+        // Lines are 1-based editor labels (the native server counts them from 0 for a
+        // CLI that reads them that way); columns are 0-based offsets in their line.
+        // Computed from the document so the end position is exact: the CLI treats
+        // endColumn == 0 as "the selection stops before this line", so a hardcoded 0
+        // silently dropped the last selected line.
         int startLine = textSelection.getStartLine() + 1;
         int endLine   = textSelection.getEndLine()   + 1;
         int startCol  = 0;
@@ -155,23 +158,13 @@ public class SelectionTracker {
         }
     }
 
-    private String getFilePath(IEditorInput input) {
-        if (input instanceof org.eclipse.ui.IFileEditorInput fileInput) {
-            var file = fileInput.getFile();
-            return file.getLocation() != null ? file.getLocation().toOSString() : null;
-        }
-        if (input instanceof org.eclipse.ui.IURIEditorInput uriInput) {
-            return uriInput.getURI().getPath();
-        }
-        return null;
-    }
-
     private class PartActivationListener implements IPartListener2 {
         @Override
         public void partActivated(IWorkbenchPartReference ref) {
             if (!active) return;
             IWorkbenchPart part = ref.getPart(false);
-            if (part instanceof ITextEditor textEditor) {
+            ITextEditor textEditor = EditorParts.textEditorOf(part);
+            if (textEditor != null && textEditor.getSelectionProvider() != null) {
                 ISelection sel = textEditor.getSelectionProvider().getSelection();
                 onSelectionChanged(part, sel);
             }
