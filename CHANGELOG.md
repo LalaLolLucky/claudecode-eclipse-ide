@@ -4,7 +4,17 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.11] — 2026-10-02 *(current)*
+## [3.2.12] — 2026-10-03 *(current)*
+
+### Fixed
+- Selections in tabbed editors such as `MANIFEST.MF`, `plugin.xml` and `pom.xml`, and in files not stored on disk, now reach Claude ([#153](https://github.com/eilonwy06/claudecode-eclipse-ide/issues/153)).
+- Selection line numbers in the Claude Terminal are no longer off by one with Claude Code 2.1.181 and later.
+- `runTests` works in JUnit 6 projects and takes a package name.
+- `getCurrentSelection` reports the selection's columns, and a bare cursor as empty.
+
+---
+
+## [3.2.11] — 2026-10-02
 
 ### Added
 - Copy buttons on search result lists, agent log text and agent responses ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #163).
