@@ -88,6 +88,9 @@ function toggleMenu(id, anchor) {
     if (typeof filterActionsSlash === 'function') filterActionsSlash('');
     focusFilter = filterInput;
   }
+  // The preference can change while Eclipse is running (ClaudePreferencePage applies it
+  // live), so re-check on every open rather than only once at page load.
+  if (id === 'modes-menu' && typeof applyBypassModeVisibility === 'function') applyBypassModeVisibility();
   menu.classList.add('open');
   positionMenu(menu, anchor);
   openMenuEl = menu; openAnchor = anchor;
