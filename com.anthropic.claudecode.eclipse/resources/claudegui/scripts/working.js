@@ -217,7 +217,7 @@ function showWorking() {
   gerundIdx = Math.floor(Math.random() * shuffledGerunds.length);
   workingGerund = pinned || shuffledGerunds[gerundIdx];
   const pane = streamPane(); if (!pane) return;
-  workingEl = document.createElement('div'); workingEl.className = 'turn';
+  workingEl = document.createElement('div'); workingEl.className = 'turn working-turn';
   workingEl.innerHTML = '<div class="working"><span class="sb">' + workingGlyphNow() + '</span><span class="gerund"></span></div>';
   pane.appendChild(workingEl);
   // Through autoScroll (chat.js), not a raw write: showWorking runs again after every
@@ -251,7 +251,7 @@ function showWorkingFor(t) {
   if (t === rtab) { showWorking(); return; }
   sweepWorkingNodes(t.pane);
   const el = document.createElement('div');
-  el.className = 'turn';
+  el.className = 'turn working-turn';
   el.innerHTML = '<div class="working"><span class="sb">' + workingGlyphNow() +
     '</span><span class="gerund">' + escHtml(GERUND_CONNECTING + '...') + CURSOR + '</span></div>';
   t.pane.appendChild(el);

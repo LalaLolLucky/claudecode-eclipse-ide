@@ -405,16 +405,17 @@ public final class ClaudeStatusBar extends Canvas {
                     buildContextTooltip(s)));
         }
 
-        // Remote Control sits immediately after the context meter, and its
-        // separator is drawn whether or not it is on: the divider marks where
-        // the conversation's own state ends and its reach begins, so it stays
-        // put rather than making the bar shuffle every time the bridge toggles.
-        // Off is therefore a zero-width segment, not an absent one.
-        left.add(buildRemoteControlSeg(gc));
-
         if (prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_COST) && s.totalCostUsd().isPresent()) {
             left.add(buildCostSeg(gc, s.totalCostUsd().getAsDouble(), compact));
         }
+
+        // Remote Control closes the group, and its separator is drawn whether or
+        // not it is on: the divider marks where the conversation's own state ends
+        // and its reach begins, so it stays put rather than making the bar shuffle
+        // every time the bridge toggles. Off is therefore a zero-width segment, not
+        // an absent one. It must stay LAST: anything after it would get a second
+        // divider beside the empty slot's (Context | | Cost).
+        left.add(buildRemoteControlSeg(gc));
 
         var five = s.fiveHour();
         if (prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_SESSION_5H)

@@ -74,7 +74,7 @@ function modelLabelFor(id) {
   return id || 'Default';
 }
 function prettyModelId(id) {
-  const s = String(id).replace(/^claude-/, '').replace(/-\d{8}$/, '');
+  const s = String(id).replace(/\[1m\]$/, '').replace(/^claude-/, '').replace(/-\d{8}$/, '');
   const p = s.split('-'); if (!p.length || !p[0]) return id;
   const fam = p[0].charAt(0).toUpperCase() + p[0].slice(1);
   return p.length > 1 ? fam + ' ' + p.slice(1).join('.') : fam;
@@ -224,10 +224,11 @@ window.onSettingsChanged = function (tabId, json) {
   }
 };
 
-/* Strip the "claude-" prefix and any -YYYYMMDD suffix so claude-opus-4-5 and
-   claude-opus-4-5-20251101 compare equal. */
+/* Strip the "claude-" prefix, any -YYYYMMDD suffix and a trailing [1m] so
+   claude-opus-4-5 and claude-opus-4-5-20251101 compare equal, and so does a 1M-context
+   run (the CLI reports "claude-sonnet-5-5[1m]") against the catalog's plain id. */
 function normalizeModelId(id) {
-  return String(id || '').replace(/^claude-/, '').replace(/-\d{8}$/, '');
+  return String(id || '').replace(/\[1m\]$/, '').replace(/^claude-/, '').replace(/-\d{8}$/, '');
 }
 
 /* ---- what the INSTALLED binary can actually run ----

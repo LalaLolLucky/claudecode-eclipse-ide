@@ -18,7 +18,7 @@ window.onStreamText    = (tabId, t) => withTab(tabId, () => appendAssistant(t));
 /* Turn over → the CLI has written this turn's user line, so the bubble sent a
    moment ago can finally learn which transcript line it owns (its hover actions
    stay hidden until then). */
-window.onStreamEnd     = (tabId) => withTab(tabId, (t) => { t.compacting = false; hideWorking(); endAssistant(); setStreaming(false); backfillMessageIds(t); });
+window.onStreamEnd     = (tabId) => withTab(tabId, (t) => { t.compacting = false; hideWorking(); endAssistant(); setStreaming(false); backfillMessageIds(t); refreshTabTitle(t); });
 window.onToolStart     = (tabId, n) => withTab(tabId, () => addToolLine(n));
 window.onToolEnd       = (tabId, j) => withTab(tabId, () => applyToolResult(j));
 /* A running subagent's own current step (chat.rs never gives its OWN tool calls a

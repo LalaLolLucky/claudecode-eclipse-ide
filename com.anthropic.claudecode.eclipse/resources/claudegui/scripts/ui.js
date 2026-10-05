@@ -255,6 +255,7 @@ const send = document.getElementById('send');
 input.addEventListener('focus', () => wrap.classList.remove('blur'));
 input.addEventListener('blur',  () => wrap.classList.add('blur'));
 input.addEventListener('input', () => {
+  if (!recallingPrompt) { const t = activeTab(); if (t) t.histIdx = -1; }   // typing leaves the Up/Down cycle
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 160) + 'px';
   const hasImgs = typeof hasPendingImages === 'function' && hasPendingImages();
@@ -359,6 +360,48 @@ window.__ccArmKeyGuard = (code) => {
   }
 };
 
+/* Up/Down in the composer cycle through the prompts sent in this conversation, newest
+   first, like a shell. The prompts are read back from the active tab's own bubbles
+   (addUserMessage keeps each one's raw text), so a conversation reopened from history
+   cycles too. t.histIdx is how far back we are (-1 = not cycling); the draft being typed
+   is parked in t.histDraft and comes back when Down passes the newest prompt. */
+let recallingPrompt = false;
+function sentPrompts(t) {
+  return Array.from(t.pane.querySelectorAll('.user-msg')).map(b => b._rawText).filter(Boolean);
+}
+function setComposerText(text) {
+  recallingPrompt = true;   // the input event this raises must not end the cycle
+  input.value = text;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  recallingPrompt = false;
+  closeSlash();   // a recalled "/compact" must not open the menu and claim the next arrow
+  if (typeof closeMention === 'function') closeMention();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+/* Returns true when the key was a recall step (and so is consumed). The caret rules keep
+   plain editing intact: Up only starts a cycle from the very start of the text, and
+   inside a multi-line prompt Up/Down still move between its lines first. */
+function handlePromptRecall(e) {
+  if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return false;
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return false;
+  const t = activeTab(); if (!t) return false;
+  if (input.selectionStart !== input.selectionEnd) return false;
+  const pos = input.selectionStart, cycling = t.histIdx >= 0;
+  const prompts = sentPrompts(t);
+  if (e.key === 'ArrowUp') {
+    if (cycling ? input.value.slice(0, pos).includes('\n') : pos !== 0) return false;
+    if ((cycling ? t.histIdx : -1) + 1 >= prompts.length) return false;
+    if (!cycling) { t.histDraft = input.value; t.histIdx = -1; }
+    t.histIdx++;
+    setComposerText(prompts[prompts.length - 1 - t.histIdx]);
+    return true;
+  }
+  if (!cycling || input.value.slice(pos).includes('\n')) return false;
+  t.histIdx--;
+  setComposerText(t.histIdx < 0 ? (t.histDraft || '') : prompts[prompts.length - 1 - t.histIdx]);
+  return true;
+}
+
 input.addEventListener('keydown', (e) => {
   // Set before the slash menu gets a look in: it claims Up/Down but never the
   // horizontal arrows, so a guard set here is always the one this keypress needs.
@@ -366,6 +409,7 @@ input.addEventListener('keydown', (e) => {
              || e.key === 'ArrowUp'   || e.key === 'ArrowDown');
   if (typeof mentionState !== 'undefined' && mentionState.open && handleMentionKey(e)) return;
   if (slashState.open && handleSlashKey(e)) return;
+  if (handlePromptRecall(e)) { e.preventDefault(); return; }
   // Enter always sends: mid-stream it QUEUES the message (VSCode behavior —
   // claude answers queued messages in succession over the persistent process).
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }

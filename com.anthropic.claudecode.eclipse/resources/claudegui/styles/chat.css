@@ -134,11 +134,12 @@
 .turn.pinned-prompt { position: sticky; top: 0; z-index: 4; margin-top: 0; padding-top: 10px; background: var(--bg); }
 .user-msg { position: relative; border: 1px solid var(--border); background: var(--bg-soft);
   border-radius: 8px; padding: 10px 12px; }
-.user-msg .ctx-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
-  background: var(--bg-chip); border: 1px solid var(--border); border-radius: 5px;
-  padding: 2px 8px; margin-bottom: 8px; font-size: 11.5px; color: var(--fg-dim);
-  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.user-msg .ctx-chip svg { flex-shrink: 0; opacity: .8; }
+/* The open-file chip is sized and styled exactly like an image chip (.img-chip below) —
+   same padding, radius, font, colour, 18px icon box and 240px cap — since the two sit
+   side by side in the bubble's attachment row. */
+.user-msg .ctx-chip { position: relative; display: inline-flex; align-items: center; gap: 7px;
+  background: var(--bg-chip); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px 4px 5px; font-size: 12px; color: var(--fg); max-width: 240px; }
 .user-msg .ctx-chip.clickable { cursor: pointer; }
 .user-msg .ctx-chip.clickable:hover { color: var(--fg); background: var(--bg-hover); }
 /* pre-wrap, so the line breaks you typed survive into the bubble. textContent already
@@ -205,27 +206,38 @@
 /* The composer strip is ONE row that scrolls sideways (joebiden10) — never several
    rows stacked above the composer. Attaching a dozen images grows the strip along a
    fixed-height line instead of eating the conversation above it. */
-#pending-images { display: none; flex-wrap: nowrap; gap: 6px; margin-bottom: 8px;
-  overflow-x: auto; overflow-y: hidden; padding-bottom: 5px; }
+/* Divided from the prompt by a horizontal rule, the mirror of #composer-bar's border-top
+   below the textarea (layout.css): the negative side margins cancel #input-wrap's 10px
+   padding so the rule runs edge to edge, and the matching side padding keeps the chips
+   aligned with the textarea. */
+#pending-images { display: none; flex-wrap: nowrap; gap: 6px; margin: 0 -10px 6px;
+  overflow-x: auto; overflow-y: hidden; padding: 0 10px 6px; border-bottom: 1px solid var(--border-soft); }
 #pending-images.show { display: flex; }
 #pending-images .img-chip { flex: 0 0 auto; }
+/* Composer chips run smaller than a sent bubble's (which match the open-file chip there):
+   the strip sits right above the prompt and a full-size chip made it a heavy band. */
+#pending-images .img-chip { padding: 2px 8px 2px 4px; font-size: 11.5px; gap: 6px; }
+#pending-images .img-chip .ic-open { gap: 6px; }
+#pending-images .img-chip .ic-thumb, #pending-images .img-chip .ic-file { width: 14px; height: 14px; }
+#pending-images .img-chip .ic-x { width: 13px; height: 13px; }
 #pending-images::-webkit-scrollbar { height: 5px; }
 #pending-images::-webkit-scrollbar-track { background: transparent; }
 #pending-images::-webkit-scrollbar-thumb { background: var(--scrollbar-track); border-radius: 3px; }
-.user-msg .msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-/* A sent chip never leaves its bubble: it may shrink to the bubble's width, where the
-   name ellipsizes. (min-width:0 is what lets a flex item go below its text's width;
-   overflow:hidden holds the line where container queries aren't supported.) */
-.user-msg .msg-images { container-type: inline-size; }
-.user-msg .msg-images .img-chip { min-width: 0; max-width: 100%; overflow: hidden; }
-/* A narrow bubble has no room for an image's dimensions; the name keeps what there is. */
-@container (max-width: 200px) { .user-msg .msg-images .img-chip .ic-dim { display: none; } }
+/* A sent bubble's attachments (the open-file chip, then any images) are ONE row that
+   scrolls sideways, same as the composer strip above — never stacked rows. Chips keep
+   their natural width (flex: 0 0 auto) and the row scrolls once they outgrow the bubble. */
+.user-msg .msg-images { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; margin-bottom: 8px;
+  overflow-x: auto; overflow-y: hidden; }
+.user-msg .msg-images::-webkit-scrollbar { height: 5px; }
+.user-msg .msg-images::-webkit-scrollbar-track { background: transparent; }
+.user-msg .msg-images::-webkit-scrollbar-thumb { background: var(--scrollbar-track); border-radius: 3px; }
+.user-msg .msg-images .img-chip, .user-msg .msg-images .ctx-chip { flex: 0 0 auto; }
 .img-chip { position: relative; display: inline-flex; align-items: center; gap: 7px;
   background: var(--bg-chip); border: 1px solid var(--border); border-radius: 6px;
   padding: 4px 8px 4px 5px; font-size: 12px; color: var(--fg); max-width: 240px; cursor: default; }
 .img-chip .ic-thumb { width: 18px; height: 18px; border-radius: 3px; flex-shrink: 0;
   background-size: cover; background-position: center; background-repeat: no-repeat; }
-.img-chip .ic-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.img-chip .ic-name, .user-msg .ctx-chip .ic-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .img-chip .ic-dim { color: var(--fg-dim); flex-shrink: 0; }
 /* The remove × sits ON the chip's right edge rather than after it, so the chip is
    exactly as wide hovered as not (joebiden10). Laying it out inline made every chip
@@ -256,7 +268,7 @@
 .img-chip .ic-open { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
   min-width: 0; flex: 1; }
 /* An uploaded non-image file: the file icon stands where an image's thumbnail would. */
-.img-chip .ic-file { display: inline-flex; align-items: center; justify-content: center;
+.img-chip .ic-file, .user-msg .ctx-chip .ic-file { display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; flex-shrink: 0; color: var(--fg-dim); }
 
 /* An @-mention in a sent message; a file mention opens the file. */
@@ -509,7 +521,11 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
    destroyed and recreated on every turn, so styling off a body class is correct regardless
    of when it happens to exist, rather than needing the class re-applied at every
    (re)creation). */
-.working { display: flex; align-items: center; gap: 3px; padding: 8px 0 8px 2px; color: var(--fg); font-weight: 600; }
+.working { display: flex; align-items: center; gap: 3px; padding: 4px 0 0 2px; color: var(--fg); font-weight: 600; }
+/* The indicator's own turn carries no margin of its own: the 10px every .turn gets, stacked
+   on the indicator's padding, the pane's bottom padding and the composer's top padding,
+   left a wide gap between the gerund and both the text above it and the composer below. */
+.turn.working-turn { margin: 0; }
 /* .sb no longer rotates an SVG — working.js's global interval cycles its textContent through
    a fixed glyph sequence (· ✢ * ✶ ✻ ✽ and back down) instead. font-family/size/width here
    are the real reference app's own .icon_hc5dvw rule, not a guess. height/line-height are
