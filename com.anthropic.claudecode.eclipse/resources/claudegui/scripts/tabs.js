@@ -431,9 +431,25 @@ function renderTabs() {
   }
 }
 function setTabTitle(t, raw) {
-  const title = ((stripContext(raw) || raw || '').trim().slice(0, 40)) || 'Claude Code';
+  const title = ((stripContext(raw) || raw || '').trim()) || 'Claude Code';
   t.title = title; t.titled = true;
   renderTabs();
+}
+/* A tab is named exactly like its row in the history list (the stored title: rename,
+ * else AI title, else first message), so once the session exists its tab adopts that.
+ * Tabs the user renamed by hand are skipped — that rename is already the stored title. */
+function refreshTabTitle(t) {
+  if (t && t.sessionId && !t.userTitled && window._listSessionsAsync) window._listSessionsAsync();   // lands in onHistoryLoaded → syncTabTitles
+}
+function syncTabTitles(sessions) {
+  let changed = false;
+  for (const t of tabs) {
+    if (!t.sessionId || t.userTitled) continue;
+    const s = sessions.find(x => x.sessionId === t.sessionId);
+    const title = s ? (stripContext(s.display) || '').trim() : '';
+    if (title && title !== t.title) { t.title = title; t.titled = true; changed = true; }
+  }
+  if (changed) renderTabs();
 }
 /* Renders the <input> for the tab currently being renamed, called from renderTabs()
  * both on first open (resume === null) and on every subsequent rebuild while the edit
@@ -453,7 +469,7 @@ function startTabEditInput(el, tt, t, resume) {
     const newTitle = inp.value.trim() || 'Claude Code';
     editingTabId = null;
     if (save && newTitle !== t.title) {
-      t.title = newTitle; t.titled = true;
+      t.title = newTitle; t.titled = true; t.userTitled = true;
       if (t.sessionId && window._renameSession) window._renameSession(t.sessionId, newTitle);
     }
     renderTabs();
@@ -520,7 +536,7 @@ function clearSession() {
   // (spawns without --resume) instead of continuing the one just cleared.
   if (window._disposeTab) window._disposeTab(t.id);
   t.sessionId = '';
-  t.titled = false;
+  t.titled = false; t.userTitled = false;
   t.title = 'Claude Code';
   t.images = [];
   t.compacting = false;

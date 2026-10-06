@@ -160,6 +160,7 @@ function loadHistoryAsync() {
 window.onHistoryLoaded = function(json) {
   try { histSessions = JSON.parse(json || '[]'); } catch (e) { histSessions = []; }
   histLoaded = true; setHistoryLoading(false); renderHistoryList();
+  syncTabTitles(histSessions);
   clampOpenMenu();   // the list may be a different width than "Loading…" — re-pin so it isn't cut off
 };
 // True while the history panel is open FOR /resume specifically — picking an item
@@ -668,10 +669,44 @@ function loadHistory(id, title, targetTab) {
   // session (enabled at startup, rendered lazily on the switch that first shows it).
   // No-op unless the tab is genuinely still connecting.
   if (typeof showWorkingFor === 'function') showWorkingFor(t);
-  pane.scrollTop = 0;
-  // #messages is shared by every pane, so only move it when the tab just rebuilt is
-  // the visible one — a restore rendering a background tab must not yank the view.
-  if (t === activeTab()) messagesEl.scrollTop = 0;
+  // A reopened conversation lands on its newest message, like a live one. #messages is
+  // shared by every pane, so only move it when the tab just rebuilt is the visible one —
+  // a restore rendering a background tab must not yank the view.
+  if (t === activeTab()) {
+    const pinBottom = () => {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      followTail = true;   // set directly: a write to the position already held fires no scroll event
+      updateJumpToLatest();
+      updatePinnedPrompt();
+    };
+    pinBottom();
+    holdBottomWhileSettling(t, pinBottom);
+  }
+}
+
+/* Blocks size themselves AFTER they are inserted — the 2-line "Show more" clamp and capped
+   tool output a frame later, images and anything else later still — and each one moves the
+   bottom, so a single pin lands near the end but not at it. Instead of guessing how long
+   that takes, follow the pane's own height: every time it changes, pin again. Stops at the
+   first sign the reader has taken over (wheel, touch, click or drag on the transcript), when
+   the tab stops being the visible one, or after a couple of seconds either way. Only ever
+   one watch: a newer resume replaces the older. */
+let settleWatchStop = null;
+function holdBottomWhileSettling(t, pinBottom) {
+  if (settleWatchStop) settleWatchStop();
+  if (typeof ResizeObserver === 'undefined' || !t.pane) return;
+  const takeOver = ['wheel', 'touchstart', 'pointerdown'];
+  let timer = 0;
+  const ro = new ResizeObserver(() => { if (t !== activeTab()) stop(); else pinBottom(); });
+  function stop() {
+    ro.disconnect(); clearTimeout(timer);
+    takeOver.forEach(ev => messagesEl.removeEventListener(ev, stop));
+    if (settleWatchStop === stop) settleWatchStop = null;
+  }
+  takeOver.forEach(ev => messagesEl.addEventListener(ev, stop, { passive: true }));
+  ro.observe(t.pane);
+  timer = setTimeout(stop, 2000);
+  settleWatchStop = stop;
 }
 
 

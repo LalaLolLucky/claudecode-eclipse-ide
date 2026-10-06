@@ -200,22 +200,27 @@ function addUserMessage(text, ctx, images, id, ts, pane, ctxTarget) {
   }
   const box = document.createElement('div'); box.className = 'user-msg';
   if (id) box.dataset.mid = id;
+  box._rawText = text || '';   // what Up/Down in the composer recalls (the body may render mention chips)
   box.appendChild(makeMsgActions());
-  if (ctx) {
-    const chip = document.createElement('span'); chip.className = 'ctx-chip';
-    chip.innerHTML = ICONS.CODEICON + ' <span></span>';
-    chip.querySelector('span').textContent = ctx;
-    if (ctxTarget && ctxTarget.file && window._openFileInEditor) {
-      chip.classList.add('clickable');
-      chip.onclick = () => window._openFileInEditor(ctxTarget.file, rootPathOf(activeTab()),
-        ctxTarget.startLine || 0, ctxTarget.endLine || 0);
-    }
-    box.appendChild(chip);
-  }
-  if (images && images.length) {
+  // The file chip and the image chips are the same kind of thing — attachments — so they
+  // share ONE row that scrolls sideways (like the composer's strip) instead of stacking.
+  const hasImages = !!(images && images.length);
+  if (ctx || hasImages) {
     const strip = document.createElement('div'); strip.className = 'msg-images';
+    if (ctx) {
+      const chip = document.createElement('span'); chip.className = 'ctx-chip';
+      // Same parts as an image chip (icon box + ellipsizing name) so the two match.
+      chip.innerHTML = '<span class="ic-file">' + ICONS.CODEICON + '</span><span class="ic-name"></span>';
+      chip.querySelector('.ic-name').textContent = ctx;
+      if (ctxTarget && ctxTarget.file && window._openFileInEditor) {
+        chip.classList.add('clickable');
+        chip.onclick = () => window._openFileInEditor(ctxTarget.file, rootPathOf(activeTab()),
+          ctxTarget.startLine || 0, ctxTarget.endLine || 0);
+      }
+      strip.appendChild(chip);
+    }
     // Same VSCode-style chip as the composer, minus the remove × (already sent).
-    images.forEach(im => strip.appendChild(makeImageChip(im, null)));
+    if (hasImages) images.forEach(im => strip.appendChild(makeImageChip(im, null)));
     box.appendChild(strip);
   }
   if (text) {
@@ -444,22 +449,39 @@ function capIfOverflowing(block, contentEl, label, getFullText) {
 }
 /** Parses one line of tool-result text for a leading "path:line[:col]" prefix (grep -n /
  *  ripgrep / JDT reference style). Returns null when the line doesn't look like a hit,
- *  so callers can fall back to plain text instead of mis-rendering unrelated output. */
+ *  so callers can fall back to plain text instead of mis-rendering unrelated output.
+ *
+ *  Two shapes beyond the plain one:
+ *  - a Windows drive letter ("C:\dir\f.js:12:"), which the path part's no-colon rule
+ *    would otherwise reject;
+ *  - ripgrep's CONTEXT lines ("f.js-12-text"), which use "-" where a match line uses
+ *    ":". A "-" also occurs inside file names, so the path must end in an extension
+ *    right before "-N-" ("foo-2-bar.js-10-text" is bar.js line 10, not foo line 2). */
 function parseResultLine(line) {
-  const m = /^([^\s:][^:]*):(\d+):(?:(\d+):)?\s?(.*)$/.exec(line);
-  if (!m) return null;
-  return { file: m[1], line: m[2], col: m[3] || null, rest: m[4] || '' };
+  let m = /^((?:[A-Za-z]:)?[^\s:][^:]*):(\d+):(?:(\d+):)?\s?(.*)$/.exec(line);
+  if (m) return { file: m[1], line: m[2], col: m[3] || null, rest: m[4] || '' };
+  m = /^((?:[A-Za-z]:)?[^\s:].*?\.[A-Za-z0-9]+)-(\d+)-\s?(.*)$/.exec(line);
+  if (m) return { file: m[1], line: m[2], col: null, rest: m[3] || '' };
+  return null;
+}
+/** A search aimed at ONE file prints rows with no path at all ("67:  text", context rows
+ *  "68-  text"), so the file comes from the tool call's own input instead. Returns null
+ *  when no file is known — then the row stays plain text, as before. */
+function parseBareResultLine(line, file) {
+  if (!file) return null;
+  const m = /^(\d+)[:-]\s?(.*)$/.exec(line);
+  return m ? { file, line: m[1], col: null, rest: m[2] || '' } : null;
 }
 /** Builds the clickable result-list for search/reference/diagnostic-shaped output
  *  (RESULT_LIST_TOOLS). Capped to a handful of rows + "+N more" into the full text,
  *  same principle as capIfOverflowing but for discrete rows rather than a <pre>. */
-function buildResultList(text, root) {
+function buildResultList(text, root, targetFile) {
   const lines = text.split('\n').filter(l => l.trim());
   if (!lines.length) return null;
   const MAX_ROWS = 5;
   const list = document.createElement('div'); list.className = 'result-list';
   lines.slice(0, MAX_ROWS).forEach(l => {
-    const parsed = parseResultLine(l);
+    const parsed = parseResultLine(l) || parseBareResultLine(l, targetFile);
     const row = document.createElement('div'); row.className = 'result-item';
     if (parsed && window._openFileInEditor) {
       row.classList.add('clickable');
@@ -674,6 +696,7 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
   const detail = detailFields.find(v => typeof v === 'string' && v) || '';
   const line = document.createElement('div'); line.className = 'a-item tool-line';
   line.dataset.tname = key;   // looked up again in applyToolResult to decide how to render OUT
+  line.dataset.tpath = path;  // the search target: names the file for result rows that carry no path of their own
   const dotClass = status === 'done' ? 'dot done' : status === 'interrupted' ? 'dot red' : 'dot';
   line.innerHTML = '<span class="' + dotClass + '"></span><span class="tname"></span>'
       + (isAgent ? ' <span class="tagent-type"></span> <span class="tdesc"></span>'
@@ -739,6 +762,22 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
         scope.className = 'tscope';
         scope.textContent = ' (in: ' + path + ')';
         line.querySelector('.tpath-wrap').appendChild(scope);
+      }
+      // Read's offset/limit narrow it to a slice of the file; show that as the same faint
+      // suffix Grep/Glob use for their scope, e.g. "(lines: 23-50)". offset is the 1-based
+      // first line and limit a line COUNT, so the last line is offset + limit - 1.
+      if (key === 'read') {
+        const from = Number(input.offset) || 0, count = Number(input.limit) || 0;
+        let range = '';
+        if (from && count) range = 'lines: ' + from + '-' + (from + count - 1);
+        else if (count) range = 'lines: 1-' + count;
+        else if (from) range = 'from line ' + from;
+        if (range) {
+          const slice = document.createElement('span');
+          slice.className = 'tscope';
+          slice.textContent = ' (' + range + ')';
+          line.querySelector('.tpath-wrap').appendChild(slice);
+        }
       }
       // A scoped search copies the folder it searched, the same kind of value every other
       // line's button gives — not the pattern, which only outranked it for display.
@@ -885,7 +924,7 @@ function renderToolOutput(line, key, text) {
   const stale = line.querySelector('.io-item.out, .result-list.out');
   if (stale) stale.remove();
   if (RESULT_LIST_TOOLS.has(key)) {
-    const resultList = buildResultList(text, rootPathOf(activeTab()));
+    const resultList = buildResultList(text, rootPathOf(activeTab()), line.dataset.tpath || '');
     if (resultList) { resultList.classList.add('out'); line.appendChild(resultList); }
     return;
   }
@@ -1071,7 +1110,7 @@ function doSend() {
   // Allow an image-only turn (text may be empty when a screenshot is attached).
   if (!text && !imgs.length) return;
   // Slash commands are text-only; images stay pending (don't send them with a command).
-  if (text.startsWith('/') && handleSlashCommand(text)) { input.value = ''; input.style.height = 'auto'; const at = activeTab(); if (at) at.draft = ''; closeSlash(); return; }
+  if (text.startsWith('/') && handleSlashCommand(text)) { input.value = ''; input.style.height = 'auto'; const at = activeTab(); if (at) { at.draft = ''; at.histIdx = -1; } closeSlash(); return; }
   const t = activeTab(); if (!t) return;
   t.cancelled = false;           // new user turn: lift the post-cancel callback guard
   loadRender(t);                 // render into (and stream for) THIS tab
@@ -1081,8 +1120,7 @@ function doSend() {
   const withCtx = ctxActive();   // exactly when the composer's file chip is showing
   const imagesJson = (typeof pendingImagesJson === 'function') ? pendingImagesJson(t) : '';
   addUserMessage(text, withCtx ? ctxChipLabel() : null, imgs, null, nowIso(), null, withCtx ? ctxChipTarget() : null);
-  if (!t.titled && text) setTabTitle(t, text);   // title from text; an image-only first turn stays untitled
-  input.value = ''; input.style.height = 'auto'; t.draft = ''; closeSlash();
+  input.value = ''; input.style.height = 'auto'; t.draft = ''; t.histIdx = -1; closeSlash();
   if (typeof closeMention === 'function') closeMention();
   if (typeof clearPendingImages === 'function') clearPendingImages(t);   // consumed → clear the strip
   if (!queueing) { setStreaming(true); showWorking(); }

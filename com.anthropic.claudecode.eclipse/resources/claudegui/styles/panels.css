@@ -418,7 +418,12 @@ body.teleporting #composer { display: none; }
 /* width:92% + a max-width cap, not a fixed 360px — a fixed width only ever shrank on a
    narrow panel (via the max-width fallback below) and never grew on a wide one, staying
    cramped regardless of how much room was actually available. */
+/* overflow-wrap:anywhere — same fix as #messages (chat.css) and for the same reason:
+   this overlay renders markdown (.a-body / code.ic) outside #messages' own subtree, so it
+   never inherited that property from there. Without it, a long unbroken token (a file
+   path with no spaces, say) overflows its box instead of wrapping. */
 #agents-win { width: 92%; max-width: 480px; margin-top: 9vh; max-height: 72vh; overflow: hidden;
+  overflow-wrap: anywhere;
   display: flex; flex-direction: column; background: var(--menu-bg); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: 0 12px 40px var(--shadow); padding: 13px 15px;
   transition: width .15s ease, max-height .15s ease; }

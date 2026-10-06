@@ -6,6 +6,7 @@ import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.ITextSelection;
 import org.eclipse.jface.viewers.ISelection;
 import org.eclipse.ui.IEditorInput;
+import org.eclipse.ui.IEditorReference;
 import org.eclipse.ui.IEditorPart;
 import org.eclipse.ui.IPartListener2;
 import org.eclipse.ui.ISelectionListener;
@@ -158,6 +159,25 @@ public class SelectionTracker {
         }
     }
 
+    /** Forgets the stored selection when it belongs to {@code path} and no editor still
+     *  shows that file (the same file can be open in a second, split editor). */
+    private void clearIfNoEditorShows(String path, IWorkbenchPage page) {
+        if (!active) return;
+        SelectionData current = latestSelection.get();
+        if (current == null || !path.equals(current.filePath())) return;
+        if (page != null) {
+            for (IEditorReference other : page.getEditorReferences()) {
+                try {
+                    if (path.equals(EditorParts.pathOf(other.getEditorInput()))) return;
+                } catch (Exception e) {
+                    // An editor that cannot report its input cannot be showing this file.
+                }
+            }
+        }
+        // Only if nothing newer was stored meanwhile.
+        latestSelection.compareAndSet(current, null);
+    }
+
     private class PartActivationListener implements IPartListener2 {
         @Override
         public void partActivated(IWorkbenchPartReference ref) {
@@ -171,7 +191,25 @@ public class SelectionTracker {
         }
 
         @Override public void partBroughtToTop(IWorkbenchPartReference ref) {}
-        @Override public void partClosed(IWorkbenchPartReference ref) {}
+
+        /** The file behind a closed editor is no longer "the open file": without this the
+         *  last selection stayed stored for good, so the composer kept showing the file and
+         *  sent it with every message long after its editor was gone. */
+        @Override
+        public void partClosed(IWorkbenchPartReference ref) {
+            if (!active || !(ref instanceof IEditorReference editorRef)) return;
+            String closedPath;
+            try {
+                closedPath = EditorParts.pathOf(editorRef.getEditorInput());
+            } catch (Exception e) {
+                return;   // input not readable: leave the selection alone
+            }
+            if (closedPath == null) return;
+            IWorkbenchPage page = editorRef.getPage();
+            // Deferred: the editor list may still hold the closing editor at this point, and
+            // the editor Eclipse activates next (partActivated) may already name another file.
+            UiHelper.asyncExec(() -> clearIfNoEditorShows(closedPath, page));
+        }
         @Override public void partDeactivated(IWorkbenchPartReference ref) {}
         @Override public void partOpened(IWorkbenchPartReference ref) {}
         @Override public void partHidden(IWorkbenchPartReference ref) {}

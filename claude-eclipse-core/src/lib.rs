@@ -45,10 +45,10 @@ pub(crate) fn is_debug() -> bool {
 
 // ---------------------------------------------------------------------------
 // Whether a chat process may be launched able to enter Auto mode — set from Java
-// via setLiveAutoMode(). Defaults to on, as the preference does.
+// via setLiveAutoMode(). Defaults to off, as the preference does.
 // ---------------------------------------------------------------------------
 
-static LIVE_AUTO_MODE: AtomicBool = AtomicBool::new(true);
+static LIVE_AUTO_MODE: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn live_auto_mode() -> bool {
     LIVE_AUTO_MODE.load(Ordering::Relaxed)
