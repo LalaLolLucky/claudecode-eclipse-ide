@@ -1,5 +1,5 @@
 /* claudetool.js — Page side of the claudeCodeEclipse MCP tool's claudeCodeView module:
-   lists the conversation tabs, opens and closes them, sends a prompt into one,
+   lists the conversation tabs, opens them (under a chosen folder) and closes them, sends a prompt into one,
    switches Remote Control on or off for one, and sets a tab's model/effort/thinking/
    permission mode. Java calls window.__ccTool(requestJson) and hands the returned JSON
    back to Claude (ClaudeGuiView#pageTool). */
@@ -200,6 +200,44 @@
     return true;
   }
 
+  /* Where a new conversation goes: `rootId` of a folder tab that is already open, or
+     `path` of a folder that may be opened as one. Nothing is changed here, so a call
+     refused further on leaves no folder tab behind. Without 'folder' it is the one in
+     front.
+
+     A folder Claude has not been run in before is not opened from here: the view asks
+     "Trust this folder?" first, and that question is for whoever sits at the view, not
+     for a tool call to answer or to leave waiting there. */
+  function folderFor(req) {
+    if (req.folder === undefined) return { rootId: activeRootId };
+    const asked = (typeof req.folder === 'string') ? req.folder.trim() : '';
+    // Java would read anything else against Eclipse's own working directory.
+    if (!/^([A-Za-z]:[\\/]|[\\/])/.test(asked)) {
+      refuse("'folder' must be the full path of a folder, such as a 'root' that 'listTabs' shows.");
+    }
+    // Same two looks as openRootDirectory: the path as given, then as Java spells it.
+    let root = rootByPath(asked), path = asked;
+    if (!root) {
+      let info = null;
+      try { info = window._folderInfo ? JSON.parse(_folderInfo(asked) || 'null') : null; } catch (e) {}
+      if (!info) refuse('This view cannot look folders up, so a tab can only be opened in a folder that is already open.');
+      path = info.path || asked;
+      root = rootByPath(path);
+      if (!root && !info.exists) refuse("There is no folder at '" + path + "'.");
+      if (!root && !info.trusted) {
+        refuse("Claude has not been run in '" + path + "' before, and starting it there needs the user's "
+          + 'consent. They open that folder once in the Claude Code view ("New Claude root directory", or '
+          + 'Open Claude Here) and answer "Trust this folder?"; a folder trusted in the Claude Terminal counts too.');
+      }
+    }
+    // With the row hidden nothing shows which folder is in front, or leads back to another.
+    if (rootDirectoriesRowHidden && !(root && root.id === activeRootId)) {
+      refuse('The folder row is hidden in this Eclipse (preference "Hide the root directories row"), '
+        + 'so a tab can only be opened in the folder in front.');
+    }
+    return root ? { rootId: root.id } : { path: path };
+  }
+
   function result(t, notes) {
     const out = { ok: true, tab: describe(t) };
     if (notes.length) out.notes = notes;
@@ -220,8 +258,12 @@
       if (req.remoteControl) requireRemoteControl();
       const r = resolve(req, { model: defaultModel(), effortIdx: DEFAULT_EFFORT_IDX,
         thinking: defaultThinking(), permMode: DEFAULT_PERM_MODE }, null);
+      const where = folderFor(req);
       closeMenus();
-      const t = createTab({ rootId: activeRootId, model: r.model, effortIdx: r.effortIdx,
+      // A folder not open yet gets its tab from here, not from addRoot: that one would
+      // be on the defaults and, with Remote Control on startup, already connecting.
+      const rootId = where.rootId || addRoot(where.path, { select: false }).id;
+      const t = createTab({ rootId: rootId, model: r.model, effortIdx: r.effortIdx,
         thinking: r.thinking, permMode: r.permMode });
       // After createTab: with Remote Control on startup set, it is already connecting.
       if (req.remoteControl) remoteControlOn(t);

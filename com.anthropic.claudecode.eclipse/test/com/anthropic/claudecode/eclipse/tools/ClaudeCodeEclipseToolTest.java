@@ -138,6 +138,28 @@ class ClaudeCodeEclipseToolTest {
     }
 
     @Test
+    void theFolderOfANewTabReachesThePageAsItWasGiven() {
+        Page page = new Page("{\"ok\":true,\"tab\":{\"id\":\"tab4\"}}");
+        JsonObject call = args("claudeCodeView", "newTab");
+        call.addProperty("folder", "C:\\work\\api");
+
+        McpToolResult result = toolOver(page).execute(call);
+
+        assertFalse(result.isError());
+        JsonObject asked = page.asked.get(0);
+        assertEquals("newTab", asked.get("action").getAsString());
+        assertEquals("C:\\work\\api", asked.get("folder").getAsString());
+    }
+
+    @Test
+    void theSchemaDescribesTheFolderOfANewTab() {
+        JsonObject props = new ClaudeCodeEclipseTool().inputSchema().getAsJsonObject("properties");
+
+        assertTrue(props.has("folder"));
+        assertEquals("string", props.getAsJsonObject("folder").get("type").getAsString());
+    }
+
+    @Test
     void theActionAndItsSettingsReachThePageAndNothingElseDoes() {
         Page page = new Page("{\"ok\":true,\"tab\":{\"id\":\"tab2\"}}");
         JsonObject call = args("claudeCodeView", "configureTab");

@@ -59,12 +59,16 @@ function toggleRemoteControl() {
    tab in front, and this is also called for one that is not (Remote Control on
    startup, the claudeCodeEclipse tool). Sent from the composer, a background tab's
    process started on the front tab's model, effort and thinking, and its next
-   message — carrying its own — replaced that process and the bridge with it. */
+   message — carrying its own — replaced that process and the bridge with it.
+
+   The tab's folder goes with them for the same reason: without it the process of a
+   tab nothing has been sent from yet starts in the workspace root, and the tab's
+   first message, which does name its folder, replaces it the same way. */
 function rcSend(t, enabled) {
   t.rcAckPending = true;
   _remoteControl(t.id, enabled, t.sessionId || '', t.permMode || permMode,
                  EFFORTS[t.effortIdx] || effort, t.model !== undefined ? t.model : curModel,
-                 (t.thinking !== undefined ? t.thinking : thinkingOn) ? '1' : '0');
+                 (t.thinking !== undefined ? t.thinking : thinkingOn) ? '1' : '0', rootPathOf(t));
 }
 
 /* How long to wait for a bridge before giving up.

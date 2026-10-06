@@ -27,7 +27,7 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
     private static final List<String> ACTIONS = List.of("listTabs", "newTab", "configureTab", "sendPrompt", "remoteControl", "closeTab");
 
     /** What an action may send to the page; anything else in the call stays behind. */
-    private static final List<String> PARAMS = List.of("tabId", "model", "effort", "thinking", "mode", "prompt", "enabled", "remoteControl");
+    private static final List<String> PARAMS = List.of("tabId", "folder", "model", "effort", "thinking", "mode", "prompt", "enabled", "remoteControl");
 
     /** Asks the page: request JSON in, reply JSON out, null when there is no page to ask. */
     private final Function<String, String> page;
@@ -56,11 +56,13 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
     @Override
     public String description() {
         return "the Claude Code chat view and its conversation tabs. action='listTabs' shows every "
-                + "tab with its id, title, model, effort, thinking, permission mode and Remote Control "
+                + "tab with its id, title, folder ('root'), model, effort, thinking, permission mode and Remote Control "
                 + "state (with its claude.ai address once on), and the "
                 + "models, efforts and modes a tab can be given. action='newTab' opens a new "
                 + "conversation tab and brings it to the front, on the defaults unless 'model', "
-                + "'effort', 'thinking' or 'mode' say otherwise; with 'prompt' it also sends that "
+                + "'effort', 'thinking' or 'mode' say otherwise. It opens under the folder tab in front, "
+                + "or under 'folder': a folder tab that is already open, or a folder the user has "
+                + "trusted before, which gets a folder tab of its own. With 'prompt' it also sends that "
                 + "as the tab's first message, and with 'remoteControl' true the tab comes up "
                 + "reachable from the user's other devices. action='configureTab' changes "
                 + "those settings on the tab with 'tabId', or on the tab in front when it is left "
@@ -82,6 +84,8 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
         props.add("tabId", param("string", "claudeCodeView configureTab/sendPrompt/remoteControl/closeTab: "
                 + "the tab, as shown by 'listTabs', e.g. 'tab2'. Required for all but 'configureTab'; "
                 + "'configureTab' without it changes the tab in front."));
+        props.add("folder", param("string", "claudeCodeView newTab: the full path of the folder the "
+                + "conversation runs in, such as a 'root' from 'listTabs'. Left out, the folder tab in front."));
         props.add("prompt", param("string", "claudeCodeView sendPrompt/newTab: the message to send. "
                 + "Slash commands are not accepted."));
         props.add("model", param("string", "claudeCodeView newTab/configureTab: a model id from "

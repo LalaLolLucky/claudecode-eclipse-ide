@@ -882,6 +882,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             // taking the bridge down with it.
             final String model    = launchModel(a.length > 5 && a[5] instanceof String s ? s : "");
             final String thinking = launchThinking(a.length > 6 && a[6] instanceof String s ? s : "");
+            // The tab's folder, as a send carries it. Without it a process started here
+            // runs in the workspace root, and the tab's first message — which names its
+            // folder — replaces that process, taking the bridge down with it.
+            final String root     = a.length > 7 && a[7] instanceof String s ? s : "";
             final boolean enabled = on.booleanValue();
             final Browser b = browser;
             // managerFor, not managers.get: a tab nothing has been typed into yet has
@@ -890,8 +894,12 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             // Off the UI thread — spawning a child process would otherwise freeze it.
             new Thread(() -> {
                 boolean ok;
-                try { ok = m.remoteControl(enabled, resumeId, permMode, effort, model, thinking); }
-                catch (Throwable t) { ok = false; }
+                try {
+                    // Only when one was sent: a page from before this argument sends none,
+                    // and clearing the folder a send has set would move the tab.
+                    if (!root.isEmpty()) m.setRoot(root);
+                    ok = m.remoteControl(enabled, resumeId, permMode, effort, model, thinking);
+                } catch (Throwable t) { ok = false; }
                 // Only a FAILURE is reported from here; success is announced by the
                 // CLI's own reply, which is the only thing that knows the url.
                 // Written out rather than routed through pushToPage: this callback

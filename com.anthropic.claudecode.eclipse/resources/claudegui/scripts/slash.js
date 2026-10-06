@@ -220,6 +220,8 @@ function resolveModelArg(arg) {
 /**
  * Sends a slash command the CLI owns down the same persistent process a normal
  * message uses, echoing it in the transcript so the CLI's reply reads as a turn.
+ * The tab's folder goes with it, as with a message: Java reads a send without one as
+ * the workspace root, and would restart the process of a tab in another folder there.
  * @param {string} text the full command line (may carry arguments)
  */
 function sendSlashToCli(text) {
@@ -231,7 +233,7 @@ function sendSlashToCli(text) {
   closeSlash();
   if (!queueing) { setStreaming(true); showWorking(); }
   else if (!workingEl) showWorking();
-  if (window._sendToJava) window._sendToJava(text, false, t.sessionId || '', t.permMode || permMode, effort, curModel, thinkingOn ? '1' : '0', t.id);
+  if (window._sendToJava) window._sendToJava(text, false, t.sessionId || '', t.permMode || permMode, effort, curModel, thinkingOn ? '1' : '0', t.id, '', rootPathOf(t));
   persistTabPrefs(t);
 }
 
@@ -249,7 +251,7 @@ function sendCompact() {
   t.compacting = true;
   if (!queueing) { setStreaming(true); showWorking(); }
   else if (!workingEl) showWorking();
-  if (window._sendToJava) window._sendToJava('/compact', false, t.sessionId || '', t.permMode || permMode, effort, curModel, thinkingOn ? '1' : '0', t.id);
+  if (window._sendToJava) window._sendToJava('/compact', false, t.sessionId || '', t.permMode || permMode, effort, curModel, thinkingOn ? '1' : '0', t.id, '', rootPathOf(t));
   persistTabPrefs(t);
 }
 
