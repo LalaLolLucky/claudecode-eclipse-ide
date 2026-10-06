@@ -65,6 +65,8 @@ import org.eclipse.swt.widgets.ToolBar;
 import org.eclipse.swt.widgets.ToolItem;
 import org.eclipse.swt.widgets.ToolTip;
 import org.eclipse.ui.ISharedImages;
+import org.eclipse.ui.IWorkbenchPage;
+import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.part.IShowInTarget;
 import org.eclipse.ui.part.ShowInContext;
@@ -92,6 +94,7 @@ import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.Constants;
 import com.anthropic.claudecode.eclipse.NativeCore;
 import com.anthropic.claudecode.eclipse.SpinnerVerbs;
+import com.anthropic.claudecode.eclipse.editor.UiHelper;
 import com.anthropic.claudecode.eclipse.resolvers.EntitiesRegistry;
 import com.anthropic.claudecode.eclipse.status.StandaloneStatusForwarder;
 
@@ -155,8 +158,15 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
     private int fgR, fgG, fgB;
     private String colorFgBgEnvVal;
 
+    /** The view while it exists, in whichever perspective it is open: a page finds only the
+     *  views of the perspective in front. Null once it is disposed. */
+    private static volatile ClaudeCliView live;
+
     private CTabFolder tabFolder;
     private int sessionCounter = 0;
+    /** Numbers the tabs for the claudeCodeEclipse tool. Unlike {@link #sessionCounter} it is
+     *  never set back, so an id is not handed out twice in one view. */
+    private int toolTabSeq = 0;
     private volatile boolean viewDisposed = false;
     private boolean launching = false;
     private Color bgColor;
@@ -171,6 +181,7 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
     @Override
     public void createPartControl(Composite parent) {
         Display display = parent.getDisplay();
+        live = this;
 
         setThemeColors(display);
 
@@ -763,9 +774,74 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         return false;
     }
 
+    // ─── The claudeCodeEclipse tool (module claudeTerminal). UI thread. ──────────────
+
+    /** This view: the one in the perspective in front when it is open there, else wherever
+     *  it is open. Null when it is not open at all. */
+    private static ClaudeCliView openView() {
+        IWorkbenchPage page = UiHelper.getActivePage();
+        if (page != null && page.findView(VIEW_ID) instanceof ClaudeCliView view) return view;
+        ClaudeCliView elsewhere = live;
+        return elsewhere != null && !elsewhere.viewDisposed ? elsewhere : null;
+    }
+
+    /** Every tab of the view, in the order they stand; none when the view is closed. */
+    public static List<TerminalTab> toolTabs() {
+        ClaudeCliView view = openView();
+        if (view == null || view.tabFolder == null || view.tabFolder.isDisposed()) return List.of();
+        List<TerminalTab> tabs = new ArrayList<>();
+        CTabItem front = view.tabFolder.getSelection();
+        for (CTabItem item : view.tabFolder.getItems()) {
+            if (item.getData() instanceof TerminalSession session) {
+                tabs.add(new TerminalTab(session.toolId, item.getText(), item == front,
+                        session.wasConnected, session.terminatedShown));
+            }
+        }
+        return tabs;
+    }
+
+    /**
+     * Opens a tab in the workspace folder and brings it to the front, opening the view first
+     * when it is closed.
+     *
+     * @return the new tab's id, or null when none was opened
+     */
+    public static String toolOpenTab() {
+        IWorkbenchPage page = UiHelper.getActivePage();
+        if (page == null) return null;
+        ClaudeCliView view;
+        try {
+            view = (ClaudeCliView) page.showView(VIEW_ID);
+        } catch (PartInitException e) {
+            Activator.logError("Could not open the Claude Terminal view", e);
+            return null;
+        }
+        if (view == null || view.tabFolder == null || view.tabFolder.isDisposed()) return null;
+        int before = view.tabFolder.getItemCount();
+        view.openNewSession(null, null);
+        // openNewSession lets a call inside half a second of the last one fall through unopened.
+        if (view.tabFolder.getItemCount() == before) return null;
+        CTabItem opened = view.tabFolder.getSelection();
+        return opened != null && opened.getData() instanceof TerminalSession session ? session.toolId : null;
+    }
+
+    /** Types {@code text} into the tab with that id and presses Enter. False when there is no
+     *  such tab, or nothing running in it to take the text. */
+    public static boolean toolSubmit(String tabId, String text) {
+        ClaudeCliView view = openView();
+        if (view == null || view.tabFolder == null || view.tabFolder.isDisposed()) return false;
+        for (CTabItem item : view.tabFolder.getItems()) {
+            if (item.getData() instanceof TerminalSession session && session.toolId.equals(tabId)) {
+                return session.submit(text);
+            }
+        }
+        return false;
+    }
+
     @Override
     public void dispose() {
         viewDisposed = true;
+        if (live == this) live = null;
         if (fontChangeListener != null) {
             JFaceResources.getFontRegistry().removeListener(fontChangeListener);
             fontChangeListener = null;
@@ -1044,6 +1120,9 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
          * and nothing to remove; it dies with the session.
          */
         private final String tabToken = UUID.randomUUID().toString();
+        /** Names this tab to the claudeCodeEclipse tool. Not the routing token above, which
+         *  goes to the CLI's status line and is nobody else's to see. */
+        private final String toolId = "term" + (++toolTabSeq);
         private volatile boolean disposed = false;
         private volatile boolean wasConnected = false;
         private volatile boolean terminatedShown = false;
@@ -1105,6 +1184,15 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
          *  manually pasting a slash command over unrelated text, not a new risk this adds. */
         boolean sendCommand(String text) {
             if (!sendText(text)) return false;
+            termControl.sendKey('\r');
+            return true;
+        }
+
+        /** {@link #sendCommand} for a command that did not come from this view's own controls
+         *  (the claudeCodeEclipse tool): the keyboard focus stays where the user has it. */
+        boolean submit(String text) {
+            if (disposed || termControl == null || termControl.isDisposed()) return false;
+            termControl.pasteString(text);
             termControl.sendKey('\r');
             return true;
         }

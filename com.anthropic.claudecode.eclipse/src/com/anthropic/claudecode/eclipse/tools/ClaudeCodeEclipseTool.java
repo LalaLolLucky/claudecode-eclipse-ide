@@ -11,8 +11,8 @@ import com.google.gson.JsonObject;
 /**
  * Drives this plug-in's own views. One tool with a module per view, so a view gains its
  * actions without adding to the tool list: {@code module} picks the view and {@code action}
- * what to do in it. Only the Claude Code view has a module so far
- * ({@link ClaudeCodeViewModule}).
+ * what to do in it. The Claude Code view ({@link ClaudeCodeViewModule}) and the Claude
+ * Terminal ({@link ClaudeTerminalModule}) each have one.
  */
 public class ClaudeCodeEclipseTool implements McpTool {
 
@@ -34,7 +34,7 @@ public class ClaudeCodeEclipseTool implements McpTool {
     private final Map<String, Module> modules = new LinkedHashMap<>();
 
     public ClaudeCodeEclipseTool() {
-        this(new ClaudeCodeViewModule());
+        this(new ClaudeCodeViewModule(), new ClaudeTerminalModule());
     }
 
     ClaudeCodeEclipseTool(Module... modules) {
@@ -98,6 +98,23 @@ public class ClaudeCodeEclipseTool implements McpTool {
         String action = str(params, "action");
         if (action == null) return McpToolResult.error("'action' is required. " + module.description());
         return module.run(action, params);
+    }
+
+    /**
+     * Adds a parameter to the schema. When a module before this one has a parameter of the
+     * same name, this one's use of it is added to that description instead: the schema has
+     * one entry per name, whichever modules read it.
+     */
+    static void param(JsonObject props, String name, String type, String description) {
+        if (props.has(name)) {
+            JsonObject shared = props.getAsJsonObject(name);
+            shared.addProperty("description", shared.get("description").getAsString() + " " + description);
+            return;
+        }
+        JsonObject p = new JsonObject();
+        p.addProperty("type", type);
+        p.addProperty("description", description);
+        props.add(name, p);
     }
 
     static String str(JsonObject params, String key) {

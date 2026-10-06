@@ -578,11 +578,32 @@ function isTabEmpty(t) {
 function clearSession() {
   const t = activeTab(); if (!t) return;
   closeMenus();
-  loadRender(t);                 // operate on THIS tab's render state
-  if (t.streaming) doCancel();
-  hideWorking();
-  curTurn = null; curBody = null; curText = ''; curThink = null; curThinkText = '';
-  clearBottomCard(t);   // drop this tab's own pending card, if any — /clear replaces its conversation
+  clearTab(t);
+  input.focus();
+}
+/* The same for any tab, in front or not: the claudeCodeEclipse tool clears one by its id.
+   A tab that is not in front is emptied without the render globals, the gerund timers or
+   the composer — all three belong to whichever tab is being looked at, which may be in
+   the middle of a turn of its own. */
+function clearTab(t) {
+  const front = t === activeTab();
+  if (front) {
+    loadRender(t);                 // operate on THIS tab's render state
+    if (t.streaming) doCancel();
+    hideWorking();
+  } else if (t.streaming) {
+    // What doCancel does, less its rendering: the pane it would write into is emptied below.
+    t.cancelled = true;
+    if (window._cancelRequest) window._cancelRequest(t.id);
+    t.streaming = false;
+  }
+  if (rtab === t) { curTurn = null; curBody = null; curText = ''; curThink = null; curThinkText = ''; workingEl = null; }
+  else t._r = null;
+  // drop this tab's own pending card, if any — /clear replaces its conversation
+  if (front) clearBottomCard(t); else t.pendingCard = null;
+  // A conversation restored from the last Eclipse session and not shown yet would be
+  // rebuilt into the emptied pane the first time the tab is shown (see switchTab).
+  t._restore = null;
   // Drop the process so the next send starts a genuinely new conversation
   // (spawns without --resume) instead of continuing the one just cleared.
   if (window._disposeTab) window._disposeTab(t.id);
@@ -600,14 +621,15 @@ function clearSession() {
   // The old transcript's scroll state means nothing against an emptied pane: left alone, a
   // scrolled-up scrollTop would reopen the fresh conversation scrolled into blank space
   // with the button showing, the next time this tab is switched to while the lock is on.
-  // t is the active tab, so the module global needs resetting alongside it.
+  // For the active tab the module global needs resetting alongside it.
   t.followTail = true; t.scrollTop = 0;
-  followTail = true;
-  if (typeof updateJumpToLatest === 'function') updateJumpToLatest();
+  if (front) {
+    followTail = true;
+    if (typeof updateJumpToLatest === 'function') updateJumpToLatest();
+  }
   renderTabs();
   if (typeof renderPendingImages === 'function') renderPendingImages();
   if (typeof syncComposer === 'function') syncComposer();
   if (typeof updateAgentsBtn === 'function') updateAgentsBtn();   // pane emptied — no agents left in it
-  input.focus();
 }
 

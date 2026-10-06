@@ -586,8 +586,12 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         teleportGitStatusFn = new SimpleFunction(browser, "_teleportGitStatus", a ->
             safeNative(() -> NativeCore.teleportGitStatus(activeRoot()),
                        "{\"clean\":true,\"changedFiles\":[]}"));
+        // From the folder in front, unless the page names the folder of the tab it is
+        // rebuilding: that tab need not be the one in front.
         loadSessionFn  = new SimpleFunction(browser, "_loadSession", a ->
-            (a.length > 0 && a[0] instanceof String id) ? safeSessionLoad(id) : "[]");
+            (a.length > 0 && a[0] instanceof String id)
+                ? safeSessionLoad(a.length > 1 && a[1] instanceof String r && !r.isBlank() ? r : activeRoot(), id)
+                : "[]");
         deleteSessionFn = new SimpleFunction(browser, "_deleteSession", a -> {
             if (a.length > 0 && a[0] instanceof String id) deleteSessionFile(id);
             return null;
@@ -833,8 +837,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 ? com.anthropic.claudecode.eclipse.chat.RewindService.restoreOnly(activeRoot(), sid, mid) : "{}");
         // Message ids for a session, in render order — lets a bubble sent THIS run
         // (which has no id until the CLI has written it) find the line it owns.
+        // From the folder the page names — the tab's own, which need not be in front.
         messageIdsFn = new SimpleFunction(browser, "_messageIds", a ->
-            (a.length > 0 && a[0] instanceof String sid) ? safeMessageIds(sid) : "[]");
+            (a.length > 0 && a[0] instanceof String sid)
+                ? safeMessageIds(a.length > 1 && a[1] instanceof String r && !r.isBlank() ? r : activeRoot(), sid)
+                : "[]");
         // Permanent per-message delete. After the transcript is edited the tab's
         // live process is dropped (not reset — the conversation survives), so the
         // next send resumes from the edited file instead of the stale in-memory
@@ -1063,8 +1070,12 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // just handed to the page raw so it can print a readable summary in the transcript
         // instead of forwarding "/context" to the headless CLI, which — like /model and
         // /resume — has no interactive surface to answer it over stream-json.
-        getContextStatusFn = new SimpleFunction(browser, "_getContextStatus",
-                a -> lastRustStatusJson != null ? lastRustStatusJson : "{}");
+        // The conversation in front, unless the page names a tab: the claudeCodeEclipse
+        // tool asks for one that need not be in front.
+        getContextStatusFn = new SimpleFunction(browser, "_getContextStatus", a -> {
+            String json = a.length > 0 && a[0] instanceof String ti ? statusByTab.get(ti) : lastRustStatusJson;
+            return json != null ? json : "{}";
+        });
         // "Stop agent" (agents.js's detail view) — a fast, non-blocking stdin write
         // (ChatManager::stop_task), same reasoning as _renameSession calling straight
         // through with no extra thread. managerFor, not managers.get: the tab this
@@ -3197,10 +3208,40 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
 
     /** @param root the working root to list — captured by the caller, since the
      *  async path scans off the UI thread while the user may switch tabs. */
-    private String safeSessionList(String root) {
+    private static String safeSessionList(String root) {
         String json = "[]";
         try { json = NativeCore.sessionList(root); } catch (Throwable t) {}
         return mergeCustomTitles(json, root);
+    }
+
+    // ── Saved conversations, for the claudeCodeEclipse tool ──────────────────────────
+    // Asked off the UI thread and without the page: listing a folder scans its session
+    // files, which is why the history panel's own request is asynchronous.
+
+    /** The folder of the conversation in front, or the workspace folder when the view is
+     *  not there. */
+    public static String frontFolder() {
+        ClaudeGuiView view = active;
+        return view != null ? view.activeRoot() : workspaceRoot();
+    }
+
+    /** A folder's saved conversations as the history panel lists them: newest first, a JSON
+     *  array of {@code {sessionId, display, timestamp}}. Not for the UI thread. */
+    public static String sessionListOf(String folder) {
+        return safeSessionList(folder);
+    }
+
+    /** Whether a folder has a saved conversation with this id — by its file, so one too old
+     *  for the list counts as well. */
+    public static boolean hasSession(String folder, String sessionId) {
+        try {
+            String home = Activator.isWindows() ? System.getenv("USERPROFILE") : System.getenv("HOME");
+            if (home == null || home.isEmpty()) home = System.getProperty("user.home");
+            return home != null && Files.isRegularFile(
+                    Paths.get(home, ".claude", "projects", projectHash(folder), sessionId + ".jsonl"));
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** The configured {@code claude} command, falling back to the default when the
@@ -3265,7 +3306,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
 
     /** @param root the working root whose title sidecar to merge — passed in for the
      *  same reason as {@link #safeSessionList(String)}: the scan is off the UI thread. */
-    private String mergeCustomTitles(String sessionsJson, String root) {
+    private static String mergeCustomTitles(String sessionsJson, String root) {
         try {
             String home = Activator.isWindows() ? System.getenv("USERPROFILE") : System.getenv("HOME");
             if (home == null || home.isEmpty()) home = System.getProperty("user.home");
@@ -3284,8 +3325,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         } catch (Exception e) { return sessionsJson; }
     }
 
-    private String safeSessionLoad(String id) {
-        try { return NativeCore.sessionLoad(activeRoot(), id); }
+    private static String safeSessionLoad(String root, String id) {
+        try { return NativeCore.sessionLoad(root, id); }
         catch (Throwable t) { return "[]"; }
     }
 
@@ -3298,8 +3339,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
 
     /** Message ids in render order. An older DLL has no such symbol → "[]", which
      *  the GUI reads as "no per-message actions here" rather than failing a click. */
-    private String safeMessageIds(String id) {
-        try { return NativeCore.sessionMessageIds(activeRoot(), id); }
+    private static String safeMessageIds(String root, String id) {
+        try { return NativeCore.sessionMessageIds(root, id); }
         catch (Throwable t) { return "[]"; }
     }
 

@@ -434,7 +434,12 @@ function loadHistory(id, title, targetTab) {
     if (already) { if (already.id !== activeId) switchTab(already.id); return; }
   }
   let items = [];
-  try { items = JSON.parse(window._loadSession(id) || '[]'); } catch (e) {}
+  // Java reads a conversation from the folder in front unless told which. A tab handed in
+  // need not be in that folder: one restored from the last Eclipse session and rebuilt while
+  // another folder is in front (the claudeCodeEclipse tool sends to tabs that are not shown).
+  try {
+    items = JSON.parse((targetTab ? window._loadSession(id, rootPathOf(targetTab)) : window._loadSession(id)) || '[]');
+  } catch (e) {}
 
   // Two entry points, two behaviors (resumeInPlace, read above from historyResumeInPlace
   // — set by whichever openHistory* function opened the panel, see window.openHistory*):

@@ -99,7 +99,9 @@ function msgDelete(box) {
 function backfillMessageIds(t) {
   if (!t || !t.pane || !t.sessionId || !window._messageIds) return;
   let list = [];
-  try { list = JSON.parse(window._messageIds(t.sessionId) || '[]') || []; } catch (e) { return; }
+  // With the tab's folder: this runs at the end of a turn in whichever tab it ended, and
+  // Java would otherwise read the conversation of the folder in front.
+  try { list = JSON.parse(window._messageIds(t.sessionId, rootPathOf(t)) || '[]') || []; } catch (e) { return; }
   const taken = new Set();
   t.pane.querySelectorAll('.user-msg[data-mid]').forEach(b => taken.add(b.dataset.mid));
   const free = list.filter(m => m && m.id && !taken.has(m.id));

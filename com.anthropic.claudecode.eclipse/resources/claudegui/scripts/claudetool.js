@@ -1,5 +1,6 @@
 /* claudetool.js — Page side of the claudeCodeEclipse MCP tool's claudeCodeView module:
    lists the conversation tabs, opens them (under a chosen folder) and closes them, sends a prompt into one,
+   runs a slash command in one, opens a saved conversation in one,
    switches Remote Control on or off for one, and sets a tab's model/effort/thinking/
    permission mode. Java calls window.__ccTool(requestJson) and hands the returned JSON
    back to Claude (ClaudeGuiView#pageTool). */
@@ -127,12 +128,12 @@
     } catch (e) {}
   }
 
-  /* The prompt of a request, trimmed. Slash commands are left to the composer: it runs
-     some of them itself, against the tab in front, and none of that happens here. */
+  /* The prompt of a request, trimmed. A slash command is not a message: the view runs
+     some of them itself, and they have an action of their own ('runCommand'). */
   function promptOf(req) {
     const text = (typeof req.prompt === 'string') ? req.prompt.trim() : '';
     if (!text) refuse("'prompt' is required: the message to send.");
-    if (text.charAt(0) === '/') refuse('Slash commands are not sent through this tool; type them in the view.');
+    if (text.charAt(0) === '/') refuse("A slash command is not sent as a message; use action 'runCommand'.");
     return text;
   }
 
@@ -149,17 +150,25 @@
       t._restore = null;
       loadHistory(rs.sessionId, rs.title, t);
     }
+    const target = rtab;           // whichever tab the page was rendering into
     t.cancelled = false;
     loadRender(t);
     const queueing = !!t.streaming;
     addUserMessage(text, null, [], null, nowIso(), t.pane, null);
-    if (!queueing) { setStreaming(true); showWorking(); }
-    else if (!workingEl) showWorking();
+    if (!queueing) setStreaming(true);
+    // The live gerund is for the tab in front only: showWorking restarts the page's one set
+    // of gerund timers, and the front tab's own turn may be running on them. A tab behind
+    // it gets a still one, as it does after a Remote Control wait (resumeWorkingFor).
+    if (t === activeTab()) { if (!queueing || !workingEl) showWorking(); }
+    else resumeWorkingFor(t);
     if (window._sendToJava) {
       window._sendToJava(text, false, t.sessionId || '', t.permMode || DEFAULT_PERM_MODE, EFFORTS[t.effortIdx],
         t.model || '', t.thinking ? '1' : '0', t.id, '', rootPathOf(t));
     }
     persistTabPrefs(t);
+    // A tab behind hands the render target back: the gerund timers animate the line of
+    // whichever tab holds it, and until this call that was the one the user is watching.
+    if (t !== activeTab() && target && target !== t) loadRender(target);
     return queueing;
   }
 
@@ -238,6 +247,86 @@
     return root ? { rootId: root.id } : { path: path };
   }
 
+  /* Whether `t` can be sent something for Claude now. A message sent while Remote Control
+     is being switched reaches nothing else, and a tab waiting on a card has a turn held
+     open behind it. */
+  function refuseWhileSwitching(t) {
+    if (t.rcConnecting || t.rcDisconnecting) refuse('That tab is switching Remote Control on or off; try again once it has finished.');
+  }
+  function requireSendable(t) {
+    refuseWhileSwitching(t);
+    if (t.pendingCard) refuse('That tab is waiting for an answer to an approval or question card.');
+  }
+
+  /* The commands the view answers by opening something that waits for the user there. */
+  const DESK_ONLY = {
+    '/rewind': 'opens the rewind dialog',
+    '/resume': 'opens the session history',
+    '/mcp': 'opens the MCP servers window',
+    '/advisor': 'opens a card for choosing the advisor model'
+  };
+  /* The view's own command menu (slash.js), so there is no second list to keep in step. */
+  function commandList() {
+    return SLASH_COMMANDS.map(c => ({ command: c.cmd, description: c.desc, available: !DESK_ONLY.hasOwnProperty(c.cmd) }));
+  }
+  /* What /context prints in the view, as numbers, for a tab that need not be in front. */
+  function contextOf(t) {
+    let s = {};
+    try { s = (window._getContextStatus ? JSON.parse(_getContextStatus(t.id)) : null) || {}; } catch (e) {}
+    const size = s.contextWindow || 0;
+    if (typeof s.contextPct !== 'number' || !size) return null;
+    const out = { percent: Math.floor(Math.min(100, Math.max(0, s.contextPct))), window: size,
+      input: s.inputTokens || 0, cacheRead: s.cacheReadTokens || 0, cacheCreation: s.cacheCreationTokens || 0,
+      outputLastTurn: s.outputTokens || 0 };
+    if (typeof s.costUsd === 'number') out.costUsd = s.costUsd;
+    return out;
+  }
+  /* The commands the view carries out itself (slash.js handleSlashCommand), each for the
+     tab it is given: the composer's own handlers all act on the tab in front, on its
+     settings and its draft. What a command prints into the conversation there comes back
+     in the result here. (t, argument, the command as given) -> what to add to the result. */
+  const VIEW_COMMANDS = {
+    '/compact': function (t) {
+      requireSendable(t);
+      t.compacting = true;             // pins the tab's gerund to "Compacting", as sendCompact does
+      return { queued: send(t, '/compact') };
+    },
+    '/clear': function (t, arg, text) {
+      refuseWhileSwitching(t);
+      clearTab(t);
+      addUserMessage(text, null, [], null, nowIso(), t.pane, null);   // the one message left, as in the view
+      return {};
+    },
+    '/context': function (t) {
+      const context = contextOf(t);
+      return context ? { context: context }
+        : { context: null, notes: ['No context usage recorded yet for this conversation.'] };
+    },
+    '/model': function (t, arg) {
+      if (!arg) return { models: selectableModels().map(m => ({ id: m.id, label: m.label })) };
+      // The name as the composer's /model reads it: any case, 'default', or a full id.
+      const id = resolveModelArg(arg);
+      if (id === null) {
+        refuse("Model '" + arg + "' not found. Use 'default', a full claude-… id, or one of: "
+          + selectableModels().map(m => m.id).filter(Boolean).join(', ') + '.');
+      }
+      const r = resolve({ model: id || 'default' }, { model: t.model || '', effortIdx: t.effortIdx, thinking: !!t.thinking,
+        permMode: t.permMode || DEFAULT_PERM_MODE }, t);
+      apply(t, r);
+      return r.notes.length ? { notes: r.notes } : {};
+    },
+    '/remote-control': function (t) {
+      requireRemoteControl();
+      if (t.rcDisconnecting) refuse('That tab is still switching Remote Control off; try again in a moment.');
+      if (t.remoteControlUrl || t.rcConnecting) { beginDisconnecting(t); rcSend(t, false); }
+      else remoteControlOn(t);
+      return {};
+    },
+    '/help': function () {
+      return { commands: commandList(), notes: ['Any other command is passed to Claude in the tab.'] };
+    }
+  };
+
   function result(t, notes) {
     const out = { ok: true, tab: describe(t) };
     if (notes.length) out.notes = notes;
@@ -248,7 +337,7 @@
     listTabs: function () {
       return { ok: true, tabs: tabs.map(describe),
         models: selectableModels().map(m => ({ id: m.id, label: m.label })),
-        efforts: EFFORTS.slice(), modes: modeIds() };
+        efforts: EFFORTS.slice(), modes: modeIds(), commands: commandList() };
     },
     newTab: function (req) {
       const text = req.prompt !== undefined ? promptOf(req) : null;
@@ -286,10 +375,32 @@
     sendPrompt: function (req) {
       const t = tabForChange(req);
       const text = promptOf(req);
-      if (t.rcConnecting || t.rcDisconnecting) refuse('That tab is switching Remote Control on or off; send once it has finished.');
-      if (t.pendingCard) refuse('That tab is waiting for an answer to an approval or question card.');
+      requireSendable(t);
       const queued = send(t, text);
       return { ok: true, queued: queued, tab: describe(t) };
+    },
+    runCommand: function (req) {
+      const t = tabForChange(req);
+      const text = (typeof req.command === 'string') ? req.command.trim() : '';
+      if (!/^\/\S/.test(text)) {
+        refuse("'command' must be a slash command such as '/compact'. A message goes through action 'sendPrompt'.");
+      }
+      // Read as the composer reads one (handleSlashCommand): the first word names it.
+      const name = text.split(/\s+/)[0].toLowerCase();
+      if (DESK_ONLY.hasOwnProperty(name)) {
+        refuse("'" + name + "' " + DESK_ONLY[name] + ' in the Claude Code view and waits for an answer there, so it is not run from here.');
+      }
+      let out;
+      if (VIEW_COMMANDS.hasOwnProperty(name)) {
+        out = VIEW_COMMANDS[name](t, text.slice(name.length).trim(), text);
+      } else {
+        // Not one of the view's: Claude's own, a custom command or a skill. Passed on as
+        // the composer passes on any command it does not know.
+        requireSendable(t);
+        out = { queued: send(t, text), passedToClaude: true };
+      }
+      out.ok = true; out.command = name; out.tab = describe(t);
+      return out;
     },
     remoteControl: function (req) {
       const t = tabForChange(req);
@@ -300,6 +411,32 @@
       if (t.rcDisconnecting) refuse('That tab is still switching Remote Control off; try again in a moment.');
       if (req.enabled) remoteControlOn(t);
       else if (t.remoteControlUrl || t.rcConnecting) { beginDisconnecting(t); rcSend(t, false); }
+      return result(t, []);
+    },
+    /* A saved conversation in a tab of its own. Java has checked that it exists in
+       'folder' and found its title; which conversations there are is its to list too
+       ('listHistory'), since that scan is not for the UI thread this runs on.
+
+       Not through the history panel's pick (loadHistory without a tab): that one reuses
+       an empty tab in front, which with Remote Control on startup is already connected as
+       a new conversation, and reads the conversation before its tab — and so its folder —
+       is in front. The tab is made first, as viewstate's restore makes one, and the
+       transcript rebuilt into it. */
+    openSession: function (req) {
+      const id = (typeof req.sessionId === 'string') ? req.sessionId.trim() : '';
+      if (!id) refuse("'sessionId' is required. Use action 'listHistory'.");
+      const where = folderFor(req);
+      // Never a second tab on one conversation: its tab comes to the front instead.
+      const open = tabs.find(tb => tb.sessionId === id);
+      if (open) {
+        if (open.id !== activeId) switchTab(open.id);
+        return { ok: true, alreadyOpen: true, tab: describe(open) };
+      }
+      closeMenus();
+      const title = (typeof req.title === 'string' && req.title.trim()) ? req.title.trim() : 'Claude Code';
+      const rootId = where.rootId || addRoot(where.path, { select: false }).id;
+      const t = createTab({ rootId: rootId, sessionId: id, title: title, titled: true });
+      loadHistory(id, title, t);
       return result(t, []);
     },
     closeTab: function (req) {
