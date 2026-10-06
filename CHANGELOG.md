@@ -4,7 +4,43 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.12] — 2026-10-03 *(current)*
+## [3.2.13] — 2026-10-06 *(current)*
+
+### Added
+- New MCP tools: `eclipseShowView`, `eclipseOpenPerspective` and `eclipseDialog`. Claude can open and close views and perspectives, and answer dialogs in this Eclipse or another one.
+- New MCP tool: `claudeCodeEclipse`. Claude can open, set up, prompt and close Claude Code tabs, open them under another folder, run slash commands in them, reopen past conversations, and turn Remote Control on or off for a tab.
+- `claudeCodeEclipse` works in the Claude Terminal too: open and close tabs, send a prompt or a slash command, set the model and effort, and switch Remote Control.
+- The Claude Terminal can use the plugin's MCP tools, under the new preference "Enable MCP tools integration".
+- New preference "Exclusively use terminal": Claude opens in the Claude Terminal and the Claude Code view is turned off.
+- Up and Down in the composer go back through sent prompts ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+
+### Changed
+- The preferences are grouped under General, Claude Terminal view and Claude Code view.
+- "Enable Thinking by default", "Enable remote control on startup" and "Allow bypass permissions mode" apply to the Claude Terminal too.
+- "Allow bypass permissions mode" is off by default ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- Tabs are named like the history list, and a renamed tab keeps its name ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- Read shows the lines it read ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- A sent message's file and image chips share one scrolling row ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- The stop button keeps the color of the permission mode ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+
+### Fixed
+- A tool call that raises a dialog no longer hangs on it.
+- A resumed conversation opens on its newest message ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- Search results open the file for context lines, drive-letter paths and single-file Grep rows ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- 1M-context models no longer show the older-model warning ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- "Bypass permissions" is listed only when the preference allows it ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- A closed editor's file is no longer sent to Claude ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- No doubled divider next to Cost in the status bar ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+- The working text stays when Remote Control is switched during a turn.
+- Remote control on startup keeps a restored tab's model, effort and thinking.
+- Conversations in a second folder stay in their folder after `/compact`, a slash command or turning Remote Control on.
+- `runTests` no longer waits out its timeout when its launch was cancelled.
+- `runAs` with "JUnit Test" picks the launcher that applies when two share that name.
+- Minor UI fixes ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #169).
+
+---
+
+## [3.2.12] — 2026-10-03
 
 ### Fixed
 - Selections in tabbed editors such as `MANIFEST.MF`, `plugin.xml` and `pom.xml`, and in files not stored on disk, now reach Claude ([#153](https://github.com/eilonwy06/claudecode-eclipse-ide/issues/153)).
