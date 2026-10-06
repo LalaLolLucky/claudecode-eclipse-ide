@@ -230,11 +230,18 @@
                id="com.anthropic.claudecode.eclipse.menu"
                label="Claude Code"
                mnemonic="C">
+            <!-- Hidden while the terminal is used exclusively (see codeViewEnabled source variable). -->
             <command
                   commandId="com.anthropic.claudecode.eclipse.commands.toggleGui"
                   label="Activate Claude Code"
                   mnemonic="C"
-                  style="push"/>
+                  style="push">
+               <visibleWhen checkEnabled="false">
+                  <with variable="com.anthropic.claudecode.eclipse.codeViewEnabled">
+                     <equals value="true"/>
+                  </with>
+               </visibleWhen>
+            </command>
             <command
                   commandId="com.anthropic.claudecode.eclipse.commands.activateCli"
                   label="Activate Claude Terminal"
@@ -320,14 +327,61 @@
             activityId="com.anthropic.claudecode.eclipse.activity.debug"
             isEqualityPattern="true"
             pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.commands.toggle"/>
+
+      <!-- "Exclusively use terminal" gating, on the same footing as the debug activity
+           above: this one is ENABLED unless that preference is ticked, driven by the
+           codeViewEnabled source variable (also published by DebugModeSourceProvider).
+           Disabled, it takes the Claude Code view out of Show View and Show In (both
+           go through the view registry, which hides a filtered view) and the view's
+           own commands out of the key bindings. The two menu entries that open the
+           view carry a visibleWhen on the same variable, since org.eclipse.ui.menus
+           items are not reliably filtered by activities. -->
+      <activity
+            id="com.anthropic.claudecode.eclipse.activity.codeView"
+            name="Claude Code View"
+            description="The Claude Code view and its commands. Off while the terminal is used exclusively.">
+         <enabledWhen>
+            <with variable="com.anthropic.claudecode.eclipse.codeViewEnabled">
+               <equals value="true"/>
+            </with>
+         </enabledWhen>
+      </activity>
+      <activityPatternBinding
+            activityId="com.anthropic.claudecode.eclipse.activity.codeView"
+            isEqualityPattern="true"
+            pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.ui.ClaudeGuiView"/>
+      <activityPatternBinding
+            activityId="com.anthropic.claudecode.eclipse.activity.codeView"
+            isEqualityPattern="true"
+            pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.commands.toggleGui"/>
+      <activityPatternBinding
+            activityId="com.anthropic.claudecode.eclipse.activity.codeView"
+            isEqualityPattern="true"
+            pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.commands.openCodeHere"/>
+      <activityPatternBinding
+            activityId="com.anthropic.claudecode.eclipse.activity.codeView"
+            isEqualityPattern="true"
+            pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.commands.toggleDictation"/>
+      <activityPatternBinding
+            activityId="com.anthropic.claudecode.eclipse.activity.codeView"
+            isEqualityPattern="true"
+            pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.commands.findInConversation"/>
+      <activityPatternBinding
+            activityId="com.anthropic.claudecode.eclipse.activity.codeView"
+            isEqualityPattern="true"
+            pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.commands.dismissCard"/>
    </extension>
 
-   <!-- Publishes the debugMode source variable used by menu visibleWhen expressions. -->
+   <!-- Publishes the debugMode and codeViewEnabled source variables used by the
+        activities above and by menu visibleWhen expressions. -->
    <extension point="org.eclipse.ui.services">
       <sourceProvider
             provider="com.anthropic.claudecode.eclipse.ui.DebugModeSourceProvider">
          <variable
                name="com.anthropic.claudecode.eclipse.debugMode"
+               priorityLevel="workbench"/>
+         <variable
+               name="com.anthropic.claudecode.eclipse.codeViewEnabled"
                priorityLevel="workbench"/>
       </sourceProvider>
    </extension>
@@ -589,11 +643,18 @@
                id="com.anthropic.claudecode.eclipse.menus.openClaudeHere"
                label="Open Claude Here"
                icon="icons/claude-16.png">
+            <!-- Hidden while the terminal is used exclusively, leaving the one entry below. -->
             <command
                   commandId="com.anthropic.claudecode.eclipse.commands.openCodeHere"
                   id="com.anthropic.claudecode.eclipse.menus.openCodeHere"
                   label="Claude Code"
-                  style="push"/>
+                  style="push">
+               <visibleWhen checkEnabled="false">
+                  <with variable="com.anthropic.claudecode.eclipse.codeViewEnabled">
+                     <equals value="true"/>
+                  </with>
+               </visibleWhen>
+            </command>
             <command
                   commandId="com.anthropic.claudecode.eclipse.commands.openTerminalHere"
                   id="com.anthropic.claudecode.eclipse.menus.openTerminalHere"

@@ -90,6 +90,9 @@ function restoreViewState() {
   });
 
   let wantActive = null;
+  // Saved before its title was ever read from the session (a first turn still running, or
+  // one that ended while another folder was in view): named once its folder is shown.
+  const untitled = [];
   st.tabs.forEach(s => {
     if (!s || !s.sessionId) return;
     const r = rootByPath(s.root || '') || roots[0];
@@ -101,7 +104,11 @@ function restoreViewState() {
     // cost one full transcript reconstruction per tab, for panes nobody is looking at.
     t._restore = { sessionId: s.sessionId, title: s.title || '', scrollTop: s.scrollTop || 0 };
     if (s.active) wantActive = t.id;
+    if (!s.title || s.title === 'Claude Code') untitled.push(t);
   });
+  // Flagged only now: each createTab above switched tabs, and a flag set inside the loop
+  // would have sent one list request per tab.
+  untitled.forEach(t => { t.titleStale = true; });
   if (!tabs.length) return false;
 
   // Per-root last conversation, mapped back from session id to the tab just built.

@@ -48,6 +48,10 @@ cpal            = "0.18"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 libloading      = "0.9"
+# Dialogs outside SWT's reach (src/dialogs.rs) are read over the accessibility bus,
+# which is D-Bus. Pure Rust, so it adds no load-time library and no C toolchain; on
+# tokio, which is already here, rather than its default second async runtime.
+zbus            = { version = "5", default-features = false, features = ["tokio", "blocking-api"] }
 
 [lints.clippy]
 # The standard module layout (the Rust Book's idiomatic paths): src/<module>.rs next

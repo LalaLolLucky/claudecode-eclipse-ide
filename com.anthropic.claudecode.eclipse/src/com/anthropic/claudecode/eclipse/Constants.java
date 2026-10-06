@@ -26,18 +26,33 @@ public final class Constants {
     public static final String PREF_TERMINAL_POSITION = "terminalPosition";
     public static final String PREF_DEBUG_MODE = "debugMode";
 
-    /** Start every Claude Code conversation with Remote Control already on. */
+    /** Start every Claude Code conversation, and every Claude Terminal session, with
+     *  Remote Control already on. */
     public static final String PREF_REMOTE_CONTROL_STARTUP = "remoteControlOnStartup";
 
     /** Launch conversations able to enter Auto mode, so switching to it applies to the
      *  running Claude instead of restarting it. On by default. It also lets a phone or
      *  claude.ai put a Remote Control conversation into Auto, where tools run without
      *  asking here; turning it off means Auto is a launch-time choice again, so
-     *  switching to or from it restarts the conversation's Claude. */
+     *  switching to or from it restarts the conversation's Claude. A Claude Terminal
+     *  session is launched the same way: able to be switched into that mode, not in it. */
     public static final String PREF_LIVE_AUTO_MODE = "liveAutoMode";
 
-    /** Whether a new conversation starts with extended thinking on. */
+    /** Whether a new conversation starts with extended thinking on. In the Claude
+     *  Terminal, off is passed to the CLI as a setting and on is left to the CLI, whose
+     *  own default it is (see ui.TerminalLaunchArgs#applyThinking). */
     public static final String PREF_THINKING_DEFAULT = "thinkingOnByDefault";
+
+    /** Use the Claude Terminal exclusively: the Claude Code view, and every command,
+     *  menu entry and key binding that belongs to it, is taken out of the workbench, and
+     *  whatever would still open it opens the Terminal instead. Off by default. */
+    public static final String PREF_TERMINAL_ONLY = "terminalOnly";
+
+    /** Give a Claude Terminal session the plug-in's tools (build, run, tests, …) by
+     *  naming the plug-in's server on its command line, as the Claude Code view's own
+     *  launch does. The IDE link alone shows the model two tools at most, whatever the
+     *  server lists. On by default. */
+    public static final String PREF_TERMINAL_MCP_TOOLS = "terminalMcpTools";
 
     /** Dictation in the Claude Code view's composer: the mic button and its key binding.
      *  On by default; off removes both. */

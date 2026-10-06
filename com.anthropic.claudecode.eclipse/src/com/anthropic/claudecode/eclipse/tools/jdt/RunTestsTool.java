@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.NullProgressMonitor;
@@ -114,6 +115,23 @@ public class RunTestsTool implements McpTool {
 				// Launch tests
 				ILaunch launch = config.launch(ILaunchManager.RUN_MODE, new NullProgressMonitor());
 
+				// Refused before it began — "Errors exist… Proceed?" answered with Cancel, say.
+				// No test will ever report, so there is nothing to wait the timeout out for.
+				if (neverStarted(launch, DebugPlugin.getDefault().getLaunchManager()::isRegistered)) {
+					JsonObject result = new JsonObject();
+					result.addProperty("target", target);
+					result.addProperty("completed", false);
+					result.addProperty("started", false);
+					result.addProperty("totalCount", 0);
+					result.addProperty("passCount", 0);
+					result.addProperty("failCount", 0);
+					result.addProperty("errorCount", 0);
+					result.addProperty("skipCount", 0);
+					result.addProperty("note", "The launch did not start: it was cancelled or refused "
+							+ "before any test ran.");
+					return McpToolResult.success(result);
+				}
+
 				// Wait for completion
 				boolean completed = collector.awaitCompletion(timeoutSecs, TimeUnit.SECONDS);
 
@@ -155,6 +173,18 @@ public class RunTestsTool implements McpTool {
 		} catch (Exception e) {
 			return McpToolResult.error("Failed to run tests: " + e.getMessage());
 		}
+	}
+
+	/**
+	 * Whether a launch came back without ever starting. Eclipse takes a launch that is
+	 * refused before it begins back out of the launch manager, and it has nothing running;
+	 * one that did start is registered, with its process, by the time launching returns.
+	 * Both are asked, so a launch whose process merely is not there yet is still waited for.
+	 */
+	static boolean neverStarted(ILaunch launch, Predicate<ILaunch> registered) {
+		if (launch == null) return true;
+		return launch.getProcesses().length == 0 && launch.getDebugTargets().length == 0
+				&& !registered.test(launch);
 	}
 
 	private TestTarget resolveTarget(String target) {

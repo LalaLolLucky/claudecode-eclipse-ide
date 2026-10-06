@@ -1,6 +1,8 @@
 package com.anthropic.claudecode.eclipse.tools.jdt;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
@@ -10,6 +12,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.eclipse.debug.core.ILaunch;
+import org.eclipse.debug.core.model.IDebugTarget;
+import org.eclipse.debug.core.model.IProcess;
 import org.eclipse.jdt.core.IClasspathEntry;
 import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IJavaProject;
@@ -31,6 +36,37 @@ class RunTestsToolTest {
 
     private static <T> T fake(Class<T> type, InvocationHandler handler) {
         return type.cast(Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] { type }, handler));
+    }
+
+    /** A launch with {@code processes} processes and no debug target. */
+    private static ILaunch launch(int processes) {
+        return fake(ILaunch.class, (self, method, args) -> switch (method.getName()) {
+            case "getProcesses" -> new IProcess[processes];
+            case "getDebugTargets" -> new IDebugTarget[0];
+            default -> null;
+        });
+    }
+
+    @Test
+    void aLaunchRefusedBeforeItStartedIsNotWaitedFor() {
+        // What "Errors exist… Proceed?" answered with Cancel leaves: nothing running, and
+        // the launch taken back out of the launch manager.
+        assertTrue(RunTestsTool.neverStarted(launch(0), l -> false));
+    }
+
+    @Test
+    void aLaunchThatIsRunningIsWaitedFor() {
+        assertFalse(RunTestsTool.neverStarted(launch(1), l -> true));
+    }
+
+    @Test
+    void aLaunchStillRegisteredIsWaitedForEvenBeforeItsProcessShows() {
+        assertFalse(RunTestsTool.neverStarted(launch(0), l -> true));
+    }
+
+    @Test
+    void noLaunchAtAllNeverStarted() {
+        assertTrue(RunTestsTool.neverStarted(null, l -> true));
     }
 
     /** A project whose {@code findType} is answered by {@code findType}. */

@@ -451,18 +451,12 @@ function capIfOverflowing(block, contentEl, label, getFullText) {
  *  ripgrep / JDT reference style). Returns null when the line doesn't look like a hit,
  *  so callers can fall back to plain text instead of mis-rendering unrelated output.
  *
- *  Two shapes beyond the plain one:
- *  - a Windows drive letter ("C:\dir\f.js:12:"), which the path part's no-colon rule
- *    would otherwise reject;
- *  - ripgrep's CONTEXT lines ("f.js-12-text"), which use "-" where a match line uses
- *    ":". A "-" also occurs inside file names, so the path must end in an extension
- *    right before "-N-" ("foo-2-bar.js-10-text" is bar.js line 10, not foo line 2). */
+ *  A Windows drive letter ("C:\dir\f.js:12:") is part of the path, which the path part's
+ *  no-colon rule would otherwise reject. The letter only counts as a drive when a slash
+ *  follows, so a one-letter file name ("a:12:5:") still splits at its first colon. */
 function parseResultLine(line) {
-  let m = /^((?:[A-Za-z]:)?[^\s:][^:]*):(\d+):(?:(\d+):)?\s?(.*)$/.exec(line);
-  if (m) return { file: m[1], line: m[2], col: m[3] || null, rest: m[4] || '' };
-  m = /^((?:[A-Za-z]:)?[^\s:].*?\.[A-Za-z0-9]+)-(\d+)-\s?(.*)$/.exec(line);
-  if (m) return { file: m[1], line: m[2], col: null, rest: m[3] || '' };
-  return null;
+  const m = /^((?:[A-Za-z]:(?=[\\/]))?[^\s:][^:]*):(\d+):(?:(\d+):)?\s?(.*)$/.exec(line);
+  return m ? { file: m[1], line: m[2], col: m[3] || null, rest: m[4] || '' } : null;
 }
 /** A search aimed at ONE file prints rows with no path at all ("67:  text", context rows
  *  "68-  text"), so the file comes from the tool call's own input instead. Returns null
@@ -472,16 +466,63 @@ function parseBareResultLine(line, file) {
   const m = /^(\d+)[:-]\s?(.*)$/.exec(line);
   return m ? { file, line: m[1], col: null, rest: m[2] || '' } : null;
 }
+/** Whether `lines` is what a search of ONE file prints: every row a line number and
+ *  nothing before it. Read off the whole output, because one row cannot say: "8:12:30:45"
+ *  is line 8 of a log, or line 12 of a file named "8". What settles it is that the numbers
+ *  climb, and that a match row ("N:") is among them, which a listing of files whose names
+ *  start with a number ("2024-notes.md:5:") never has. One row alone climbs trivially, so
+ *  it counts only when the target looks like a file. */
+function isBareListing(lines, targetFile) {
+  let rows = 0, matches = 0, last = -1;
+  for (const l of lines) {
+    const line = l.trim();
+    if (line === '--') { last = -1; continue; }     // ripgrep's gap between two groups
+    if (/^\[.*\]$/.test(line)) continue;            // the tool's own note, e.g. on a cut-off list
+    const m = /^(\d+)([:-])/.exec(line);
+    if (!m || Number(m[1]) <= last) return false;
+    last = Number(m[1]); rows++;
+    if (m[2] === ':') matches++;
+  }
+  return matches > 0 && (rows > 1 || /\.[^\\/.]+$/.test(targetFile));
+}
+/** How the rows of a Grep that prints matched LINES are read: a function from a row to
+ *  its parsed form, or null where the row is plain text.
+ *
+ *  ripgrep writes a match as "file:12:text" and a CONTEXT line as "file-12-text". Both
+ *  the text and a file name can hold a ":N:" or a "-N-" of their own ("12:30:45",
+ *  "v1.2-3-notes.md"), so no pattern can tell where the name ends. The output itself can:
+ *  every file in it has at least one match line, whose name stops at its first colon. So
+ *  the names are collected from those first, and each row is then matched against a KNOWN
+ *  name. A name that is only another name plus "-N-" came from a context line, not a file. */
+function contentRowParser(lines, targetFile) {
+  if (targetFile && isBareListing(lines, targetFile)) return l => parseBareResultLine(l, targetFile);
+  const named = new Set();
+  lines.forEach(l => { const p = parseResultLine(l); if (p) named.add(p.file); });
+  const names = Array.from(named);
+  const files = names
+      .filter(n => !names.some(f => f !== n && n.startsWith(f) && /^-\d+-/.test(n.slice(f.length))))
+      .sort((a, b) => b.length - a.length);   // longest first: "a.js" must not claim "a.jsx:1:"
+  return l => {
+    for (const file of files) {
+      if (!l.startsWith(file)) continue;
+      const m = /^([:-])(\d+)\1\s?(.*)$/.exec(l.slice(file.length));
+      if (m) return { file, line: m[2], col: null, rest: m[3] || '' };
+    }
+    return parseResultLine(l) || parseBareResultLine(l, targetFile);
+  };
+}
 /** Builds the clickable result-list for search/reference/diagnostic-shaped output
  *  (RESULT_LIST_TOOLS). Capped to a handful of rows + "+N more" into the full text,
  *  same principle as capIfOverflowing but for discrete rows rather than a <pre>. */
-function buildResultList(text, root, targetFile) {
+function buildResultList(text, root, targetFile, contentRows) {
   const lines = text.split('\n').filter(l => l.trim());
   if (!lines.length) return null;
   const MAX_ROWS = 5;
   const list = document.createElement('div'); list.className = 'result-list';
+  // Built from ALL the lines, not just the rows shown: a context line can come before its match.
+  const parse = contentRows ? contentRowParser(lines, targetFile) : parseResultLine;
   lines.slice(0, MAX_ROWS).forEach(l => {
-    const parsed = parseResultLine(l) || parseBareResultLine(l, targetFile);
+    const parsed = parse(l);
     const row = document.createElement('div'); row.className = 'result-item';
     if (parsed && window._openFileInEditor) {
       row.classList.add('clickable');
@@ -697,6 +738,9 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
   const line = document.createElement('div'); line.className = 'a-item tool-line';
   line.dataset.tname = key;   // looked up again in applyToolResult to decide how to render OUT
   line.dataset.tpath = path;  // the search target: names the file for result rows that carry no path of their own
+  // Only a Grep printing matched LINES has context rows and bare rows; its file listings,
+  // and every other result-list tool, print names that must not be read as either.
+  if (key === 'grep' && input.output_mode === 'content') line.dataset.tcontent = '1';
   const dotClass = status === 'done' ? 'dot done' : status === 'interrupted' ? 'dot red' : 'dot';
   line.innerHTML = '<span class="' + dotClass + '"></span><span class="tname"></span>'
       + (isAgent ? ' <span class="tagent-type"></span> <span class="tdesc"></span>'
@@ -924,7 +968,7 @@ function renderToolOutput(line, key, text) {
   const stale = line.querySelector('.io-item.out, .result-list.out');
   if (stale) stale.remove();
   if (RESULT_LIST_TOOLS.has(key)) {
-    const resultList = buildResultList(text, rootPathOf(activeTab()), line.dataset.tpath || '');
+    const resultList = buildResultList(text, rootPathOf(activeTab()), line.dataset.tpath || '', line.dataset.tcontent === '1');
     if (resultList) { resultList.classList.add('out'); line.appendChild(resultList); }
     return;
   }
@@ -1095,7 +1139,10 @@ function addSystemToPane(pane, text) {
   const turn = document.createElement('div'); turn.className = 'turn';
   turn.innerHTML = '<div class="a-item muted"><span class="dot gray"></span><span class="sys"></span></div>';
   turn.querySelector('.sys').textContent = text;
-  pane.appendChild(turn);
+  // Above the working indicator, which stays last: scrollBottom puts it back there only
+  // for the render target, and this pane is often not that one (a background tab's line).
+  const working = pane.querySelector(':scope > .working-turn');
+  if (working) pane.insertBefore(turn, working); else pane.appendChild(turn);
   if (pane === (activeTab() && activeTab().pane)) scrollBottom();   // don't yank a background tab
 }
 

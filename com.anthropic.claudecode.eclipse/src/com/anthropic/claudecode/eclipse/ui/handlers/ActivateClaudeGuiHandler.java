@@ -8,9 +8,12 @@ import org.eclipse.ui.handlers.HandlerUtil;
 
 import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.ui.ClaudeGuiView;
+import com.anthropic.claudecode.eclipse.ui.TerminalOnlyUi;
 
 /** Shows/focuses the Claude Code view — always reveals, never hides (mirror of
- *  {@link ActivateClaudeCliHandler}). */
+ *  {@link ActivateClaudeCliHandler}). While the terminal is used exclusively the command
+ *  is not on offer; reached anyway (a key the user bound to it), it opens the Claude
+ *  Terminal instead. */
 public class ActivateClaudeGuiHandler extends AbstractHandler {
 
     @Override
@@ -22,6 +25,10 @@ public class ActivateClaudeGuiHandler extends AbstractHandler {
             // Ensure the MCP server is running before showing the view.
             if (!Activator.getDefault().isServerRunning()) {
                 Activator.getDefault().initialize();
+            }
+            if (TerminalOnlyUi.isOn()) {
+                TerminalOnlyUi.openTerminal(page);
+                return null;
             }
             page.showView(ClaudeGuiView.VIEW_ID);
         } catch (Exception e) {

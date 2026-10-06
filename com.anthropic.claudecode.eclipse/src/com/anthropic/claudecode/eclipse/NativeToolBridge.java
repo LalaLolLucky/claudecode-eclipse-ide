@@ -3,6 +3,7 @@ package com.anthropic.claudecode.eclipse;
 import com.anthropic.claudecode.eclipse.mcp.McpTool;
 import com.anthropic.claudecode.eclipse.mcp.McpToolRegistry;
 import com.anthropic.claudecode.eclipse.mcp.McpToolResult;
+import com.anthropic.claudecode.eclipse.tools.ToolDialogWatch;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -54,7 +55,7 @@ public class NativeToolBridge implements NativeCore.ToolCallback {
             JsonObject args = argsJson != null && !argsJson.isBlank()
                     ? JsonParser.parseString(argsJson).getAsJsonObject()
                     : new JsonObject();
-            McpToolResult result = tool.execute(args);
+            McpToolResult result = ToolDialogWatch.run(tool, toolName, args);
             // null when UiHelper.syncCall() skips execution because the display is
             // disposed (e.g. Eclipse is shutting down while a tool call is in flight).
             if (result == null) {

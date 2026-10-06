@@ -147,6 +147,9 @@ Claude has access to the following MCP tools, which it invokes automatically:
 | `debug` | Debug a program started in debug mode: threads, stack and variables, evaluate expressions, line breakpoints, resume and step |
 | `format` | Format a file with Eclipse's formatter for its language and the project's settings, then save it |
 | `refactorResource` | Rename or move a file, folder or project as an Eclipse refactoring — references follow, and Edit → Undo reverts it |
+| `eclipseShowView` | Open or close a view such as Problems, Console or Git Staging, or list the views this Eclipse has |
+| `eclipseOpenPerspective` | Switch to or close a perspective such as Java, Debug or Git, or list the perspectives this Eclipse has |
+| `eclipseDialog` | List the dialogs that are open, in this Eclipse or another Eclipse instance, and press a button in one by its label |
 | `findReferences` † | Find every reference to a Java type or member |
 | `getSymbolInfo` † | Resolve the Java symbol at a position — kind, declaring type, signature |
 | `getTypeHierarchy` † | Show a Java type's supertypes and subtypes |

@@ -21,11 +21,21 @@ import com.anthropic.claudecode.eclipse.Constants;
  * changes, re-fires the variable. The Show View list, key bindings and the menu item
  * all update without a restart. When debug is switched off we also close the view if
  * it happens to be open.
+ *
+ * <p>Publishes a second variable the same way: whether the Claude Code view is on
+ * offer, which {@link Constants#PREF_TERMINAL_ONLY} ("Exclusively use terminal")
+ * switches off. The view's activity and its two menu entries key off it (see
+ * {@link TerminalOnlyUi}). It lives in this provider, not one of its own, so that it is
+ * defined exactly when {@code debugMode} is: an undefined variable reads as false, and
+ * false here would hide the Claude Code view from everyone.
  */
 public class DebugModeSourceProvider extends AbstractSourceProvider {
 
     /** Must match the variable name declared in plugin.xml. */
     public static final String VARIABLE = "com.anthropic.claudecode.eclipse.debugMode";
+
+    /** Must match the variable name declared in plugin.xml. */
+    public static final String CODE_VIEW_VARIABLE = "com.anthropic.claudecode.eclipse.codeViewEnabled";
 
     private final IPropertyChangeListener prefListener = new IPropertyChangeListener() {
         @Override
@@ -37,6 +47,13 @@ public class DebugModeSourceProvider extends AbstractSourceProvider {
                     DebugModeUi.closeServerViewIfOpen();
                 }
             }
+            if (Constants.PREF_TERMINAL_ONLY.equals(event.getProperty())) {
+                boolean terminalOnly = TerminalOnlyUi.isOn();
+                fireSourceChanged(ISources.WORKBENCH, CODE_VIEW_VARIABLE, Boolean.valueOf(!terminalOnly));
+                if (terminalOnly) {
+                    TerminalOnlyUi.closeCodeViewIfOpen();
+                }
+            }
         }
     };
 
@@ -45,18 +62,22 @@ public class DebugModeSourceProvider extends AbstractSourceProvider {
         if (activator != null) {
             activator.getPreferenceStore().addPropertyChangeListener(prefListener);
         }
+        // From here because this provider is created with the workbench on every start,
+        // which the plug-in's early startup is not (the user can switch that off).
+        TerminalOnlyUi.install();
     }
 
     @Override
     public Map<String, Object> getCurrentState() {
-        Map<String, Object> state = new HashMap<>(1);
+        Map<String, Object> state = new HashMap<>(2);
         state.put(VARIABLE, Boolean.valueOf(DebugModeUi.isDebugEnabled()));
+        state.put(CODE_VIEW_VARIABLE, Boolean.valueOf(!TerminalOnlyUi.isOn()));
         return state;
     }
 
     @Override
     public String[] getProvidedSourceNames() {
-        return new String[] { VARIABLE };
+        return new String[] { VARIABLE, CODE_VIEW_VARIABLE };
     }
 
     @Override

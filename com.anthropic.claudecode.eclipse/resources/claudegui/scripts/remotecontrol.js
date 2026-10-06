@@ -53,11 +53,18 @@ function toggleRemoteControl() {
    Every url-shaped event on this channel is an answer to a request we made —
    the CLI has no unsolicited form of it — so the tab consumes exactly one, and
    anything after that is a straggler from a toggle already accounted for. That
-   is what used to print "Remote Control could not start." unprompted. */
+   is what used to print "Remote Control could not start." unprompted.
+
+   The launch settings are the TAB's, not the composer's: the composer mirrors the
+   tab in front, and this is also called for one that is not (Remote Control on
+   startup, the claudeCodeEclipse tool). Sent from the composer, a background tab's
+   process started on the front tab's model, effort and thinking, and its next
+   message — carrying its own — replaced that process and the bridge with it. */
 function rcSend(t, enabled) {
   t.rcAckPending = true;
   _remoteControl(t.id, enabled, t.sessionId || '', t.permMode || permMode,
-                 effort, curModel, thinkingOn ? '1' : '0');
+                 EFFORTS[t.effortIdx] || effort, t.model !== undefined ? t.model : curModel,
+                 (t.thinking !== undefined ? t.thinking : thinkingOn) ? '1' : '0');
 }
 
 /* How long to wait for a bridge before giving up.
@@ -102,6 +109,7 @@ function beginConnecting(t) {
    No indicator: nothing is being waited on remotely, and the composer says what
    is happening. */
 function beginDisconnecting(t) {
+  const wasConnecting = !!t.rcConnecting;   // then the indicator up is the pinned "Establishing connection…"
   if (t.rcTimer) { clearTimeout(t.rcTimer); t.rcTimer = null; }
   t.rcConnecting = false;
   t.rcPendingUrl = null;
@@ -109,7 +117,9 @@ function beginDisconnecting(t) {
   t.rcDisconnecting = true;
   t.rcDeadline = Date.now() + RC_DISCONNECT_TIMEOUT_MS;
   syncComposer();
-  stopWorkingFor(t);
+  // A turn already running keeps its own gerund: it is not this switch-off's to remove.
+  if (wasConnecting || !t.streaming) stopWorkingFor(t);
+  if (wasConnecting) resumeWorkingFor(t);
   t.rcTimer = setTimeout(() => rcExpire(t), RC_DISCONNECT_TIMEOUT_MS);
 }
 
@@ -138,6 +148,7 @@ function endConnecting(t) {
   t.rcDeadline = 0;
   syncComposer();
   stopWorkingFor(t);
+  resumeWorkingFor(t);   // a turn already running when the wait began still has its gerund
 }
 
 /* Whichever wait this tab is in has run out of time. */

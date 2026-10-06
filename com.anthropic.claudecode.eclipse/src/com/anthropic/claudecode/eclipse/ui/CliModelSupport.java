@@ -224,9 +224,10 @@ public final class CliModelSupport {
     /**
      * Finds the real executable. {@code claude} on PATH is usually a launcher shim
      * ({@code claude.cmd}), so the npm layout beside it is tried as well; anything
-     * too small to be the binary is rejected.
+     * too small to be the binary is rejected. Shared with {@link CliFlagSupport}, which
+     * reads the same program for the flags it knows.
      */
-    private static Path locateBinary(String claudeCmd) {
+    static Path locateBinary(String claudeCmd) {
         Path found = locateBinaryImpl(claudeCmd);
         if (found == null && DebugModeUi.isDebugEnabled()) {
             // Everything downstream of this degrades silently: scan() returns "{}",

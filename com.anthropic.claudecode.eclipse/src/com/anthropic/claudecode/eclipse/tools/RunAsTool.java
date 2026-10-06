@@ -1,7 +1,9 @@
 package com.anthropic.claudecode.eclipse.tools;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.eclipse.core.expressions.EvaluationContext;
@@ -22,10 +24,12 @@ import org.eclipse.debug.core.model.IProcess;
 import org.eclipse.debug.ui.ILaunchShortcut;
 import org.eclipse.jface.viewers.StructuredSelection;
 import org.eclipse.swt.widgets.Display;
+import org.eclipse.swt.widgets.Shell;
 
 import com.anthropic.claudecode.eclipse.editor.UiHelper;
 import com.anthropic.claudecode.eclipse.mcp.McpTool;
 import com.anthropic.claudecode.eclipse.mcp.McpToolResult;
+import com.anthropic.claudecode.eclipse.ui.ClaudeCodeView;
 import com.anthropic.claudecode.eclipse.ui.ClaudeGuiView;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -195,6 +199,7 @@ public class RunAsTool implements McpTool {
             if (configName == null && option == null) {
                 return McpToolResult.success(listOptions(project, launchMode));
             }
+            OPEN_BEFORE.set(dialogsOpenNow());
             if (configName != null) {
                 return launchNamedConfig(configName, launchMode, waitSeconds);
             }
@@ -206,7 +211,38 @@ public class RunAsTool implements McpTool {
         } catch (Exception e) {
             return McpToolResult.error("runAs failed: " + e.getClass().getSimpleName()
                     + ": " + e.getMessage());
+        } finally {
+            OPEN_BEFORE.remove();
         }
+    }
+
+    // ── A launch held by a question ─────────────────────────────────────────────────
+
+    /** While waiting on a launch that has no process yet, how often to look for a dialog. */
+    private static final long DIALOG_LOOK_MS = 300;
+
+    /** The dialogs that were open before this call launched anything; null when not known. */
+    private static final ThreadLocal<Set<Shell>> OPEN_BEFORE = new ThreadLocal<>();
+
+    private static Set<Shell> dialogsOpenNow() {
+        Display display = Dialogs.display();
+        if (display == null) return null;
+        return Dialogs.onUi(() -> new HashSet<>(Dialogs.open(display)), 300);
+    }
+
+    /**
+     * The dialogs that have come up since this call began, described; empty when there are
+     * none or it cannot be told.
+     *
+     * <p>A launcher's own dialog holds {@code launch()} and is seen by the caller of this
+     * tool. One raised afterwards, from the launch's background job ("errors exist in the
+     * project, proceed?"), holds nothing here — the call would return "launched" with no
+     * process and no word of why.
+     */
+    private static JsonArray dialogsRaisedSinceCall() {
+        Set<Shell> before = OPEN_BEFORE.get();
+        JsonArray raised = before == null ? null : Dialogs.raisedSince(before, 300);
+        return raised == null ? new JsonArray() : raised;
     }
 
     // ── Listing ─────────────────────────────────────────────────────────────────────
@@ -499,17 +535,42 @@ public class RunAsTool implements McpTool {
 
     // ── Launching ───────────────────────────────────────────────────────────────────
 
+    /**
+     * Which launcher {@code option} names, as an index into the three lists, or -1. An id
+     * names its own launcher. A label can belong to several — JDT's and Xtend's are both
+     * "JUnit Test" — and then means the one that applies to the project; when none of
+     * that label does, one is still named, so that the refusal can say what was asked for.
+     */
+    static int choose(List<String> labels, List<String> ids, List<Boolean> applying, String option) {
+        for (int i = 0; i < ids.size(); i++) {
+            if (option.equals(ids.get(i))) return i;
+        }
+        int sameLabel = -1;
+        for (int i = 0; i < labels.size(); i++) {
+            if (!labels.get(i).equalsIgnoreCase(option)) continue;
+            if (applying.get(i)) return i;
+            sameLabel = i;
+        }
+        return sameLabel;
+    }
+
     private McpToolResult launchShortcut(IProject project, String option, String launchMode,
             boolean force, int waitSeconds) throws Exception {
-        IConfigurationElement match = null;
+        List<IConfigurationElement> shortcuts = shortcutsFor(launchMode);
+        List<String> labels = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        List<Boolean> applying = new ArrayList<>();
         List<String> applicable = new ArrayList<>();
-        for (IConfigurationElement el : shortcutsFor(launchMode)) {
+        for (IConfigurationElement el : shortcuts) {
             String lbl = label(el);
-            if (applies(el, project)) applicable.add(lbl);
-            if (lbl.equalsIgnoreCase(option) || option.equals(el.getAttribute("id"))) {
-                match = el;
-            }
+            boolean applies = applies(el, project);
+            if (applies) applicable.add(lbl);
+            labels.add(lbl);
+            ids.add(el.getAttribute("id"));
+            applying.add(applies);
         }
+        int chosen = choose(labels, ids, applying, option);
+        IConfigurationElement match = chosen < 0 ? null : shortcuts.get(chosen);
         if (match == null) {
             return McpToolResult.error("No Run As option '" + option + "' for mode " + launchMode
                     + ". Applicable for " + project.getName() + ": " + String.join(", ", applicable));
@@ -627,11 +688,33 @@ public class RunAsTool implements McpTool {
             out.addProperty("configuration", launch.getLaunchConfiguration().getName());
         }
 
+        // One look, which costs no waiting; and while the caller has asked to wait, a look
+        // now and then for as long as nothing has started — a launch held by a question
+        // will not end, and the wait would only run out.
+        JsonArray raised = launch.getProcesses().length == 0 ? dialogsRaisedSinceCall() : new JsonArray();
         if (waitSeconds > 0) {
             long deadline = System.currentTimeMillis() + waitSeconds * 1000L;
-            while (!launch.isTerminated() && System.currentTimeMillis() < deadline) {
+            long nextLook = System.currentTimeMillis() + DIALOG_LOOK_MS;
+            while (raised.size() == 0 && !launch.isTerminated() && System.currentTimeMillis() < deadline) {
                 Thread.sleep(100);
+                if (launch.getProcesses().length == 0 && System.currentTimeMillis() >= nextLook) {
+                    raised = dialogsRaisedSinceCall();
+                    nextLook = System.currentTimeMillis() + DIALOG_LOOK_MS;
+                }
             }
+        }
+        boolean nothingStarted = !launch.isTerminated() && launch.getProcesses().length == 0;
+        if (raised.size() > 0 && nothingStarted) {
+            out.add("dialogs", raised);
+            out.addProperty("note", "The launch has not started a process, and a dialog has opened "
+                    + "since it began: it is most likely waiting on that. Answer it with "
+                    + "eclipseDialog, then check on the launch with 'launches'.");
+            ClaudeCodeView.debug("[runAs] '" + what + "' has no process and " + raised.size()
+                    + " dialog(s) opened since the call began: " + raised);
+        } else if (nothingStarted) {
+            out.addProperty("note", "No process has started yet. If none does, a dialog may be "
+                    + "waiting for an answer: eclipseDialog lists the ones that are open.");
+            ClaudeCodeView.debug("[runAs] '" + what + "' has no process yet and no new dialog");
         }
         out.addProperty("terminated", launch.isTerminated());
 

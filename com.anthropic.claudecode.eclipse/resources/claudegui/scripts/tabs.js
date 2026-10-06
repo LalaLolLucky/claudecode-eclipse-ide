@@ -135,6 +135,28 @@ function WELCOME_HTML() {
     + '<div class="wc-mcp-tip">Set up <span class="wc-link" onclick="openMcpServers()">MCP servers</span> to connect Claude to more tools and data.</div>'
     + '</div>';
 }
+/* The settings a conversation was last saved with (the per-session sidecar), as
+   createTab options — empty for a new conversation or one with nothing saved.
+
+   Read when the tab is MADE, not only when its transcript is first shown: a tab
+   restored from the last Eclipse session is rendered lazily, and with Remote Control
+   on startup its process is started the moment it is made. Left to loadHistory, that
+   process started on the defaults, and the conversation's own settings — arriving
+   with its next message — replaced it and the bridge with it. A read only: see the
+   note on applyTabSettings about what a write from here did (issue #114). */
+function storedTabSettings(sessionId) {
+  const out = {};
+  if (!sessionId || !window._loadSessionPrefs) return out;
+  let saved = null;
+  try { saved = JSON.parse(window._loadSessionPrefs(sessionId) || '{}'); } catch (e) {}
+  if (!saved) return out;
+  if (saved.model) out.model = saved.model;
+  const ei = parseInt(saved.effort, 10);
+  if (!isNaN(ei)) out.effortIdx = ei;
+  if (saved.thinking === '1') out.thinking = true; else if (saved.thinking === '0') out.thinking = false;
+  if (saved.permMode) out.permMode = saved.permMode;
+  return out;
+}
 /**
  * @param {{title?: string, sessionId?: string, titled?: boolean, model?: string,
  *          effortIdx?: number, thinking?: boolean, permMode?: string, rootId?: string}} [opts]
@@ -149,13 +171,17 @@ function createTab(opts) {
   // Per-conversation model/effort/thinking (VSCode-style). A NEW tab starts at the
   // DEFAULTS (not whatever the last-viewed convo used); each tab then remembers its
   // own. Defaults: high effort, thinking off, the user's configured default model.
+  // A conversation reopened by its session id starts on what it was saved with.
+  const stored = storedTabSettings(opts.sessionId);
+  const setting = (key, fallback) =>
+    opts[key] !== undefined ? opts[key] : (stored[key] !== undefined ? stored[key] : fallback);
   tabs.push({ id, title: opts.title || 'Claude Code', sessionId: opts.sessionId || '', pane, titled: !!opts.titled, draft: '',
     // Conversations belong to a working root; #tabs shows only the active root's.
     rootId: opts.rootId || activeRootId,
-    model: (opts.model !== undefined ? opts.model : defaultModel()),
-    effortIdx: (opts.effortIdx !== undefined ? opts.effortIdx : DEFAULT_EFFORT_IDX),
-    thinking: (opts.thinking !== undefined ? opts.thinking : defaultThinking()),
-    permMode: (opts.permMode !== undefined ? opts.permMode : DEFAULT_PERM_MODE) });
+    model: setting('model', defaultModel()),
+    effortIdx: setting('effortIdx', DEFAULT_EFFORT_IDX),
+    thinking: setting('thinking', defaultThinking()),
+    permMode: setting('permMode', DEFAULT_PERM_MODE) });
   switchTab(id);
   const created = tabs[tabs.length - 1];
   // With "Enable remote control on startup" set, a new conversation comes up
@@ -204,6 +230,7 @@ function switchTab(id) {
   // The root rides along: Java scopes session history, rewind and the status bar to
   // the conversation's own folder, not to the workspace root.
   try { if (window._activeTab) window._activeTab(id, rootPathOf(t)); } catch (e) {} // status bar follows active tab
+  refreshStaleTitles();   // after the line above: Java lists the folder it was just told
   renderTabs();
   if (typeof renderSupertabs === 'function') renderSupertabs();
   // #messages is one scroll container shared by every pane, so a background pane's
@@ -241,7 +268,9 @@ function switchTab(id) {
   if (t && t._restore) {
     const rs = t._restore;
     t._restore = null;                    // cleared FIRST — this must not re-enter
-    loadHistory(rs.sessionId, rs.title, t);
+    // The tab's title as it stands, not the stored one: it may have been read from the
+    // session since (refreshStaleTitles), and the stored one would put "Claude Code" back.
+    loadHistory(rs.sessionId, t.title || rs.title, t);
     if (rs.scrollTop > 0) {
       messagesEl.scrollTop = Math.min(rs.scrollTop, messagesEl.scrollHeight);
       t.scrollTop = messagesEl.scrollTop;
@@ -439,13 +468,35 @@ function setTabTitle(t, raw) {
  * else AI title, else first message), so once the session exists its tab adopts that.
  * Tabs the user renamed by hand are skipped — that rename is already the stored title. */
 function refreshTabTitle(t) {
-  if (t && t.sessionId && !t.userTitled && window._listSessionsAsync) window._listSessionsAsync();   // lands in onHistoryLoaded → syncTabTitles
+  if (!t || !t.sessionId || t.userTitled || !window._listSessionsAsync) return;
+  // The list is the VIEWED folder's: a tab in another folder is not in it, so it waits
+  // (titleStale) and switchTab asks again once its folder is the one being viewed.
+  if (t.rootId && t.rootId !== activeRootId) { t.titleStale = true; return; }
+  window._listSessionsAsync();   // lands in onHistoryLoaded → syncTabTitles
+}
+/* One list request for every tab of the viewed folder that is waiting for its title —
+ * whichever of them was selected, since syncTabTitles names them all from one list.
+ * A tab stops waiting when the list names it (syncTabTitles), or after being asked for
+ * twice: once is not enough, because a reply that arrives while the page is still loading
+ * is dropped, and without a limit a session the list never holds would ask at every switch. */
+const TITLE_ASKS = 2;
+function refreshStaleTitles() {
+  if (!window._listSessionsAsync) return;
+  let waiting = false;
+  for (const t of tabs) {
+    if (!t.titleStale || (t.rootId && t.rootId !== activeRootId)) continue;
+    t.titleAsks = (t.titleAsks || 0) + 1;
+    if (t.titleAsks >= TITLE_ASKS) { t.titleStale = false; t.titleAsks = 0; }
+    waiting = true;
+  }
+  if (waiting) window._listSessionsAsync();
 }
 function syncTabTitles(sessions) {
   let changed = false;
   for (const t of tabs) {
     if (!t.sessionId || t.userTitled) continue;
     const s = sessions.find(x => x.sessionId === t.sessionId);
+    if (s) { t.titleStale = false; t.titleAsks = 0; }
     const title = s ? (stripContext(s.display) || '').trim() : '';
     if (title && title !== t.title) { t.title = title; t.titled = true; changed = true; }
   }

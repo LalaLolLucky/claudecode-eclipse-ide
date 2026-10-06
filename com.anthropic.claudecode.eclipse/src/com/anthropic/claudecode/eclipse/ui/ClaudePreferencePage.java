@@ -3,6 +3,7 @@ package com.anthropic.claudecode.eclipse.ui;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.eclipse.jface.dialogs.MessageDialog;
 import org.eclipse.jface.preference.BooleanFieldEditor;
 import org.eclipse.jface.preference.FieldEditor;
 import org.eclipse.jface.preference.FieldEditorPreferencePage;
@@ -30,6 +31,7 @@ import com.anthropic.claudecode.eclipse.Constants;
 import com.anthropic.claudecode.eclipse.NativeCore;
 import com.anthropic.claudecode.eclipse.editor.SelectionTracker;
 import com.anthropic.claudecode.eclipse.editor.UiHelper;
+import com.anthropic.claudecode.eclipse.tools.EclipseDialogTool;
 
 public class ClaudePreferencePage extends FieldEditorPreferencePage implements IWorkbenchPreferencePage {
 
@@ -37,6 +39,11 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
     private BooleanFieldEditor dictationEnabled;
     private BooleanFieldEditor dictationMacOS;
     private BooleanFieldEditor debugMode;
+    private BooleanFieldEditor terminalOnly;
+    private Label codeViewHeading;
+
+    /** The Claude Code view's own options: greyed out while the terminal is used exclusively. */
+    private final List<FieldEditor> codeViewOptions = new ArrayList<>();
     private IntegerFieldEditor portMinEditor;
     private IntegerFieldEditor portMaxEditor;
 
@@ -116,14 +123,16 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
 
     @Override
     protected void createFieldEditors() {
-        addField(new BooleanFieldEditor(
-                Constants.PREF_AUTO_START,
-                "Open new Claude Terminal automatically on Eclipse launch",
-                getFieldEditorParent()));
+        addSectionHeading("General configuration:", false);
 
         addField(new BooleanFieldEditor(
                 Constants.PREF_TRACK_SELECTION,
                 "Track editor selection in real-time",
+                getFieldEditorParent()));
+
+        addField(new BooleanFieldEditor(
+                Constants.PREF_SCROLL_LOCK_DEFAULT,
+                "Scroll Lock enabled by default",
                 getFieldEditorParent()));
 
         addField(new StringFieldEditor(
@@ -152,9 +161,11 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
 
         addField(portMaxEditor);
 
+        // The next three reach both views: a Claude Code conversation and a Claude
+        // Terminal session are each started with them (see TerminalLaunchArgs).
         addField(new BooleanFieldEditor(
                 Constants.PREF_REMOTE_CONTROL_STARTUP,
-                "Enable remote control on startup, in the Claude Code view",
+                "Enable remote control on startup",
                 getFieldEditorParent()));
 
         addField(new BooleanFieldEditor(
@@ -169,11 +180,39 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                 "Allow bypass permissions mode. Recommended only for sandboxes with no internet access.",
                 getFieldEditorParent()));
 
+        terminalOnly = new BooleanFieldEditor(
+                Constants.PREF_TERMINAL_ONLY,
+                "Exclusively use terminal. Launch Claude in the terminal instead of the native UI. "
+                        + "Disables Claude Code view.",
+                getFieldEditorParent());
+        addField(terminalOnly);
+
+        addSectionHeading("Claude Terminal view configuration:", true);
+
+        addField(new BooleanFieldEditor(
+                Constants.PREF_AUTO_START,
+                "Open new Claude Terminal automatically on Eclipse launch",
+                getFieldEditorParent()));
+
+        addField(new BooleanFieldEditor(
+                Constants.PREF_TERMINAL_MCP_TOOLS,
+                "Enable MCP tools integration.",
+                getFieldEditorParent()));
+
+        if (overlayScrollbarsInUse(getFieldEditorParent())) {
+            addField(new BooleanFieldEditor(
+                    Constants.PREF_CLI_PERSISTENT_SCROLLBAR,
+                    "Persistent vertical scrollbar",
+                    getFieldEditorParent()));
+        }
+
+        codeViewHeading = addSectionHeading("Claude Code view configuration:", true);
+
         dictationEnabled = new BooleanFieldEditor(
                 Constants.PREF_DICTATION_ENABLED,
                 "Enable Speech-to-text (STT) [Experimental]",
                 getFieldEditorParent());
-        addField(dictationEnabled);
+        addCodeViewOption(dictationEnabled);
 
         // macOS only. Shown while Debug mode is ticked, tickable while the option above
         // is; see updateDictationMacOSState().
@@ -185,24 +224,21 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
             addField(dictationMacOS);
         }
 
-        addField(new BooleanFieldEditor(
-                Constants.PREF_SCROLL_LOCK_DEFAULT,
-                "Scroll Lock enabled by default (Claude Code and Claude Terminal views)",
-                getFieldEditorParent()));
-
-        addField(new BooleanFieldEditor(
+        addCodeViewOption(new BooleanFieldEditor(
                 Constants.PREF_SMART_SCROLL_LOCK,
-                "Smart Scroll Lock: in the Claude Code view, still jump to the bottom for "
-                        + "your own actions (sending a message, answering a card) even while "
-                        + "Scroll Lock is on",
+                "Smart Scroll Lock: still jump to the bottom for your own actions (sending a "
+                        + "message, answering a card) even while Scroll Lock is on",
                 getFieldEditorParent()));
 
-        if (overlayScrollbarsInUse(getFieldEditorParent())) {
-            addField(new BooleanFieldEditor(
-                    Constants.PREF_CLI_PERSISTENT_SCROLLBAR,
-                    "Persistent vertical scrollbar",
-                    getFieldEditorParent()));
-        }
+        addCodeViewOption(new BooleanFieldEditor(
+                Constants.PREF_HISTORY_SHOW_TIMESTAMPS,
+                "Show a timestamp above your own messages",
+                getFieldEditorParent()));
+
+        addCodeViewOption(new BooleanFieldEditor(
+                Constants.PREF_HIDE_ROOT_DIRECTORIES_ROW,
+                "Hide the root directories row (for single-folder use)",
+                getFieldEditorParent()));
 
         Label statusSeparator = new Label(getFieldEditorParent(), SWT.SEPARATOR | SWT.HORIZONTAL);
         statusSeparator.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 3, 1));
@@ -316,16 +352,6 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         miscLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 3, 1));
 
         addField(new BooleanFieldEditor(
-                Constants.PREF_HISTORY_SHOW_TIMESTAMPS,
-                "Show a timestamp above your own messages, in the Claude Code view",
-                getFieldEditorParent()));
-
-        addField(new BooleanFieldEditor(
-                Constants.PREF_HIDE_ROOT_DIRECTORIES_ROW,
-                "Hide the root directories row, in the Claude Code view (for single-folder use)",
-                getFieldEditorParent()));
-
-        addField(new BooleanFieldEditor(
                 Constants.PREF_SPINNER_DEPRECATED,
                 "Use deprecated spinner verbs",
                 getFieldEditorParent()));
@@ -360,6 +386,68 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                 "Debug mode",
                 getFieldEditorParent());
         addField(debugMode);
+    }
+
+    /**
+     * A section heading, in the form the page's other sections use: a label across the
+     * page, under a rule unless it is the first thing on it.
+     */
+    private Label addSectionHeading(String text, boolean ruleAbove) {
+        if (ruleAbove) {
+            Label rule = new Label(getFieldEditorParent(), SWT.SEPARATOR | SWT.HORIZONTAL);
+            rule.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 3, 1));
+        }
+        Label heading = new Label(getFieldEditorParent(), SWT.NONE);
+        heading.setText(text);
+        heading.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 3, 1));
+        return heading;
+    }
+
+    private void addCodeViewOption(FieldEditor editor) {
+        codeViewOptions.add(editor);
+        addField(editor);
+    }
+
+    /** Whether the page, as it stands unsaved, leaves the Claude Code view in use. */
+    private boolean codeViewInUse() {
+        return terminalOnly == null || !terminalOnly.getBooleanValue();
+    }
+
+    /**
+     * Greys the Claude Code view's section out while "Exclusively use terminal" is ticked:
+     * with the view gone there is nothing for those options to act on. Read from the editor
+     * rather than the store, so it follows unsaved clicks. The values themselves are left
+     * alone, and are in force again when the box is unticked.
+     */
+    private void updateCodeViewOptionsEnabled() {
+        boolean inUse = codeViewInUse();
+        Composite parent = getFieldEditorParent();
+        if (codeViewHeading != null && !codeViewHeading.isDisposed()) {
+            codeViewHeading.setEnabled(inUse);
+        }
+        for (FieldEditor editor : codeViewOptions) {
+            editor.setEnabled(inUse, parent);
+        }
+        // The macOS dictation option answers to this and to two boxes of its own.
+        updateDictationMacOSState();
+    }
+
+    /**
+     * Asked when "Exclusively use terminal" is about to be switched on over an open Claude
+     * Code view, since closing the view ends the conversations running in it.
+     */
+    private boolean confirmClosingCodeView() {
+        // Constructed rather than MessageDialog.open(...): the overload that takes custom
+        // button labels returns the button INDEX, and dismissing the dialog returns -1.
+        MessageDialog dlg = new MessageDialog(getShell(),
+                "Close the Claude Code view?", null,
+                "You are about to use the terminal exclusively, this action will close the "
+                        + "Claude Code view and end the conversations running in it. Do you wish to proceed?",
+                MessageDialog.CONFIRM, new String[] { "Close the view", "Cancel" }, 1);
+        // The user's own decision: eclipseDialog lists it and never answers it.
+        dlg.create();
+        EclipseDialogTool.forUserOnly(dlg.getShell());
+        return dlg.open() == 0;
     }
 
     /**
@@ -455,7 +543,7 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         if (!(debug && dictation) && box instanceof Button check) {
             check.setSelection(false);
         }
-        dictationMacOS.setEnabled(dictation, parent);
+        dictationMacOS.setEnabled(dictation && codeViewInUse(), parent);
         if (box.getLayoutData() instanceof GridData gd) {
             gd.exclude = !debug;
         }
@@ -479,7 +567,7 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         super.initialize();
         updateStatuslineDependentsEnabled();
         updateAllTimeoutSecondsEnabled();
-        updateDictationMacOSState();
+        updateCodeViewOptionsEnabled();
         // Loading values into the editors fires neither IS_VALID nor VALUE, so a
         // range already persisted as inverted (from a build before this check
         // existed) would otherwise open as valid with Apply enabled.
@@ -491,7 +579,7 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         super.performDefaults();
         updateStatuslineDependentsEnabled();
         updateAllTimeoutSecondsEnabled();
-        updateDictationMacOSState();
+        updateCodeViewOptionsEnabled();
     }
 
     @Override
@@ -511,6 +599,9 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         if ((event.getSource() == debugMode || event.getSource() == dictationEnabled)
                 && FieldEditor.VALUE.equals(event.getProperty())) {
             updateDictationMacOSState();
+        }
+        if (event.getSource() == terminalOnly && FieldEditor.VALUE.equals(event.getProperty())) {
+            updateCodeViewOptionsEnabled();
         }
         if (FieldEditor.VALUE.equals(event.getProperty())) {
             for (TimeoutFieldPair pair : timeoutFields) {
@@ -621,6 +712,15 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         // compare a value against itself and never detect the change.
         boolean trackedBefore = store.getBoolean(Constants.PREF_TRACK_SELECTION);
 
+        // Asked BEFORE super.performOk() for the same reason: that call writes the
+        // preference, and writing it is what closes the view (DebugModeSourceProvider).
+        // Declined, nothing on the page is saved and it stays open as it is.
+        if (terminalOnly != null && terminalOnly.getBooleanValue()
+                && !store.getBoolean(Constants.PREF_TERMINAL_ONLY)
+                && TerminalOnlyUi.isCodeViewOpen() && !confirmClosingCodeView()) {
+            return false;
+        }
+
         boolean result = super.performOk();
         if (!result) {
             return result;
@@ -653,6 +753,8 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         }
         // The debug-only UI (Claude IDE Server view + its menu item) reacts to
         // this preference change via DebugModeSourceProvider — no call needed here.
+        // So does "Exclusively use terminal", which hides or restores the Claude Code
+        // view and everything that opens it.
 
         if (!activator.isServerRunning()) {
             return result;

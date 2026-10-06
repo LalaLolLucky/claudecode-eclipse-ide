@@ -249,16 +249,23 @@ function showWorking() {
 function showWorkingFor(t) {
   if (!t || !t.pane || !t.rcConnecting) return;
   if (t === rtab) { showWorking(); return; }
+  appendStaticWorking(t, GERUND_CONNECTING);
+}
+/* An indicator that says `word` and does not morph or cycle: the node showWorking makes,
+   without the timers. For a tab whose indicator must not drive the single set of gerund
+   timers, because another tab's live morph may be running on them. */
+function appendStaticWorking(t, word) {
   sweepWorkingNodes(t.pane);
   const el = document.createElement('div');
   el.className = 'turn working-turn';
   el.innerHTML = '<div class="working"><span class="sb">' + workingGlyphNow() +
-    '</span><span class="gerund">' + escHtml(GERUND_CONNECTING + '...') + CURSOR + '</span></div>';
+    '</span><span class="gerund">' + escHtml(word + '...') + CURSOR + '</span></div>';
   t.pane.appendChild(el);
   // Parked where loadRender looks, so switching to this tab ADOPTS the node
-  // instead of loading a null handle over it and stranding it in the DOM.
-  t._r = t._r || {};
-  t._r.workingEl = el;
+  // instead of loading a null handle over it and stranding it in the DOM. The
+  // render target's own state is the globals, not _r.
+  if (t === rtab) workingEl = el;
+  else { t._r = t._r || {}; t._r.workingEl = el; }
   if (t.pane === (activeTab() && activeTab().pane)) autoScroll();
 }
 function hideWorking() {
@@ -313,6 +320,23 @@ function ensureWorking() {
   // Operates on the render-target tab; don't show a gerund if that tab's own card
   // is pending (it replaces the working indicator).
   if (rtab && rtab.streaming && !workingEl && !rtab.pendingCard) showWorking();
+}
+/* A Remote Control wait takes the indicator down: switching it on pins "Establishing
+   connection" over the gerund, and the wait ends by removing that. A turn that was
+   already running when the wait began is still running when it ends, and nothing else
+   brings its gerund back before the next turn boundary — text streaming in does not.
+
+   The tab in front gets the live gerund (loadRender first, as carddock.js does: the render
+   target is whichever tab spoke last). Any other tab gets a still one: showWorking would
+   clear the gerund timers, which are single globals and may be running the morph of the
+   tab the user is looking at. */
+function resumeWorkingFor(t) {
+  if (!t || !t.pane || !t.streaming || t.pendingCard) return;
+  if (t === activeTab()) { loadRender(t); ensureWorking(); return; }
+  if (t.pane.querySelector('.working')) return;
+  const word = t.compacting ? GERUND_COMPACTING
+      : shuffledGerunds[Math.floor(Math.random() * shuffledGerunds.length)];
+  appendStaticWorking(t, word);
 }
 /* Live token count shown beside the "Thinking…" marker (real output tokens via the
    CLI partial-message stream), removed once thinking finalizes to "Thought for Ns". */

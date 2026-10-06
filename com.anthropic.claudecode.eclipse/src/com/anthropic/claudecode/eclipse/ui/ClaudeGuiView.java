@@ -264,6 +264,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
 
     // --- permission decision bridge (claude --permission-prompt-tool) ---
     private static volatile ClaudeGuiView active;
+
+    /** The view while it exists, in whichever perspective: null once it is disposed. */
+    static ClaudeGuiView liveInstance() {
+        return active;
+    }
     private static final ConcurrentHashMap<String, CompletableFuture<String>> PENDING = new ConcurrentHashMap<>();
     private static volatile boolean allowAllSession = false;
     // --- AskUserQuestion bridge (claude mcp__eclipse__askUserQuestion) ---
@@ -653,6 +658,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                             "You are about to close the last " + kind + " tab, this action will "
                                     + "close the Claude Code view. Do you wish to proceed?",
                             MessageDialog.CONFIRM, new String[] { "Close the view", "Cancel" }, 1);
+                    // The user's own decision: eclipseDialog lists it and never answers it.
+                    dlg.create();
+                    com.anthropic.claudecode.eclipse.tools.EclipseDialogTool.forUserOnly(dlg.getShell());
                     if (dlg.open() != 0) return;
                     org.eclipse.ui.IWorkbenchPartSite site = getSite();
                     if (site != null && site.getPage() != null) site.getPage().hideView(ClaudeGuiView.this);
@@ -693,6 +701,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                                         + "On claude.ai and on your other devices, that session is "
                                         + "left archived. Unarchive it there to carry on from them.",
                                 MessageDialog.CONFIRM, new String[] { "Switch model", "Cancel" }, 1);
+                        // The user's own decision: eclipseDialog lists it and never answers it.
+                        dlg.create();
+                        com.anthropic.claudecode.eclipse.tools.EclipseDialogTool.forUserOnly(dlg.getShell());
                         if (dlg.open() != 0) return;
                     }
                     executeJS("window.onDefaultModelConfirmed && window.onDefaultModelConfirmed('"
@@ -3925,6 +3936,29 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             return;
         }
         view.browser.execute("window.micToggle && window.micToggle()");
+    }
+
+    /**
+     * Carries out one request of the {@code claudeCodeEclipse} tool's {@code claudeCodeView}
+     * module in the page ({@code window.__ccTool}, scripts/claudetool.js) and returns the
+     * page's JSON reply. Null when there is no loaded page to ask. UI thread.
+     */
+    public static String pageTool(String requestJson) {
+        ClaudeGuiView view = active;
+        if (view == null || view.browser == null || view.browser.isDisposed()
+                || !view.pageLoaded) {
+            return null;
+        }
+        try {
+            // The request travels as a JSON string literal, which is a JavaScript one too.
+            Object reply = view.browser.evaluate("return window.__ccTool ? window.__ccTool("
+                    + new com.google.gson.JsonPrimitive(requestJson) + ") : null;");
+            return reply instanceof String s ? s : null;
+        } catch (Exception e) {
+            // evaluate() throws while the page is mid-navigation.
+            ClaudeCodeView.debug("[claudeCodeEclipse] pageTool failed: " + e);
+            return null;
+        }
     }
 
     // ── Find-in-conversation key binding (Ctrl+F by default, rebindable) ────────────

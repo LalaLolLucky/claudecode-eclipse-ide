@@ -2,6 +2,7 @@ mod bridge;
 mod chat;
 mod chrome;
 mod console;
+mod dialogs;
 mod freebsd_guide;
 mod launch;
 mod lock_file;
@@ -1427,6 +1428,23 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_setLiveA
     finish_export(&mut env, "setLiveAutoMode", result, ())
 }
 
+/// Whether the CLI that `claude_cmd` runs knows `flag`, for the Claude Terminal's launch:
+/// the check the chat's own launch makes before passing a flag an older CLI would stop on.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_cliSupportsFlag(
+    mut env: JNIEnv,
+    _class: JClass,
+    claude_cmd: JString,
+    flag: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let claude_cmd: String = jstr(&mut env, &claude_cmd);
+        let flag: String = jstr(&mut env, &flag);
+        launch::cli_supports_flag(&claude_cmd, &flag) as jboolean
+    }));
+    finish_export(&mut env, "cliSupportsFlag", result, jni::sys::JNI_FALSE)
+}
+
 // ===========================================================================
 // Login-shell environment JNI entry point
 // ===========================================================================
@@ -1720,6 +1738,44 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sttNoCap
         u8::from(stt::no_capture_device())
     }));
     finish_export(&mut env, "sttNoCaptureDevice", result, jni::sys::JNI_FALSE)
+}
+
+// ===========================================================================
+// Dialog JNI entry points
+// ===========================================================================
+
+/// The dialogs Java cannot see as SWT widgets, as `{"dialogs":[…]}`: native ones in
+/// this Eclipse and, unless `in_process_only`, those of other Eclipse instances. See
+/// `dialogs`. **Blocking** — it asks other windows for their text. Off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_dialogsList(
+    mut env: JNIEnv,
+    _class: JClass,
+    in_process_only: jboolean,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let json = dialogs::list_json(in_process_only != 0);
+        jout(&mut env, json, r#"{"dialogs":[]}"#)
+    }));
+    finish_export(&mut env, "dialogsList", result, std::ptr::null_mut())
+}
+
+/// Presses the button labelled `label` in the dialog `dialogsList` reported as `id`.
+/// Returns `{"pressed":…,"dialog":…}` or `{"error":…}`. **Blocking**, as above.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_dialogsPress(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+    label: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id = jstr(&mut env, &id);
+        let label = jstr(&mut env, &label);
+        let json = dialogs::press_json(&id, &label);
+        jout(&mut env, json, r#"{"error":"internal"}"#)
+    }));
+    finish_export(&mut env, "dialogsPress", result, std::ptr::null_mut())
 }
 
 // ===========================================================================

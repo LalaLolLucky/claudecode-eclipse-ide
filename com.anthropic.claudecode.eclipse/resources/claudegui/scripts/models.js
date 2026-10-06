@@ -21,7 +21,7 @@ window.onAvailableModels = function(json) {
   applyCliModelLimits();   // this list is the ACCOUNT's; clamp it to the binary's
   // Re-add a custom --model from plugin prefs if it isn't already offered.
   if (customModel && !MODELS.some(m => m.id === customModel)) {
-    MODELS.splice(1, 0, { id: customModel, label: prettyModelId(customModel), desc: 'From your plugin settings' });
+    MODELS.splice(1, 0, { id: customModel, label: customModelLabel(customModel), desc: 'From your plugin settings' });
   }
   // If the current selection vanished, fall back to Default (keep the tab in sync).
   // ALIASES ARE EXEMPT. This push is asynchronous (ClaudeGuiView#pushAvailableModels
@@ -46,7 +46,7 @@ function initModelConfig() {
   try { const c = JSON.parse(window._modelConfig ? window._modelConfig() : '{}'); customModel = (c && c.customModel) || ''; } catch (e) {}
   if (customModel) {
     // surface a --model from the plugin's preference args, selected by default
-    MODELS.splice(1, 0, { id: customModel, label: prettyModelId(customModel), desc: 'From your plugin settings' });
+    MODELS.splice(1, 0, { id: customModel, label: customModelLabel(customModel), desc: 'From your plugin settings' });
     curModel = customModel;
   }
   updateModelLabel();
@@ -59,7 +59,7 @@ window.onCustomModel = function(id) {
   if (!id || customModel === id) return;
   customModel = id;
   if (!MODELS.some(m => m.id === id))
-    MODELS.splice(1, 0, { id: id, label: prettyModelId(id), desc: 'From your plugin settings' });
+    MODELS.splice(1, 0, { id: id, label: customModelLabel(id), desc: 'From your plugin settings' });
   tabs.forEach(t => { if (t && !t.model) t.model = id; });
   if (!curModel) curModel = id;
   updateModelLabel();
@@ -78,6 +78,12 @@ function prettyModelId(id) {
   const p = s.split('-'); if (!p.length || !p[0]) return id;
   const fam = p[0].charAt(0).toUpperCase() + p[0].slice(1);
   return p.length > 1 ? fam + ' ' + p.slice(1).join('.') : fam;
+}
+/* The chooser's label for the model set in the plug-in's preferences. prettyModelId drops
+   a [1m] suffix, which would leave a 1M-context model reading like the plain one, so it is
+   said here the way the catalog's own 1M entry says it. */
+function customModelLabel(id) {
+  return prettyModelId(id) + (isOneMillion(id) ? ' (1M context)' : '');
 }
 function updateModelLabel() {
   const el = document.getElementById('cur-model');
@@ -205,7 +211,8 @@ window.onSettingsChanged = function (tabId, json) {
     // The CLI names the concrete model; show it as the entry the chooser has, so an
     // alias stays an alias instead of turning into a bare id.
     const entry = MODELS.find(m => m.id && (m.id === d.model
-      || normalizeModelId(m.fullId || m.id) === normalizeModelId(d.model)));
+      || (isOneMillion(m.id) === isOneMillion(d.model)
+          && normalizeModelId(m.fullId || m.id) === normalizeModelId(d.model))));
     const id = entry ? entry.id : d.model;
     if (t.model !== id) {
       t.model = id;
@@ -230,6 +237,10 @@ window.onSettingsChanged = function (tabId, json) {
 function normalizeModelId(id) {
   return String(id || '').replace(/\[1m\]$/, '').replace(/^claude-/, '').replace(/-\d{8}$/, '');
 }
+/* normalizeModelId drops [1m], and the catalog's "sonnet" and "sonnet[1m]" share one
+   fullId, so matching on it alone cannot tell them apart: a 1M run would land on the
+   plain entry listed first. Callers that pick an ENTRY compare this flag as well. */
+function isOneMillion(id) { return /\[1m\]$/.test(String(id || '')); }
 
 /* ---- what the INSTALLED binary can actually run ----
    {opus:'claude-opus-4-8', …}, read from the model ids compiled into claude.exe

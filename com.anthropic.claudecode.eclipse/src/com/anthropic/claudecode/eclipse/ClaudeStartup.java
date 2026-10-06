@@ -17,6 +17,10 @@ public class ClaudeStartup implements IStartup {
         // so this is unconditional (initialize() is idempotent: a no-op if already running).
         activator.initialize();
 
+        // Which launch flags the installed CLI knows, worked out before any Claude
+        // Terminal session needs to know (its launch runs on the UI thread).
+        ClaudeCliView.warmLaunchChecks();
+
         // Optionally open a fresh Claude Terminal tab on launch (PREF_AUTO_START, opt-in).
         if (activator.getPreferenceStore().getBoolean(Constants.PREF_AUTO_START)) {
             UiHelper.asyncExec(this::openClaudeTerminal);

@@ -809,6 +809,119 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         return token;
     }
 
+    /**
+     * The arguments the preferences add to a session's command line, for the command the
+     * session is about to run. Empty when none of them applies, which leaves the launch
+     * exactly as it was before those preferences reached the Terminal.
+     */
+    private static List<String> preferenceArgs(String claudeCmd, List<String> userArgs, int port) {
+        try {
+            IPreferenceStore prefs = Activator.getDefault().getPreferenceStore();
+            TerminalLaunchArgs.Options options = new TerminalLaunchArgs.Options(
+                    prefs.getBoolean(Constants.PREF_TERMINAL_MCP_TOOLS),
+                    prefs.getBoolean(Constants.PREF_LIVE_AUTO_MODE),
+                    prefs.getBoolean(Constants.PREF_REMOTE_CONTROL_STARTUP));
+            if (!options.mcpTools() && !options.bypass() && !options.remoteControl()) return List.of();
+
+            long started = System.nanoTime();
+            List<String> added = TerminalLaunchArgs.build(userArgs, options,
+                    CliFlagSupport.knownTo(claudeCmd, TerminalLaunchArgs.PROBED),
+                    options.mcpTools() ? writeMcpConfig(port) : null);
+            ClaudeCodeView.debug("[terminal-launch] " + options + " adds " + added + " (worked out in "
+                    + (System.nanoTime() - started) / 1_000_000 + " ms)");
+            return added;
+        } catch (RuntimeException e) {
+            // Whatever went wrong, a session without the extras beats no session.
+            Activator.logError("Failed to work out the Claude Terminal's extra arguments", e);
+            return List.of();
+        }
+    }
+
+    /**
+     * Writes the file that names the plug-in's server for {@code --mcp-config} and returns
+     * its path, or null when it cannot be written. A file, not the JSON itself, on every
+     * platform: the argument goes through the terminal connector's tokenizer and, on
+     * Windows, usually an npm {@code .cmd} shim, neither of which hands a quoted JSON
+     * string on intact (the reason the Claude Code view's launch does the same there —
+     * see mcp_config_value in chat.rs). Named by port, so a session started before a
+     * server restart keeps the file it was started with.
+     */
+    private static String writeMcpConfig(int port) {
+        try {
+            File dir = Activator.getDefault().getStateLocation().append("terminal").toFile();
+            dir.mkdirs();
+            File file = new File(dir, "mcp-" + port + ".json");
+            Files.writeString(file.toPath(), TerminalLaunchArgs.mcpConfigJson(port), StandardCharsets.UTF_8);
+            file.deleteOnExit(); // best-effort cleanup; rewritten before use on every launch
+            return file.getAbsolutePath();
+        } catch (IOException | RuntimeException e) {
+            Activator.logError("Failed to write the Claude Terminal's MCP config file", e);
+            return null;
+        }
+    }
+
+    /** Whether the installed CLI's flags have been read once in this Eclipse. */
+    private static volatile boolean launchChecksDone;
+
+    /**
+     * Finds out, off the UI thread, which of the flags above the installed CLI knows.
+     * The answer is read from the CLI's program, which takes about a second the first
+     * time; done here at startup, a session's launch — which runs on the UI thread —
+     * finds it already worked out.
+     */
+    public static void warmLaunchChecks() {
+        Thread warm = new Thread(ClaudeCliView::runLaunchChecks, "claude-terminal-flags");
+        warm.setDaemon(true);
+        warm.start();
+    }
+
+    /**
+     * Runs {@code launch} on the UI thread once the installed CLI's flags have been read.
+     * Straight away when they have been, which is every session but the first one or two
+     * of an Eclipse run: a Claude Terminal left open is restored, and launches, before the
+     * plug-in's startup has had the chance to do the reading ahead.
+     */
+    private static void afterLaunchChecks(Display display, Runnable launch) {
+        if (launchChecksDone) {
+            display.asyncExec(launch);
+            return;
+        }
+        Thread wait = new Thread(() -> {
+            runLaunchChecks();
+            try {
+                display.asyncExec(launch);
+            } catch (RuntimeException displayGone) {
+                // Eclipse is closing; there is nothing left to launch into.
+            }
+        }, "claude-terminal-flags");
+        wait.setDaemon(true);
+        wait.start();
+    }
+
+    /** One at a time: a second caller waits for the first and finds the work done. */
+    private static synchronized void runLaunchChecks() {
+        if (launchChecksDone) return;
+        try {
+            String claudeCmd = Activator.getDefault().getPreferenceStore().getString(Constants.PREF_CLAUDE_CMD);
+            if (claudeCmd == null || claudeCmd.isBlank()) claudeCmd = Constants.DEFAULT_CLAUDE_CMD;
+            String[] shellEnv = null;
+            try {
+                shellEnv = NativeCore.shellEnvInject();
+            } catch (Throwable ignored) {
+                // Same as launch(): resolve against the JVM's own PATH.
+            }
+            claudeCmd = IS_WINDOWS
+                    ? resolveExecutableWindows(claudeCmd, pathFrom(shellEnv))
+                    : resolveExecutable(claudeCmd, pathFrom(shellEnv));
+            CliFlagSupport.knownTo(claudeCmd, TerminalLaunchArgs.PROBED);
+        } catch (Throwable t) {
+            ClaudeCodeView.debug("[terminal-launch] could not check the CLI's flags ahead of time: " + t);
+        } finally {
+            // Done even when it failed: the launch then asks for itself, as it would have.
+            launchChecksDone = true;
+        }
+    }
+
     private static String pathFrom(String[] shellEnv) {
         if (shellEnv != null) {
             for (String e : shellEnv) {
@@ -1007,8 +1120,10 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             this.tabItem = tabItem;
             this.content = content;
             this.customCwd = cwd;
-            // Defer launch so the widget has its final layout size.
-            Display.getCurrent().asyncExec(() -> {
+            // Defer launch so the widget has its final layout size — and, the first time,
+            // until it is known which launch flags the installed CLI takes, which is read
+            // from its program on another thread (see afterLaunchChecks).
+            afterLaunchChecks(Display.getCurrent(), () -> {
                 if (!disposed && !viewDisposed) launch(extraArgs);
             });
         }
@@ -1076,10 +1191,17 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
 
             String image = quoteArg(claudeCmd);
             List<String> argTokens = new ArrayList<>();
+            List<String> userArgs = new ArrayList<>();
             if (claudeArgs != null && !claudeArgs.isBlank()) {
-                for (String arg : claudeArgs.trim().split("\\s+")) argTokens.add(quoteArg(arg));
+                for (String arg : claudeArgs.trim().split("\\s+")) userArgs.add(arg);
             }
-            for (String a : extraArgs) argTokens.add(quoteArg(a));
+            for (String a : extraArgs) userArgs.add(a);
+            for (String a : userArgs) argTokens.add(quoteArg(a));
+
+            // What the preferences add: the plug-in's tools, bypass permissions mode and
+            // Remote Control on startup. After the user's own arguments, and only what the
+            // installed CLI is known to take — see TerminalLaunchArgs.
+            for (String a : preferenceArgs(claudeCmd, userArgs, port)) argTokens.add(quoteArg(a));
 
             // Writes the shared settings file — status line when enabled, spinner verbs
             // always — and appends --settings <file> to `argTokens`, injecting the per-tab
@@ -1205,7 +1327,8 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             int refresh = prefs.getInt(Constants.PREF_STATUSLINE_REFRESH_SECONDS);
             if (refresh < 1) refresh = 1;
 
-            File settingsFile = writeSharedSettings(command, refresh, spinnerVerbs);
+            File settingsFile = writeSharedSettings(command, refresh, spinnerVerbs,
+                    prefs.getBoolean(Constants.PREF_THINKING_DEFAULT));
             if (settingsFile == null) return;
 
             // Mutate the lists only after the fallible work succeeded, so a partial
@@ -1274,7 +1397,8 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         /**
          * (Over)writes the single shared {@code statusline/settings.json} in the bundle state
          * location and returns it. The content depends only on {@code command},
-         * {@code refreshSeconds} and {@code spinnerVerbs} — all install-/preference-scoped and
+         * {@code refreshSeconds}, {@code spinnerVerbs} and {@code thinkingByDefault} (the
+         * "Enable Thinking by default" preference) — all install-/preference-scoped and
          * identical across tabs (the verbs additionally fold in the user's own settings.json,
          * which is likewise per-user) — so every launch rewrites byte-identical bytes except
          * when one of those changed, which is exactly how such a change takes effect on the
@@ -1288,7 +1412,8 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
          * defers it via {@code Display.asyncExec}), so writes never overlap. Returns
          * {@code null} on I/O failure (caller then launches without either feature).
          */
-        private File writeSharedSettings(String command, int refreshSeconds, JsonObject spinnerVerbs) {
+        private File writeSharedSettings(String command, int refreshSeconds, JsonObject spinnerVerbs,
+                boolean thinkingByDefault) {
             try {
                 File dir = Activator.getDefault().getStateLocation().append("statusline").toFile();
                 dir.mkdirs();
@@ -1304,6 +1429,7 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
                     root.add("statusLine", statusLine);
                 }
                 if (spinnerVerbs != null) root.add("spinnerVerbs", spinnerVerbs);
+                TerminalLaunchArgs.applyThinking(root, thinkingByDefault);
 
                 // disableHtmlEscaping so <, >, &, =, ' survive verbatim (paths/FQN may contain them).
                 String json = new GsonBuilder().disableHtmlEscaping().create().toJson(root);

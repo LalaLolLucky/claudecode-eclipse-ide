@@ -869,6 +869,16 @@ public final class NativeCore {
      */
     public static native void setLiveAutoMode(boolean enabled);
 
+    /**
+     * Whether the CLI that {@code claudeCmd} runs knows {@code flag}, read from the
+     * program itself — the check the chat's own launch makes before passing a flag that
+     * came in with a later CLI, since an unknown one ends the CLI at startup. False when
+     * the program cannot be found or read. A native library from before this entry point
+     * throws {@link UnsatisfiedLinkError}; see {@code ui.CliFlagSupport}, which asks here
+     * first and reads the program itself otherwise.
+     */
+    public static native boolean cliSupportsFlag(String claudeCmd, String flag);
+
     // ---- Dictation -------------------------------------------------------
 
     /**
@@ -942,4 +952,28 @@ public final class NativeCore {
      * false on other platforms.
      */
     public static native boolean sttNoCaptureDevice();
+
+    // ---- Dialogs outside SWT's reach ------------------------------------
+
+    /**
+     * The dialogs Java cannot see as SWT widgets: native ones raised inside this Eclipse
+     * (a message box, a file chooser) and, unless {@code inProcessOnly}, the dialogs of
+     * other Eclipse instances. Only Eclipse and the Java programs it started are ever
+     * looked at.
+     *
+     * <p><b>Blocking</b> — it asks other windows for their text. Off the UI thread.
+     *
+     * @return {@code {"dialogs":[{id,title,text,buttons,process,external,blocked}]}}, with
+     *         {@code "unavailable"} saying why when the platform refused, and {@code "log"}
+     *         carrying diagnostics while debug mode is on
+     */
+    public static native String dialogsList(boolean inProcessOnly);
+
+    /**
+     * Presses the button labelled {@code label}, in full, in the dialog
+     * {@link #dialogsList} reported as {@code id}. <b>Blocking</b>, as above.
+     *
+     * @return {@code {"pressed":…,"dialog":…}} or {@code {"error":…}}
+     */
+    public static native String dialogsPress(String id, String label);
 }

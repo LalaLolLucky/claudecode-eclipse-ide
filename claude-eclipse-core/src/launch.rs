@@ -185,6 +185,10 @@ pub fn claude_program_file(claude_cmd: &str) -> Option<std::path::PathBuf> {
 /// program cannot be found or read, which keeps the older behaviour rather than
 /// risking that abort. Cached per program file (path, size, mtime): the first call
 /// reads through the binary, later ones only stat it.
+///
+/// The flag has to stand as an option of its own ([`names_flag`]): the Claude Terminal
+/// asks about `--remote-control`, and a CLI may name
+/// `--remote-control-session-name-prefix` without having it.
 pub fn cli_supports_flag(claude_cmd: &str, flag: &str) -> bool {
     type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>, String);
     static CACHE: std::sync::Mutex<Vec<(Key, bool)>> = std::sync::Mutex::new(Vec::new());
@@ -199,15 +203,47 @@ pub fn cli_supports_flag(claude_cmd: &str, flag: &str) -> bool {
         return *found;
     }
     let found = std::fs::File::open(&key.0)
-        .ok()
-        .and_then(|mut f| crate::chrome::find_in_reader(&mut f, flag.as_bytes(), SCAN_CHUNK))
-        .is_some();
+        .map(|mut f| names_flag(&mut f, flag.as_bytes(), SCAN_CHUNK))
+        .unwrap_or(false);
     // One CLI at a time in practice; a handful of entries is the whole cache.
     if cache.len() > 8 {
         cache.clear();
     }
     cache.push((key, found));
     found
+}
+
+/// Whether `program` names `flag` as an option of its own. An occurrence counts only
+/// where the byte after it cannot continue it into a longer option name, so a flag is
+/// not found inside a longer one that starts the same; the search then goes on from
+/// just past that occurrence. Finding the occurrences is [`crate::chrome::find_in_reader`]'s
+/// work, read `chunk` bytes at a time.
+fn names_flag(program: &mut (impl std::io::Read + std::io::Seek), flag: &[u8], chunk: usize) -> bool {
+    use std::io::SeekFrom;
+
+    let mut from = 0u64;
+    loop {
+        if program.seek(SeekFrom::Start(from)).is_err() {
+            return false;
+        }
+        let Some(found) = crate::chrome::find_in_reader(program, flag, chunk) else { return false };
+        let at = from + found;
+        let mut next = [0u8; 1];
+        if program.seek(SeekFrom::Start(at + flag.len() as u64)).is_err() {
+            return false;
+        }
+        match program.read(&mut next) {
+            Ok(0) => return true, // the program ends with it
+            Ok(_) if !continues_an_option_name(next[0]) => return true,
+            Ok(_) => from = at + 1,
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Whether `byte`, straight after a flag, would make it part of a longer option name.
+fn continues_an_option_name(byte: u8) -> bool {
+    byte == b'-' || byte.is_ascii_alphanumeric()
 }
 
 /// Ends a process started with [`claude_command`] together with everything it
@@ -737,5 +773,114 @@ node C:/tools/cli.js %*
         assert_eq!(args, ["--mcp-config", json.as_str()]);
         // A batch file that isn't npm's still goes through cmd.exe.
         assert!(unreadable.get_program().to_string_lossy().to_ascii_lowercase().ends_with("cmd.exe"));
+    }
+}
+
+/// `cli_supports_flag` on every platform: the Claude Terminal asks it too, through the
+/// `cliSupportsFlag` export, before passing a flag an older CLI would stop on.
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    /// A stand-in for the CLI's program: a plain file, not a `#!` script, so it is the
+    /// one that gets read.
+    fn program_with(dir: &std::path::Path, text: &str) -> String {
+        let path = dir.join(if cfg!(windows) { "claude-flag-probe.exe" } else { "claude-flag-probe" });
+        std::fs::write(&path, text).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_flag_the_program_names_is_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = program_with(dir.path(), "\0junk \"--probe-flag-zz9 <value>\" more\0");
+
+        assert!(cli_supports_flag(&program, "--probe-flag-zz9"));
+    }
+
+    #[test]
+    fn a_flag_the_program_does_not_name_is_not_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = program_with(dir.path(), "an older cli, with --print and --model only");
+
+        assert!(!cli_supports_flag(&program, "--probe-flag-zz9"));
+    }
+
+    #[test]
+    fn a_program_that_cannot_be_found_supports_nothing() {
+        // The search moves on to a `claude` installed on this machine, if there is one,
+        // and no real CLI names this flag either.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-claude").to_string_lossy().into_owned();
+
+        assert!(!cli_supports_flag(&missing, "--probe-flag-zz9"));
+    }
+
+    #[test]
+    fn a_longer_flag_that_only_starts_the_same_is_not_the_flag() {
+        // An older CLI can name the longer option without having the shorter one, and
+        // passing it the shorter one would stop it at startup.
+        let dir = tempfile::tempdir().unwrap();
+        let program = program_with(dir.path(), "x \"--probe-flag-zz9-with-more <value>\" y");
+
+        assert!(!cli_supports_flag(&program, "--probe-flag-zz9"));
+    }
+
+    #[test]
+    fn the_flag_is_found_beside_a_longer_one_that_starts_the_same() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = program_with(dir.path(), "--probe-flag-zz9-with-more,--probe-flag-zz9 [name]");
+
+        assert!(cli_supports_flag(&program, "--probe-flag-zz9"));
+    }
+
+    #[test]
+    fn a_flag_at_the_very_end_of_the_program_is_found() {
+        assert!(names_flag(&mut std::io::Cursor::new(&b"xx --probe-flag"[..]), b"--probe-flag", 4096));
+    }
+
+    #[test]
+    fn a_flag_lying_across_two_reads_is_still_found() {
+        let program = b"0123456789--probe-flag tail";
+
+        // Every chunk size puts the boundary somewhere else inside the flag.
+        for chunk in 1..=program.len() {
+            assert!(names_flag(&mut std::io::Cursor::new(&program[..]), b"--probe-flag", chunk), "chunk {chunk}");
+        }
+    }
+
+    #[test]
+    fn a_longer_flag_lying_across_two_reads_is_still_not_the_flag() {
+        let program = b"0123456789--probe-flag-with-more tail";
+
+        for chunk in 1..=program.len() {
+            assert!(!names_flag(&mut std::io::Cursor::new(&program[..]), b"--probe-flag", chunk), "chunk {chunk}");
+        }
+    }
+
+    #[test]
+    fn a_digit_or_a_letter_after_the_flag_makes_it_another_option() {
+        let names = |program: &[u8]| names_flag(&mut std::io::Cursor::new(program), b"--probe-flag", 4096);
+
+        assert!(!names(b"--probe-flag2 "));
+        assert!(!names(b"--probe-flagged "));
+        assert!(names(b"--probe-flag="));
+    }
+
+    #[test]
+    fn the_flag_is_found_after_several_longer_ones() {
+        let program = b"--probe-flag-a --probe-flag-b --probe-flagged --probe-flag";
+
+        for chunk in 1..=program.len() {
+            assert!(names_flag(&mut std::io::Cursor::new(&program[..]), b"--probe-flag", chunk), "chunk {chunk}");
+        }
+    }
+
+    #[test]
+    fn an_empty_flag_is_never_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = program_with(dir.path(), "anything at all");
+
+        assert!(!cli_supports_flag(&program, ""));
     }
 }

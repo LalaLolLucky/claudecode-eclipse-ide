@@ -9,9 +9,13 @@ import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.tools.AcceptDiffTool;
 import com.anthropic.claudecode.eclipse.tools.BuildTool;
 import com.anthropic.claudecode.eclipse.tools.CheckDocumentDirtyTool;
+import com.anthropic.claudecode.eclipse.tools.ClaudeCodeEclipseTool;
 import com.anthropic.claudecode.eclipse.tools.CleanTool;
 import com.anthropic.claudecode.eclipse.tools.CloseAllDiffTabsTool;
 import com.anthropic.claudecode.eclipse.tools.DebugTool;
+import com.anthropic.claudecode.eclipse.tools.EclipseDialogTool;
+import com.anthropic.claudecode.eclipse.tools.EclipseOpenPerspectiveTool;
+import com.anthropic.claudecode.eclipse.tools.EclipseShowViewTool;
 import com.anthropic.claudecode.eclipse.tools.ErrorLogTool;
 import com.anthropic.claudecode.eclipse.tools.FormatTool;
 import com.anthropic.claudecode.eclipse.tools.GetCurrentSelectionTool;
@@ -58,8 +62,10 @@ public class McpToolRegistry {
         // Unconditional: BuildTool needs only org.eclipse.core.resources, RunAsTool only
         // org.eclipse.debug.{core,ui}, LaunchesTool those plus org.eclipse.ui.console and
         // org.eclipse.jface.text, ErrorLogTool only org.eclipse.core.runtime, DebugTool and
-        // FormatTool the platform debug model and editor bundles, and RefactorResourceTool
-        // org.eclipse.ltk.core.refactoring — all hard Require-Bundles in the base Platform.
+        // FormatTool the platform debug model and editor bundles, RefactorResourceTool
+        // org.eclipse.ltk.core.refactoring, and EclipseShowViewTool,
+        // EclipseOpenPerspectiveTool and EclipseDialogTool only org.eclipse.ui — all hard Require-Bundles in the base
+        // Platform.
         // RunAsTool reaches the individual launchers (PDE's "Eclipse Application", JDT's "Java
         // Application", …) through the extension registry, and DebugTool each language's
         // debugger through the debug model's interfaces, never an import — so a missing
@@ -73,6 +79,10 @@ public class McpToolRegistry {
         register(new DebugTool());
         register(new FormatTool());
         register(new RefactorResourceTool());
+        register(new EclipseShowViewTool());
+        register(new EclipseOpenPerspectiveTool());
+        register(new EclipseDialogTool());
+        register(new ClaudeCodeEclipseTool());
         register(new com.anthropic.claudecode.eclipse.tools.ApprovalPromptTool());
         register(new com.anthropic.claudecode.eclipse.tools.AskUserQuestionTool());
         registerJdtToolsIfAvailable();
