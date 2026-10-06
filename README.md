@@ -150,6 +150,7 @@ Claude has access to the following MCP tools, which it invokes automatically:
 | `eclipseShowView` | Open or close a view such as Problems, Console or Git Staging, or list the views this Eclipse has |
 | `eclipseOpenPerspective` | Switch to or close a perspective such as Java, Debug or Git, or list the perspectives this Eclipse has |
 | `eclipseDialog` | List the dialogs that are open, in this Eclipse or another Eclipse instance, and press a button in one by its label |
+| `claudeCodeEclipse` | Drive the plugin's own views. In the Claude Code view: list, open, set up, prompt and close conversation tabs — under any folder already trusted — run slash commands, reopen past conversations and switch Remote Control. In the Claude Terminal: open and close tabs, send a prompt or a slash command, set the model and effort, and switch Remote Control |
 | `findReferences` † | Find every reference to a Java type or member |
 | `getSymbolInfo` † | Resolve the Java symbol at a position — kind, declaring type, signature |
 | `getTypeHierarchy` † | Show a Java type's supertypes and subtypes |
@@ -160,25 +161,43 @@ Claude has access to the following MCP tools, which it invokes automatically:
 
 † Requires the Java Development Tools (JDT). The plugin never hard-depends on JDT — these tools are simply absent from the tool list when it isn't installed, and everything else works without it.
 
+In the Claude Terminal these tools are available while **Enable MCP tools integration** is ticked in the preferences, which it is by default.
+
 ### Configuration
 
 Go to **Window → Preferences → Claude Code** to configure:
 
+**General configuration** — for both views:
+
 | Setting | Default | Description |
 |---|---|---|
-| Open new Claude Terminal automatically on Eclipse launch | Off | Opens a Claude Terminal tab when Eclipse starts |
 | Track editor selection in real-time | On | Continuously track cursor/selection for Claude context |
+| Scroll Lock enabled by default | Off | New Claude Code and Claude Terminal tabs start with Scroll Lock on |
 | Claude command | `claude` | Path to the Claude CLI executable, or to a `.bat`/`.cmd`/`.sh` wrapper around it |
 | Arguments | *(empty)* | Additional CLI arguments (e.g., `--model claude-opus-4-7-20260418`) |
 | Port range (min/max) | 10000–65535 | Port range for the internal HTTP+SSE server |
-| Enable remote control on startup, in the Claude Code view | Off | Turns on Remote Control for each conversation as it starts |
+| Enable remote control on startup | Off | Turns on Remote Control for each conversation as it starts |
 | Enable Thinking by default | On | New conversations start with extended thinking on |
-| Allow bypass permissions mode | On | Lists Bypass permissions in the permission-mode picker. Recommended only for sandboxes with no internet access |
+| Allow bypass permissions mode | Off | Makes Bypass permissions available as a permission mode. Recommended only for sandboxes with no internet access |
+| Exclusively use terminal | Off | Launches Claude in the Claude Terminal instead of the Claude Code view, which is closed and hidden along with its commands |
+
+**Claude Terminal view configuration:**
+
+| Setting | Default | Description |
+|---|---|---|
+| Open new Claude Terminal automatically on Eclipse launch | Off | Opens a Claude Terminal tab when Eclipse starts |
+| Enable MCP tools integration | On | Gives Claude in the Claude Terminal the plugin's MCP tools — see [What Claude Can Do in Eclipse](#what-claude-can-do-in-eclipse) |
+| Persistent vertical scrollbar | On | Shown only on desktops with auto-hiding (overlay) scrollbars: keeps the Claude Terminal's scrollbar visible |
+
+**Claude Code view configuration** — greyed out while **Exclusively use terminal** is ticked:
+
+| Setting | Default | Description |
+|---|---|---|
 | Enable Speech-to-text (STT) [Experimental] | On | Dictation in the Claude Code view |
 | Enable Speech-to-text (STT) for Mac [Experimental] | Off | macOS only: dictation there is opt-in |
-| Scroll Lock enabled by default | Off | New Claude Code and Claude Terminal tabs start with Scroll Lock on |
-| Smart Scroll Lock | Off | In the Claude Code view, still jump to the bottom for your own actions while Scroll Lock is on |
-| Persistent vertical scrollbar | On | Shown only on desktops with auto-hiding (overlay) scrollbars: keeps the Claude Terminal's scrollbar visible |
+| Smart Scroll Lock | Off | Still jump to the bottom for your own actions while Scroll Lock is on |
+| Show a timestamp above your own messages | Off | A small local-time line above each message you sent, in live conversations and in history loaded from disk |
+| Hide the root directories row | Off | Removes the working-folder picker, its collapsed stand-in and its toolbar toggle — for anyone who only ever works in one folder |
 
 The Claude Terminal's colors and font are under **Colors and Fonts** instead — see the notes under [Getting Started](#getting-started).
 
@@ -202,12 +221,10 @@ The Claude Terminal's colors and font are under **Colors and Fonts** instead —
 
 **Decision card timeouts** — how long an unanswered card waits before Claude Code assumes an answer and continues. Set independently for **Permission approval**, **Ask-user question** and **Diff review**; each is Default (30 minutes), Never, or a custom number of seconds.
 
-**Miscellaneous Configuration** — options for the Claude Code view, plus the working-indicator verbs both it and the Terminal cycle through:
+**Miscellaneous Configuration** — the working-indicator verbs both views cycle through, and debug mode:
 
 | Setting | Default | Description |
 |---|---|---|
-| Show a timestamp above your own messages | Off | A small local-time line above each message you sent, in live conversations and in history loaded from disk |
-| Hide the root directories row | Off | Removes the working-folder picker, its collapsed stand-in and its toolbar toggle — for anyone who only ever works in one folder |
 | Working-indicator verb categories | *(varies)* | *deprecated*, *expansion pack one*, *expansion pack two*, *dank*, *vibecoder*, and **Use custom spinner verbs** — see [Custom Working-Indicator Verbs](#custom-working-indicator-verbs) |
 | Debug mode | Off | Shows the Claude IDE Server view, where the plugin writes diagnostic lines |
 

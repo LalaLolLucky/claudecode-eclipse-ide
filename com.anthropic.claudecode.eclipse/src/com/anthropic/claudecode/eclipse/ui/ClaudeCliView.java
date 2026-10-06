@@ -158,6 +158,17 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
     private int fgR, fgG, fgB;
     private String colorFgBgEnvVal;
 
+    /** How long the claudeCodeEclipse tool leaves the terminal program between two things it
+     *  types into a tab: it reads keys as they come, and a line typed while it is still drawing
+     *  the answer to the last one can land in that answer instead of at the prompt. */
+    private static final int TYPING_PAUSE_MS = 700;
+    /** How long it gives /remote-control to put its menu up before answering it. */
+    private static final int MENU_PAUSE_MS = 1500;
+
+    /** Something the tool types into a tab: the text, then Enter, then {@code then} if there is
+     *  one, then a pause before whatever it types next. No text is a bare Enter. */
+    private record Typed(String text, int pauseMs, Runnable then) {}
+
     /** The view while it exists, in whichever perspective it is open: a page finds only the
      *  views of the perspective in front. Null once it is disposed. */
     private static volatile ClaudeCliView live;
@@ -794,7 +805,8 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         for (CTabItem item : view.tabFolder.getItems()) {
             if (item.getData() instanceof TerminalSession session) {
                 tabs.add(new TerminalTab(session.toolId, item.getText(), item == front,
-                        session.wasConnected, session.terminatedShown));
+                        session.wasConnected, session.terminatedShown,
+                        session.remoteControlLeaving ? "disconnecting" : session.remoteControlOn ? "on" : "off"));
             }
         }
         return tabs;
@@ -828,14 +840,35 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
     /** Types {@code text} into the tab with that id and presses Enter. False when there is no
      *  such tab, or nothing running in it to take the text. */
     public static boolean toolSubmit(String tabId, String text) {
+        CTabItem item = toolTab(tabId);
+        return item != null && ((TerminalSession) item.getData()).submit(text);
+    }
+
+    /** Switches Remote Control in the tab with that id, by what is typed there to switch it.
+     *  False when there is no such tab, or it cannot take the keys now. */
+    public static boolean toolRemoteControl(String tabId, boolean on) {
+        CTabItem item = toolTab(tabId);
+        return item != null && ((TerminalSession) item.getData()).switchRemoteControl(on);
+    }
+
+    /** Closes the tab with that id, ending Claude in it, as its close button does. False when
+     *  there is no such tab. */
+    public static boolean toolClose(String tabId) {
+        CTabItem item = toolTab(tabId);
+        if (item == null) return false;
+        ((TerminalSession) item.getData()).dispose();
+        item.dispose();
+        return true;
+    }
+
+    /** The tab the tool knows by that id, or null. */
+    private static CTabItem toolTab(String tabId) {
         ClaudeCliView view = openView();
-        if (view == null || view.tabFolder == null || view.tabFolder.isDisposed()) return false;
+        if (view == null || view.tabFolder == null || view.tabFolder.isDisposed()) return null;
         for (CTabItem item : view.tabFolder.getItems()) {
-            if (item.getData() instanceof TerminalSession session && session.toolId.equals(tabId)) {
-                return session.submit(text);
-            }
+            if (item.getData() instanceof TerminalSession session && session.toolId.equals(tabId)) return item;
         }
-        return false;
+        return null;
     }
 
     @Override
@@ -1123,6 +1156,15 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         /** Names this tab to the claudeCodeEclipse tool. Not the routing token above, which
          *  goes to the CLI's status line and is nobody else's to see. */
         private final String toolId = "term" + (++toolTabSeq);
+        /** What the tool takes this tab's Remote Control to be. Claude does not report it to
+         *  the terminal it runs in, so this is how the tab was started and what the tool has
+         *  switched since; a switch made by hand here goes unseen. */
+        private boolean remoteControlOn = false;
+        /** Set while the tool waits to answer the menu that switches Remote Control off. */
+        private boolean remoteControlLeaving = false;
+        /** What the tool has asked to be typed here and is not typed yet. */
+        private final java.util.ArrayDeque<Typed> toType = new java.util.ArrayDeque<>();
+        private boolean typing = false;
         private volatile boolean disposed = false;
         private volatile boolean wasConnected = false;
         private volatile boolean terminatedShown = false;
@@ -1188,13 +1230,59 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             return true;
         }
 
-        /** {@link #sendCommand} for a command that did not come from this view's own controls
-         *  (the claudeCodeEclipse tool): the keyboard focus stays where the user has it. */
+        /** {@link #sendCommand} for something that did not come from this view's own controls
+         *  (the claudeCodeEclipse tool): the keyboard focus stays where the user has it, and
+         *  it waits its turn behind whatever the tool typed here just before. */
         boolean submit(String text) {
-            if (disposed || termControl == null || termControl.isDisposed()) return false;
-            termControl.pasteString(text);
-            termControl.sendKey('\r');
+            return type(new Typed(text, TYPING_PAUSE_MS, null));
+        }
+
+        /**
+         * Switches Remote Control the way it is switched by hand here. On is the CLI's own
+         * command. Off is an answer in the menu that command shows while Remote Control is on,
+         * whose first entry — the one Enter takes — is "Disconnect this session"; until that
+         * answer is given the tab is on its way off, and nothing else is typed into it.
+         */
+        boolean switchRemoteControl(boolean on) {
+            if (remoteControlLeaving) return false;
+            if (on) {
+                if (!type(new Typed("/remote-control", TYPING_PAUSE_MS, null))) return false;
+                remoteControlOn = true;
+                return true;
+            }
+            if (!type(new Typed("/remote-control", MENU_PAUSE_MS, null),
+                    new Typed("", TYPING_PAUSE_MS, () -> {
+                        remoteControlOn = false;
+                        remoteControlLeaving = false;
+                    }))) {
+                return false;
+            }
+            remoteControlLeaving = true;
             return true;
+        }
+
+        private boolean type(Typed... entries) {
+            if (disposed || termControl == null || termControl.isDisposed()
+                    || termControl.getState() != TerminalState.CONNECTED) {
+                return false;
+            }
+            for (Typed entry : entries) toType.add(entry);
+            if (!typing) typeNext();
+            return true;
+        }
+
+        private void typeNext() {
+            Typed next = toType.poll();
+            if (next == null || disposed || termControl == null || termControl.isDisposed()) {
+                toType.clear();
+                typing = false;
+                return;
+            }
+            typing = true;
+            if (!next.text().isEmpty()) termControl.pasteString(next.text());
+            termControl.sendKey('\r');
+            if (next.then() != null) next.then().run();
+            Display.getCurrent().timerExec(next.pauseMs(), this::typeNext);
         }
 
         /** This session's working directory (custom cwd, else the workspace root). */
@@ -1290,6 +1378,9 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             // Remote Control on startup. After the user's own arguments, and only what the
             // installed CLI is known to take — see TerminalLaunchArgs.
             for (String a : preferenceArgs(claudeCmd, userArgs, port)) argTokens.add(quoteArg(a));
+            // Where the claudeCodeEclipse tool takes this tab's Remote Control to start from.
+            remoteControlOn = argTokens.contains(TerminalLaunchArgs.REMOTE_CONTROL)
+                    || argTokens.contains(TerminalLaunchArgs.REMOTE_CONTROL_SHORT);
 
             // Writes the shared settings file — status line when enabled, spinner verbs
             // always — and appends --settings <file> to `argTokens`, injecting the per-tab
@@ -1800,6 +1891,8 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         private void onProcessTerminated() {
             if (disposed || terminatedShown) return;
             terminatedShown = true;
+            remoteControlOn = false;
+            remoteControlLeaving = false;
             // displayTextInTerminal feeds the emulator's screen buffer directly (not
             // the dead process), so the notice renders even after the child exited.
             if (termControl instanceof ITerminalControl control && !termControl.isDisposed()) {

@@ -100,10 +100,10 @@ class ClaudeCodeEclipseToolTest {
     void aParameterTwoModulesShareIsDescribedForBoth() {
         JsonObject props = new ClaudeCodeEclipseTool().inputSchema().getAsJsonObject("properties");
 
-        String tabId = props.getAsJsonObject("tabId").get("description").getAsString();
-        String command = props.getAsJsonObject("command").get("description").getAsString();
-        assertTrue(tabId.contains("claudeCodeView") && tabId.contains("claudeTerminal"), tabId);
-        assertTrue(command.contains("claudeCodeView") && command.contains("claudeTerminal"), command);
+        for (String name : List.of("tabId", "command", "prompt", "model", "effort", "enabled")) {
+            String described = props.getAsJsonObject(name).get("description").getAsString();
+            assertTrue(described.contains("claudeCodeView") && described.contains("claudeTerminal"), described);
+        }
     }
 
     @Test
