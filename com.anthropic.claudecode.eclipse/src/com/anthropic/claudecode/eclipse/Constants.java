@@ -38,6 +38,21 @@ public final class Constants {
      *  session is launched the same way: able to be switched into that mode, not in it. */
     public static final String PREF_LIVE_AUTO_MODE = "liveAutoMode";
 
+    /** The permission mode a conversation starts in, in the Claude Code view and the
+     *  Claude Terminal: a value of the VS Code extension's setting of the same name, empty
+     *  for unset. Read through ui.InitialPermissionMode, which also keeps bypass permissions
+     *  from being started in while {@link #PREF_LIVE_AUTO_MODE} is off. */
+    public static final String PREF_INITIAL_PERMISSION_MODE = "initialPermissionMode";
+
+    /** After how many days without activity the Claude Code view's history files a
+     *  conversation under "Archived sessions": 1, 2, 7 or 14, and 0 for never. The VS Code
+     *  extension's setting of the same name; the rules are in the core's archive.rs. */
+    public static final String PREF_ARCHIVE_INACTIVE_SESSIONS = "archiveInactiveSessions";
+
+    /** Set once the user has been told that conversations were archived automatically, so
+     *  they are told only the first time (per-workspace). */
+    public static final String PREF_ARCHIVE_NOTICE_SHOWN = "archiveNoticeShown";
+
     /** Whether a new conversation starts with extended thinking on. In the Claude
      *  Terminal, off is passed to the CLI as a setting and on is left to the CLI, whose
      *  own default it is (see ui.TerminalLaunchArgs#applyThinking). */
@@ -162,6 +177,14 @@ public final class Constants {
      *  by default: multi-root conversations are the new upstream behavior, and this is
      *  an opt-out, not the other way around. */
     public static final String PREF_HIDE_ROOT_DIRECTORIES_ROW = "hideRootDirectoriesRow";
+
+    /** Hide what was said above the last compaction of a conversation, in the Claude Code
+     *  view: once compacted, Claude has only the summary of it. On by default, the way
+     *  the VS Code extension shows a compacted conversation that is opened again. Off,
+     *  those messages are kept under one "Messages before compaction" line that expands
+     *  to show them as they were. Either way nothing is removed from the conversation,
+     *  and it applies the moment a compaction finishes as well as on reopening. */
+    public static final String PREF_HIDE_BEFORE_COMPACTION = "hideMessagesBeforeCompaction";
 
     // ── Spinner verbs ───────────────────────────────────────────────────────
     // Which optional slices of the working-indicator gerund list are in rotation.

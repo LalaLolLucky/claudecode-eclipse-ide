@@ -1,3 +1,5 @@
+mod archive;
+mod bookmarks;
 mod bridge;
 mod chat;
 mod chrome;
@@ -9,6 +11,7 @@ mod lock_file;
 mod mcp;
 mod mcp_servers;
 mod mentions;
+mod promptcache;
 mod server;
 mod session;
 mod shell_env;
@@ -1336,6 +1339,210 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionR
         session::rename_session_offline(&cmd, &root, &id, &title) as jboolean
     }));
     finish_export(&mut env, "sessionRename", result, jni::sys::JNI_FALSE)
+}
+
+// ===========================================================================
+// Session archive JNI entry points (the Claude Code view's own record)
+// ===========================================================================
+
+/// The history list with the archive applied: `sessions_json` (what `sessionList`
+/// gave for `workspace_root`) with an `archived` flag on every row, after archiving
+/// the rows inactive for `days`. Returns `{"sessions": [...], "archivedNow": [...]}`;
+/// `in_use_json` names the conversations open in a tab, which the sweep passes over.
+/// Reads the store and one file time per row, so not for the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionArchiveApply(
+    mut env: JNIEnv,
+    _class: JClass,
+    store_path: JString,
+    workspace_root: JString,
+    sessions_json: JString,
+    days: jint,
+    in_use_json: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut arg = |s: JString| jstr(&mut env, &s);
+        let store = arg(store_path);
+        let root = arg(workspace_root);
+        let sessions = arg(sessions_json);
+        let in_use = arg(in_use_json);
+        let json = archive::apply(&store, &root, &sessions, days as i64, &in_use);
+        jout(&mut env, json, "")
+    }));
+    finish_export(&mut env, "sessionArchiveApply", result, std::ptr::null_mut())
+}
+
+/// Archives (`archived`) or unarchives the conversations of `ids_json`, a JSON array
+/// of session ids. Returns whether it was recorded.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionArchiveSet(
+    mut env: JNIEnv,
+    _class: JClass,
+    store_path: JString,
+    ids_json: JString,
+    archived: jboolean,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let store = jstr(&mut env, &store_path);
+        let ids = jstr(&mut env, &ids_json);
+        archive::set(&store, &ids, archived != 0) as jboolean
+    }));
+    finish_export(&mut env, "sessionArchiveSet", result, jni::sys::JNI_FALSE)
+}
+
+// ===========================================================================
+// Bookmark JNI entry points (replies the user marked, per conversation)
+// ===========================================================================
+
+/// The replies the GUI draws as text, in order, as `[{"id","text","at"}]`: the
+/// transcript line each one is, so a reply on screen can be bookmarked. Reads the
+/// whole transcript, like `sessionLoad`.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionReplyIds(
+    mut env: JNIEnv,
+    _class: JClass,
+    workspace_root: JString,
+    session_id: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let root: String = jstr(&mut env, &workspace_root);
+        let id: String = jstr(&mut env, &session_id);
+        let json = session::reply_ids(&root, &id);
+        jout(&mut env, json, "[]")
+    }));
+    finish_export(&mut env, "sessionReplyIds", result, std::ptr::null_mut())
+}
+
+/// A conversation's bookmarks, oldest reply first, as a JSON array of
+/// `{uuid, addedAt, writtenAt?}`, from the directory `dir`.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionBookmarks(
+    mut env: JNIEnv,
+    _class: JClass,
+    dir: JString,
+    session_id: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dir: String = jstr(&mut env, &dir);
+        let id: String = jstr(&mut env, &session_id);
+        let json = bookmarks::list(&dir, &id);
+        jout(&mut env, json, "[]")
+    }));
+    finish_export(&mut env, "sessionBookmarks", result, std::ptr::null_mut())
+}
+
+/// Bookmarks the reply `uuid` of a conversation (`on`) or takes its bookmark away.
+/// `written_at_ms` is when the reply was written, 0 when not known. Returns
+/// `{"ok": <recorded>, "bookmarks": [<the list as it now is>]}`.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionBookmarkSet(
+    mut env: JNIEnv,
+    _class: JClass,
+    dir: JString,
+    session_id: JString,
+    uuid: JString,
+    on: jboolean,
+    written_at_ms: jlong,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut arg = |s: JString| jstr(&mut env, &s);
+        let dir = arg(dir);
+        let id = arg(session_id);
+        let uuid = arg(uuid);
+        let json = bookmarks::set(&dir, &id, &uuid, on != 0, written_at_ms);
+        jout(&mut env, json, "")
+    }));
+    finish_export(&mut env, "sessionBookmarkSet", result, std::ptr::null_mut())
+}
+
+/// The text of replies of a conversation, read from its transcript: a JSON object of
+/// `uuid → text`, null for one the transcript does not hold. `uuids_json` is a JSON
+/// array of ids. Reads the transcript: not for the UI thread on a long conversation.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionBookmarkTexts(
+    mut env: JNIEnv,
+    _class: JClass,
+    workspace_root: JString,
+    session_id: JString,
+    uuids_json: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut arg = |s: JString| jstr(&mut env, &s);
+        let root = arg(workspace_root);
+        let id = arg(session_id);
+        let uuids = arg(uuids_json);
+        let json = bookmarks::texts(&root, &id, &uuids);
+        jout(&mut env, json, "{}")
+    }));
+    finish_export(&mut env, "sessionBookmarkTexts", result, std::ptr::null_mut())
+}
+
+// ===========================================================================
+// Prompt cache JNI entry point (what resuming a saved conversation will cost)
+// ===========================================================================
+
+/// The note a reopened conversation ends with when the prompt cache no longer holds
+/// it, `""` when there is none to show. Reads the whole transcript, like `sessionLoad`.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionResumeNote(
+    mut env: JNIEnv,
+    _class: JClass,
+    workspace_root: JString,
+    session_id: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let root: String = jstr(&mut env, &workspace_root);
+        let id: String = jstr(&mut env, &session_id);
+        let note = promptcache::resume_note(&root, &id);
+        jout(&mut env, note, "")
+    }));
+    finish_export(&mut env, "sessionResumeNote", result, std::ptr::null_mut())
+}
+
+// ===========================================================================
+// Opening a saved conversation (everything the view draws it from, in one reading)
+// ===========================================================================
+
+/// A saved conversation for the view to draw: `{items, note, cut, earlier}` — its render
+/// items with each reply's transcript line, the note for reopening it, and its last
+/// compaction. With `from_last_compaction` the items begin there and `earlier` says what
+/// was left out. Reads the whole transcript: for a background thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionOpen(
+    mut env: JNIEnv,
+    _class: JClass,
+    workspace_root: JString,
+    session_id: JString,
+    from_last_compaction: jboolean,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let root: String = jstr(&mut env, &workspace_root);
+        let id: String = jstr(&mut env, &session_id);
+        let json = session::open_session(&root, &id, from_last_compaction != 0);
+        jout(&mut env, json, "{}")
+    }));
+    finish_export(&mut env, "sessionOpen", result, std::ptr::null_mut())
+}
+
+/// The render items of the part of a conversation before one of its compactions, named
+/// by its boundary line: `{items}`. Reads the whole transcript: for a background thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionOpenBefore(
+    mut env: JNIEnv,
+    _class: JClass,
+    workspace_root: JString,
+    session_id: JString,
+    boundary_uuid: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut arg = |s: JString| jstr(&mut env, &s);
+        let root = arg(workspace_root);
+        let id = arg(session_id);
+        let boundary = arg(boundary_uuid);
+        let json = session::open_session_before(&root, &id, &boundary);
+        jout(&mut env, json, "{}")
+    }));
+    finish_export(&mut env, "sessionOpenBefore", result, std::ptr::null_mut())
 }
 
 // ===========================================================================

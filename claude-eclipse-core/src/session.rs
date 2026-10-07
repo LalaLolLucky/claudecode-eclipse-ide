@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -145,7 +145,7 @@ fn unwrap_tag_block(s: &str, tag: &str) -> String {
 }
 
 /// Returns the path to `~/.claude/projects/{hash}/`.
-fn projects_dir(workspace_root: &str) -> Option<PathBuf> {
+pub(crate) fn projects_dir(workspace_root: &str) -> Option<PathBuf> {
     let home = dirs_home()?;
     let hash = workspace_hash(workspace_root);
     let dir = home.join(".claude").join("projects").join(hash);
@@ -195,7 +195,7 @@ pub(crate) fn dirs_home() -> Option<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// list_sessions  — scan *.jsonl files, extract first user message + timestamp
+// list_sessions  — every *.jsonl file's title and last time, from its two ends
 // ---------------------------------------------------------------------------
 
 pub fn list_sessions(workspace_root: &str) -> String {
@@ -222,115 +222,13 @@ pub fn list_sessions(workspace_root: &str) -> String {
             None => continue,
         };
 
-        // Read just enough of the file to find the first user message and timestamp.
-        let file = match fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        let reader = BufReader::new(file);
-
-        // The list title mirrors the CLI's /resume: the user's rename ("custom-title"
-        // event, written by the rename_session control request — LAST one wins) beats
-        // the AI-generated "ai-title", which beats the first user message. Neither
-        // title event carries a timestamp. The legacy Eclipse-only rename sidecar
-        // (session-titles.json, applied Java-side) still overrides all of these.
-        // Sort key is the LAST activity timestamp (newest event scanned), matching
-        // /resume's most-recently-used ordering.
-        let mut custom_title = String::new();
-        let mut ai_title = String::new();
-        let mut first_user = String::new();
-        let mut last_ts = String::new();
-        let mut saw_line = false;
-
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) if !l.is_empty() => l,
-                _ => continue,
-            };
-            let event: serde_json::Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            saw_line = true;
-
-            if let Some(ts) = event["timestamp"].as_str() {
-                last_ts = ts.to_string();
-            }
-            match event["type"].as_str() {
-                Some("custom-title") => {
-                    if let Some(ct) = event["customTitle"].as_str() {
-                        if !ct.is_empty() {
-                            custom_title = ct.chars().take(120).collect();
-                        }
-                    }
-                }
-                Some("ai-title") => {
-                    if let Some(at) = event["aiTitle"].as_str() {
-                        if !at.is_empty() {
-                            ai_title = at.chars().take(120).collect();
-                        }
-                    }
-                }
-                Some("user") if first_user.is_empty() => {
-                    // Extract display text — first 120 chars of the user message content,
-                    // with any injected <ide_selection>/<ide_context> preamble removed so
-                    // the fallback title is the user's actual text, not the editor context.
-                    if let Some(content) = event["message"]["content"].as_str() {
-                        first_user = strip_ide_preamble(content).chars().take(120).collect();
-                    } else if let Some(blocks) = event["message"]["content"].as_array() {
-                        // A first message sent with a pasted image is stored as
-                        // content blocks — title the session from its text block
-                        // instead of falling through to a later message.
-                        for b in blocks {
-                            if b["type"].as_str() != Some("text") {
-                                continue;
-                            }
-                            let raw = b["text"].as_str().unwrap_or("");
-                            if is_browser_context(raw) || attached_file_path(raw).is_some() {
-                                continue;
-                            }
-                            let s = strip_ide_preamble(raw);
-                            if !s.trim().is_empty() {
-                                first_user = s.chars().take(120).collect();
-                                break;
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Include a session with any recognizable title source: a custom-title
-        // (user rename), an ai-title (covers title-only stubs that /resume lists)
-        // or a first user message.
-        let display = if !custom_title.is_empty() {
-            custom_title
-        } else if !ai_title.is_empty() {
-            ai_title
-        } else {
-            first_user
-        };
-        if !saw_line || display.is_empty() {
+        let Some((summary, _read)) = summarize(&path) else {
             continue;
-        }
-        // Fall back to file mtime when no event carried a timestamp (e.g. stubs).
-        // Format as an ISO-8601 UTC string so it string-sorts interleaved with the
-        // real event timestamps (the PHP reader does the same via gmdate()).
-        if last_ts.is_empty() {
-            if let Ok(meta) = fs::metadata(&path) {
-                if let Ok(modified) = meta.modified() {
-                    if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
-                        last_ts = epoch_to_iso8601(dur.as_secs());
-                    }
-                }
-            }
-        }
-
+        };
         sessions.push(serde_json::json!({
             "sessionId": session_id,
-            "display": display,
-            "timestamp": last_ts,
+            "display": summary.display,
+            "timestamp": summary.last_ts,
         }));
     }
 
@@ -345,6 +243,215 @@ pub fn list_sessions(workspace_root: &str) -> String {
     sessions.truncate(100);
 
     serde_json::to_string(&sessions).unwrap_or_else(|_| "[]".into())
+}
+
+/// What the session list shows of one conversation.
+struct Summary {
+    /// Its title: the user's rename, else the AI title, else the first message.
+    display: String,
+    /// When it was last active, as the transcript writes a time.
+    last_ts: String,
+}
+
+/// How much of a transcript's end is read first. The CLI writes a conversation's title
+/// lines again after each turn, so the latest of them, and the last line with a time on
+/// it, are nearly always inside this.
+const LIST_TAIL: u64 = 64 * 1024;
+
+/// How far back from the end a title is looked for when the first read holds none.
+/// Most conversations without one are short and have no title line anywhere.
+const LIST_TAIL_FOR_TITLE: u64 = 1024 * 1024;
+
+/// The list's line for one transcript and how many bytes of it were read to get there,
+/// or None for a file the list leaves out (nothing in it to name it by).
+///
+/// Only the two ends are read, as the CLI's own `/resume` list and the VS Code extension
+/// read them: the end for the titles and the last time, and — for a conversation with no
+/// title line — the start, as far as its first message. A long transcript is megabytes
+/// of tool output in between, none of which the list shows; reading all of it on every
+/// opening of the list is what used to keep the list seconds behind.
+fn summarize(path: &Path) -> Option<(Summary, u64)> {
+    let mut file = fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let mut read = 0;
+
+    // Looked at again four times as far back until it holds a line with a time on it,
+    // and either a title or a megabyte of the file (or all of it).
+    let mut window = LIST_TAIL.min(size);
+    let end = loop {
+        let start = size - window;
+        let bytes = read_span(&mut file, start, window)?;
+        read += bytes.len() as u64;
+        let end = TranscriptEnd::of(&bytes, start == 0);
+        let titled = !end.custom_title.is_empty() || !end.ai_title.is_empty();
+        if start == 0 || (!end.last_ts.is_empty() && (titled || window >= LIST_TAIL_FOR_TITLE)) {
+            break end;
+        }
+        window = (window * 4).min(size);
+    };
+
+    // The user's rename beats the AI's title, which beats the first message.
+    let display = if !end.custom_title.is_empty() {
+        end.custom_title
+    } else if !end.ai_title.is_empty() {
+        end.ai_title
+    } else {
+        let (first, bytes) = first_message(&mut file);
+        read += bytes;
+        first
+    };
+    if display.is_empty() {
+        return None;
+    }
+    // No line carried a time (a title-only stub): the file's own, so it still sorts.
+    let last_ts = if end.last_ts.is_empty() {
+        modified_iso8601(path).unwrap_or_default()
+    } else {
+        end.last_ts
+    };
+    Some((Summary { display, last_ts }, read))
+}
+
+/// `len` bytes of a file from `start` — fewer when the file ends sooner.
+fn read_span(file: &mut fs::File, start: u64, len: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity(len as usize);
+    Read::take(&mut *file, len).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// The top-level fields of a transcript line that the list goes by. A line's content,
+/// however large, is passed over without being kept.
+#[derive(serde::Deserialize)]
+struct ListLine {
+    #[serde(rename = "type")]
+    kind: Option<serde_json::Value>,
+    timestamp: Option<serde_json::Value>,
+    #[serde(rename = "customTitle")]
+    custom_title: Option<serde_json::Value>,
+    #[serde(rename = "aiTitle")]
+    ai_title: Option<serde_json::Value>,
+}
+
+/// What the end of a transcript says: its latest titles and the last time on any line.
+#[derive(Default)]
+struct TranscriptEnd {
+    custom_title: String,
+    ai_title: String,
+    last_ts: String,
+}
+
+impl TranscriptEnd {
+    /// Reads the last `bytes` of a transcript. They begin wherever the count fell,
+    /// usually inside a line, unless `whole` says they are the entire file.
+    fn of(bytes: &[u8], whole: bool) -> Self {
+        // A first line cut in two says nothing, and it is not worth finding out
+        // whether this one was.
+        let lines = if whole {
+            bytes
+        } else {
+            match bytes.iter().position(|&b| b == b'\n') {
+                Some(cut) => &bytes[cut + 1..],
+                None => &[],
+            }
+        };
+        let text = String::from_utf8_lossy(lines);
+        let mut end = TranscriptEnd::default();
+        // Last line first: the first of each kind met this way is the file's last.
+        for line in text.rsplit('\n') {
+            let wanted = (end.last_ts.is_empty() && line.contains("\"timestamp\""))
+                || (end.custom_title.is_empty() && line.contains("\"custom-title\""))
+                || (end.ai_title.is_empty() && line.contains("\"ai-title\""));
+            if !wanted {
+                continue;
+            }
+            let Ok(event) = serde_json::from_str::<ListLine>(line) else {
+                continue;   // the line the CLI is still writing, among others
+            };
+            let text_of = |v: &Option<serde_json::Value>| v.as_ref().and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            if end.last_ts.is_empty() {
+                end.last_ts = text_of(&event.timestamp);
+            }
+            // An empty title is no title: an older line may still hold one.
+            let kind = text_of(&event.kind);
+            if kind == "custom-title" && end.custom_title.is_empty() {
+                end.custom_title = text_of(&event.custom_title).chars().take(120).collect();
+            } else if kind == "ai-title" && end.ai_title.is_empty() {
+                end.ai_title = text_of(&event.ai_title).chars().take(120).collect();
+            }
+        }
+        end
+    }
+}
+
+/// What the first message that says something would title its conversation with, read
+/// from the start of the transcript and no further than that message; and the bytes
+/// that took. Empty when no message says anything.
+fn first_message(file: &mut fs::File) -> (String, u64) {
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return (String::new(), 0);
+    }
+    let mut read = 0;
+    for line in BufReader::new(file).lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        read += line.len() as u64 + 1;
+        if !line.contains("\"user\"") {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if event["type"].as_str() != Some("user") {
+            continue;
+        }
+        let text = first_message_text(&event);
+        if !text.is_empty() {
+            return (text, read);
+        }
+    }
+    (String::new(), read)
+}
+
+/// The text a `user` line would title its conversation with: the first 120 characters
+/// of what was typed, without the editor context the plugin sends along. Empty for a
+/// line that types nothing (a tool's result, a pasted image on its own).
+fn first_message_text(event: &serde_json::Value) -> String {
+    // Extract display text — first 120 chars of the user message content,
+    // with any injected <ide_selection>/<ide_context> preamble removed so
+    // the fallback title is the user's actual text, not the editor context.
+    if let Some(content) = event["message"]["content"].as_str() {
+        return strip_ide_preamble(content).chars().take(120).collect();
+    }
+    if let Some(blocks) = event["message"]["content"].as_array() {
+        // A first message sent with a pasted image is stored as
+        // content blocks — title the session from its text block
+        // instead of falling through to a later message.
+        for b in blocks {
+            if b["type"].as_str() != Some("text") {
+                continue;
+            }
+            let raw = b["text"].as_str().unwrap_or("");
+            if is_browser_context(raw) || attached_file_path(raw).is_some() {
+                continue;
+            }
+            let s = strip_ide_preamble(raw);
+            if !s.trim().is_empty() {
+                return s.chars().take(120).collect();
+            }
+        }
+    }
+    String::new()
+}
+
+/// A file's modified time as an ISO-8601 UTC string, so it string-sorts interleaved
+/// with the real event timestamps (the PHP reader did the same via gmdate()).
+fn modified_iso8601(path: &Path) -> Option<String> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(epoch_to_iso8601(since.as_secs()))
 }
 
 // ---------------------------------------------------------------------------
@@ -670,21 +777,52 @@ fn read_agent_log(projects_dir: &std::path::Path, session_id: &str, tool_use_id:
 }
 
 pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
+    serde_json::to_string(&history_items(workspace_root, session_id, false)).unwrap_or_else(|_| "[]".into())
+}
+
+/// The render items of a conversation. With `with_reply_ids`, each text item also
+/// carries the transcript line it is (`id`) and when that was written (`at`) — kept
+/// out of [`load_session_history`]'s own output, whose shape the page is built on.
+fn history_items(workspace_root: &str, session_id: &str, with_reply_ids: bool) -> Vec<serde_json::Value> {
     let dir = match projects_dir(workspace_root) {
         Some(d) => d,
-        None => return "[]".into(),
+        None => return Vec::new(),
     };
     if session_id.is_empty() {
-        return "[]".into();
+        return Vec::new();
     }
 
     let path = dir.join(format!("{}.jsonl", session_id));
     let file = match fs::File::open(&path) {
         Ok(f) => f,
-        Err(_) => return "[]".into(),
+        Err(_) => return Vec::new(),
     };
-    let reader = BufReader::new(file);
+    let pass = if with_reply_ids { Pass::REPLY_IDS } else { Pass::RENDER };
+    items_of(&dir, session_id, BufReader::new(file).lines().filter_map(Result::ok), pass)
+}
 
+/// What a pass over a transcript's lines is to produce.
+#[derive(Clone, Copy)]
+struct Pass {
+    /// Each text item carries the transcript line it is (`id`) and that line's time (`at`).
+    reply_ids: bool,
+    /// The tool items get their outcome, and an Agent's its own log: the second half of
+    /// the work, and for every Agent a file read of its own.
+    tools: bool,
+}
+
+impl Pass {
+    /// What [`load_session_history`] gives the page.
+    const RENDER: Pass = Pass { reply_ids: false, tools: true };
+    /// What [`reply_ids`] needs and no more.
+    const REPLY_IDS: Pass = Pass { reply_ids: true, tools: false };
+    /// Both at once, for [`open_session`].
+    const OPEN: Pass = Pass { reply_ids: true, tools: true };
+}
+
+/// [`history_items`] over lines of a transcript, whichever part of it they are. `dir` is
+/// the folder the transcript is in, where a subagent's own log is looked for.
+fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef<str>>, pass: Pass) -> Vec<serde_json::Value> {
     let mut items: Vec<serde_json::Value> = Vec::new();
     // tool_use ids of askUserQuestion calls, so their answers can be surfaced.
     let mut ask_ids: HashSet<String> = HashSet::new();
@@ -705,12 +843,12 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
     // reconstruction never had anything but errorText to hand makeToolLine.
     let mut result_success_text: HashMap<String, String> = HashMap::new();
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) if !l.is_empty() => l,
-            _ => continue,
-        };
-        let event: serde_json::Value = match serde_json::from_str(&line) {
+    for line in lines {
+        let line = line.as_ref();
+        if line.is_empty() {
+            continue;
+        }
+        let event: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -920,9 +1058,14 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
                         Some("text") => {
                             if let Some(t) = b["text"].as_str() {
                                 if !t.is_empty() {
-                                    items.push(serde_json::json!({
+                                    let mut item = serde_json::json!({
                                         "t": "text", "text": t, "model": model,
-                                    }));
+                                    });
+                                    if pass.reply_ids {
+                                        item["id"] = event["uuid"].clone();
+                                        item["at"] = event["timestamp"].clone();
+                                    }
+                                    items.push(item);
                                 }
                             }
                         }
@@ -978,6 +1121,12 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
         }
     }
 
+    // Asked for the replies' lines, the caller wants none of what follows: it is all
+    // about the tool items, and a subagent's log is a file read of its own.
+    if !pass.tools {
+        return items;
+    }
+
     // Stamp each tool with a reconstructed dot status so reloading a past
     // conversation keeps the green/red it had live:
     //   • result present, not an error → "done"        (finished, green)
@@ -1018,7 +1167,7 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
         if !is_agent {
             continue;
         }
-        if let Some(accum) = read_agent_log(&dir, session_id, id) {
+        if let Some(accum) = read_agent_log(dir, session_id, id) {
             if let Some(obj) = items.get_mut(idx).and_then(|v| v.as_object_mut()) {
                 obj.insert("agentLog".into(), serde_json::json!({
                     "items": accum.items,
@@ -1031,7 +1180,7 @@ pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
         }
     }
 
-    serde_json::to_string(&items).unwrap_or_else(|_| "[]".into())
+    items
 }
 
 /// Flattens a `tool_result` block's content to plain text. The CLI writes it
@@ -1263,6 +1412,221 @@ pub fn message_ids(workspace_root: &str, session_id: &str) -> String {
         })
         .collect();
     serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+}
+
+/// The replies the GUI draws as text, in order, as
+/// `[{"id":<uuid>,"text":<raw text>,"at":<the line's timestamp, "" if it has none>}]`.
+/// From the same pass as `load_session_history`, so these are exactly the rendered
+/// replies: an API error or a tool call is not among them.
+///
+/// The text ships with the id for the reason `message_ids`' does: a reply streamed
+/// this run is on screen before the page knows its line, so the page matches on text.
+pub fn reply_ids(workspace_root: &str, session_id: &str) -> String {
+    let out: Vec<serde_json::Value> = history_items(workspace_root, session_id, true)
+        .iter()
+        .filter(|it| it["t"].as_str() == Some("text"))
+        .filter_map(|it| {
+            let id = it["id"].as_str()?;
+            Some(serde_json::json!({
+                "id": id,
+                "text": it["text"].as_str().unwrap_or(""),
+                "at": it["at"].as_str().unwrap_or(""),
+            }))
+        })
+        .collect();
+    serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+}
+
+// ---------------------------------------------------------------------------
+// open_session — a saved conversation for the view to draw, in one reading
+// ---------------------------------------------------------------------------
+
+/// What [`open_session`] answers when there is nothing to read.
+const NOTHING_OPENED: &str = r#"{"items":[],"note":"","cut":null,"earlier":null}"#;
+
+/// A saved conversation for the view to draw, from one reading of its transcript: its
+/// render items as [`load_session_history`] gives them, each reply also carrying the
+/// transcript line it is (`id`) and that line's time (`at`); the note for reopening it
+/// ([`crate::promptcache`]); and its last compaction (`cut`), when it has one.
+///
+/// With `from_last_compaction` the items begin at that compaction, which is all the view
+/// shows of a conversation while it hides what was said before one. The lines before it
+/// — two thirds of a long compacted transcript — are then not turned into items at all,
+/// and `earlier` holds what the view still has to know of them: which replies they hold
+/// (so a bookmark of one can be told from the others), and the model last used and
+/// whether there was thinking (what the conversation is resumed with, when the part
+/// that was drawn says neither). `earlier` is null when nothing was left out.
+///
+/// `{"items":[…], "note":"…", "cut":{"uuid","at"}|null,
+///   "earlier":{"replies":[uuid…],"model":"…","thinking":bool}|null}`
+pub fn open_session(workspace_root: &str, session_id: &str, from_last_compaction: bool) -> String {
+    let Some((dir, bytes)) = read_transcript(workspace_root, session_id) else {
+        return NOTHING_OPENED.into();
+    };
+    let cut = compactions(&bytes).pop();
+    let start = match &cut {
+        Some(cut) if from_last_compaction => cut.offset,
+        _ => 0,
+    };
+    let earlier = Some(EarlierPart::of(&bytes[..start])).filter(|part| part.said_something);
+    serde_json::json!({
+        "items": items_of(&dir, session_id, lines_of(&bytes[start..]), Pass::OPEN),
+        "note": crate::promptcache::note_of_lines(lines_of(&bytes)),
+        "cut": cut.map(|cut| serde_json::json!({ "uuid": cut.uuid, "at": cut.at })),
+        "earlier": earlier.map(|part| serde_json::json!({
+            "replies": part.replies, "model": part.model, "thinking": part.thinking,
+        })),
+    })
+    .to_string()
+}
+
+/// The render items of the part of a conversation before one of its compactions, the
+/// one whose boundary line is `boundary_uuid` — for the view that opened it from that
+/// compaction on and is now asked for the rest. `{"items":[…]}`, empty when the
+/// conversation has no such compaction.
+pub fn open_session_before(workspace_root: &str, session_id: &str, boundary_uuid: &str) -> String {
+    let items = read_transcript(workspace_root, session_id)
+        .filter(|_| !boundary_uuid.is_empty())
+        .and_then(|(dir, bytes)| {
+            let cut = compactions(&bytes).into_iter().find(|cut| cut.uuid == boundary_uuid)?;
+            Some(items_of(&dir, session_id, lines_of(&bytes[..cut.offset]), Pass::OPEN))
+        })
+        .unwrap_or_default();
+    serde_json::json!({ "items": items }).to_string()
+}
+
+/// A conversation's transcript, whole, and the folder it is in. None for a session id
+/// that is not a plain name, or a transcript that cannot be read.
+fn read_transcript(workspace_root: &str, session_id: &str) -> Option<(PathBuf, Vec<u8>)> {
+    if !crate::bookmarks::plain_id(session_id) {
+        return None;
+    }
+    let dir = projects_dir(workspace_root)?;
+    let bytes = fs::read(dir.join(format!("{session_id}.jsonl"))).ok()?;
+    Some((dir, bytes))
+}
+
+/// The lines of a transcript held in memory. What is not text is not a line of one.
+fn lines_of(bytes: &[u8]) -> impl Iterator<Item = &str> {
+    bytes
+        .split(|&b| b == b'\n')
+        .filter_map(|line| std::str::from_utf8(line).ok())
+        .map(|line| line.trim_end_matches('\r'))
+}
+
+/// A compaction: where its boundary line starts in the transcript, and what names it.
+struct Compaction {
+    offset: usize,
+    uuid: String,
+    at: String,
+}
+
+/// The top-level fields of a line that say it is a compaction's boundary.
+#[derive(serde::Deserialize)]
+struct BoundaryLine {
+    #[serde(rename = "type")]
+    kind: Option<serde_json::Value>,
+    subtype: Option<serde_json::Value>,
+    uuid: Option<serde_json::Value>,
+    timestamp: Option<serde_json::Value>,
+}
+
+/// A transcript's compactions, in order — the lines [`items_of`] makes a `compact` item
+/// of, so that the last of these is the last of those.
+fn compactions(bytes: &[u8]) -> Vec<Compaction> {
+    let text = |value: &Option<serde_json::Value>| value.as_ref().and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let mut found = Vec::new();
+    let mut offset = 0;
+    for raw in bytes.split(|&b| b == b'\n') {
+        let start = offset;
+        offset += raw.len() + 1;
+        // Cheap reject first: a transcript has a handful of these among thousands of lines.
+        let Some(line) = std::str::from_utf8(raw).ok().filter(|line| line.contains("\"compact_boundary\"")) else {
+            continue;
+        };
+        let Ok(line) = serde_json::from_str::<BoundaryLine>(line) else {
+            continue;
+        };
+        if text(&line.kind) == "system" && text(&line.subtype) == "compact_boundary" {
+            found.push(Compaction { offset: start, uuid: text(&line.uuid), at: text(&line.timestamp) });
+        }
+    }
+    found
+}
+
+/// What the view has to know of a part of a conversation it was not given the items of.
+struct EarlierPart {
+    /// The transcript lines of its replies.
+    replies: Vec<String>,
+    /// The model it last ran on, `""` when no reply names one.
+    model: String,
+    thinking: bool,
+    /// Whether anybody said anything in it: a part with no message is no part.
+    said_something: bool,
+}
+
+/// The fields of a reply line that [`EarlierPart`] is read from. What a block says is
+/// passed over: only its kind is asked.
+#[derive(serde::Deserialize)]
+struct ReplyLine {
+    #[serde(rename = "type")]
+    kind: Option<serde_json::Value>,
+    uuid: Option<serde_json::Value>,
+    #[serde(rename = "isApiErrorMessage")]
+    is_api_error: Option<serde_json::Value>,
+    message: Option<ReplyMessage>,
+}
+
+#[derive(serde::Deserialize)]
+struct ReplyMessage {
+    model: Option<serde_json::Value>,
+    content: Option<Vec<ReplyBlock>>,
+}
+
+#[derive(serde::Deserialize)]
+struct ReplyBlock {
+    #[serde(rename = "type")]
+    kind: Option<serde_json::Value>,
+}
+
+impl EarlierPart {
+    fn of(bytes: &[u8]) -> Self {
+        let text = |value: &Option<serde_json::Value>| value.as_ref().and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let mut part = EarlierPart { replies: Vec::new(), model: String::new(), thinking: false, said_something: false };
+        for line in lines_of(bytes) {
+            if !line.contains("\"assistant\"") {
+                part.said_something |= line.contains("\"type\":\"user\"");
+                continue;
+            }
+            // A line this cannot make out is a user's (their content may be plain text).
+            let Ok(reply) = serde_json::from_str::<ReplyLine>(line) else {
+                part.said_something |= line.contains("\"type\":\"user\"");
+                continue;
+            };
+            if text(&reply.kind) != "assistant" {
+                part.said_something |= text(&reply.kind) == "user";
+                continue;
+            }
+            part.said_something = true;
+            // An error the CLI wrote in a reply's place is drawn as one, not as a reply.
+            if reply.is_api_error.as_ref().and_then(|v| v.as_bool()) == Some(true) {
+                continue;
+            }
+            let Some(message) = reply.message else {
+                continue;
+            };
+            let model = text(&message.model);
+            if model.starts_with("claude-") {
+                part.model = model;
+            }
+            let kinds: Vec<String> = message.content.iter().flatten().map(|block| text(&block.kind)).collect();
+            part.thinking |= kinds.iter().any(|kind| kind == "thinking");
+            if kinds.iter().any(|kind| kind == "text") {
+                part.replies.push(text(&reply.uuid));
+            }
+        }
+        part
+    }
 }
 
 /// The typed prompt a line carries, or None when it isn't a real user message
@@ -2609,6 +2973,52 @@ mod tests {
     }
 
     #[test]
+    fn reply_ids_track_the_rendered_replies_and_leave_the_loaders_output_as_it_was() {
+        let mut env = EnvGuard::lock();
+        let (home, dir) = msg_home("replies");
+        let extra = [
+            "",
+            r#"{"type":"assistant","uuid":"a-stamped","parentUuid":"tr1","message":{"model":"claude-opus-5","content":[{"type":"text","text":"written at a known time"}]},"timestamp":"2026-07-30T10:01:30.000Z"}"#,
+            r#"{"type":"assistant","uuid":"a-error","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 529"}]}}"#,
+            r#"{"type":"assistant","uuid":"a-tool","message":{"model":"claude-opus-5","content":[{"type":"tool_use","id":"t9","name":"Read","input":{}}]}}"#,
+            r#"{"type":"assistant","uuid":"a-thinking","message":{"model":"claude-opus-5","content":[{"type":"thinking","thinking":"hmm"}]}}"#,
+        ]
+        .join("\n");
+        fs::write(dir.join("sess1.jsonl"), msg_fixture(&extra)).unwrap();
+        env.set_home(&home);
+
+        let ids = super::reply_ids(r"C:\msgtest", "sess1");
+        let loaded = super::load_session_history(r"C:\msgtest", "sess1");
+        let _ = fs::remove_dir_all(&home);
+
+        let v: serde_json::Value = serde_json::from_str(&ids).unwrap();
+        let rows: Vec<(&str, &str, &str)> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["id"].as_str().unwrap(), r["text"].as_str().unwrap(), r["at"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("a1", "answering the first question", ""),
+                ("a2", "you asked: second question", ""),
+                ("a-stamped", "written at a known time", "2026-07-30T10:01:30.000Z"),
+                ("a3", "ok", ""),
+            ],
+            "only replies, in render order, each with its line: {ids}"
+        );
+        // What the page renders from is untouched: a text item has no id of its own.
+        let items: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let texts: Vec<&serde_json::Value> =
+            items.as_array().unwrap().iter().filter(|it| it["t"] == "text").collect();
+        assert_eq!(texts.len(), 4);
+        for it in texts {
+            assert!(it.get("id").is_none() && it.get("at").is_none(), "{it}");
+        }
+    }
+
+    #[test]
     fn delete_message_relinks_the_chain_and_sweeps_unchained_copies() {
         let mut env = EnvGuard::lock();
         let (home, dir) = msg_home("del");
@@ -2731,6 +3141,422 @@ mod tests {
         ] {
             let v: serde_json::Value = serde_json::from_str(&res).unwrap();
             assert!(v["error"].is_string(), "{label} rejected: {res}");
+        }
+    }
+
+    // ---- the session list reads only the two ends of a transcript ----
+
+    const KB: u64 = 1024;
+
+    /// A reply line of exactly `len` bytes with its newline, written at 10:00 on the 1st.
+    fn filler(n: usize, len: usize, text: &str) -> String {
+        let start = format!(r#"{{"type":"assistant","uuid":"f{n}","timestamp":"2026-07-01T10:00:00.000Z","message":{{"role":"assistant","content":[{{"type":"text","text":""#);
+        let end = "\"}]}}\n";
+        let room = len - start.len() - end.len();
+        let mut said = String::new();
+        while said.len() + text.len() <= room {
+            said.push_str(text);
+        }
+        while said.len() < room {
+            said.push('.');
+        }
+        format!("{start}{said}{end}")
+    }
+
+    /// A transcript: `head` lines, about `middle` bytes of replies, then `tail` (each
+    /// given whole, newline included). Answers its folder, its path and its size.
+    fn long_transcript(head: &[String], middle: u64, tail: &[String]) -> (tempfile::TempDir, std::path::PathBuf, u64) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        let mut out = head.concat();
+        let mut n = 0;
+        while (out.len() as u64) < head.concat().len() as u64 + middle {
+            out.push_str(&filler(n, 400, "said at length "));
+            n += 1;
+        }
+        out.push_str(&tail.concat());
+        fs::write(&path, &out).unwrap();
+        let size = out.len() as u64;
+        (tmp, path, size)
+    }
+
+    fn opening(text: &str) -> String {
+        format!(r#"{{"type":"user","uuid":"u1","message":{{"role":"user","content":"{text}"}},"timestamp":"2026-07-01T09:59:00.000Z"}}"#) + "\n"
+    }
+
+    fn reply_at(time: &str) -> String {
+        format!(r#"{{"type":"assistant","uuid":"last","message":{{"role":"assistant","content":[{{"type":"text","text":"the last thing said"}}]}},"timestamp":"{time}"}}"#) + "\n"
+    }
+
+    fn ai_title(title: &str) -> String {
+        format!(r#"{{"type":"ai-title","aiTitle":"{title}","sessionId":"s"}}"#) + "\n"
+    }
+
+    fn custom_title(title: &str) -> String {
+        format!(r#"{{"type":"custom-title","customTitle":"{title}","sessionId":"s"}}"#) + "\n"
+    }
+
+    /// `(title, last time, bytes read)` of a transcript as the list shows it.
+    fn summary_of(path: &std::path::Path) -> (String, String, u64) {
+        let (summary, read) = super::summarize(path).expect("a conversation the list shows");
+        (summary.display, summary.last_ts, read)
+    }
+
+    #[test]
+    fn the_filler_lines_are_the_size_they_say() {
+        assert_eq!(filler(7, 400, "said at length ").len(), 400);
+        assert_eq!(filler(123, 200, "é✓").len(), 200);
+        assert!(serde_json::from_str::<serde_json::Value>(filler(0, 200, "é✓").trim_end()).is_ok());
+    }
+
+    #[test]
+    fn a_long_conversation_is_listed_from_its_two_ends() {
+        let (_tmp, path, size) = long_transcript(
+            &[opening("what the conversation opened with")],
+            2 * KB * KB,
+            &[reply_at("2026-07-03T08:00:00.000Z"), ai_title("Named by the AI")],
+        );
+
+        let (title, last, read) = summary_of(&path);
+
+        assert_eq!((title.as_str(), last.as_str()), ("Named by the AI", "2026-07-03T08:00:00.000Z"));
+        assert!(size > 2 * KB * KB && read <= 64 * KB, "read {read} of {size} bytes");
+    }
+
+    #[test]
+    fn a_rename_at_the_end_beats_the_ai_title_written_after_it() {
+        let (_tmp, path, size) = long_transcript(
+            &[opening("what the conversation opened with")],
+            2 * KB * KB,
+            &[reply_at("2026-07-03T08:00:00.000Z"), custom_title("Renamed by hand"), ai_title("Named by the AI")],
+        );
+
+        let (title, _, read) = summary_of(&path);
+
+        assert_eq!(title, "Renamed by hand");
+        assert!(read <= 64 * KB, "read {read} of {size} bytes");
+    }
+
+    #[test]
+    fn the_last_time_is_found_behind_a_long_end_that_carries_none() {
+        // 150 KB of lines with no time on them after the last one that has one.
+        let untimed: String = (0..1500)
+            .map(|n| format!(r#"{{"type":"file-history-snapshot","messageId":"m{n:04}","isSnapshotUpdate":true,"snapshot":{{"trackedFileBackups":{{}}}}}}"#) + "\n")
+            .collect();
+        assert!(untimed.len() as u64 > 150 * KB);
+        let (_tmp, path, size) = long_transcript(
+            &[opening("what the conversation opened with")],
+            2 * KB * KB,
+            &[reply_at("2026-07-03T08:00:00.000Z"), untimed, ai_title("Named by the AI")],
+        );
+
+        let (title, last, read) = summary_of(&path);
+
+        assert_eq!((title.as_str(), last.as_str()), ("Named by the AI", "2026-07-03T08:00:00.000Z"));
+        assert!(read <= 400 * KB, "read {read} of {size} bytes");
+    }
+
+    #[test]
+    fn a_conversation_with_no_title_is_named_from_its_first_message_without_reading_all_of_it() {
+        let (_tmp, path, size) = long_transcript(
+            &[opening("what the conversation opened with")],
+            3 * KB * KB,
+            &[reply_at("2026-07-03T08:00:00.000Z")],
+        );
+
+        let (title, last, read) = summary_of(&path);
+
+        assert_eq!((title.as_str(), last.as_str()), ("what the conversation opened with", "2026-07-03T08:00:00.000Z"));
+        assert!(size > 3 * KB * KB && read <= 1500 * KB, "read {read} of {size} bytes");
+    }
+
+    #[test]
+    fn a_title_line_the_first_look_cuts_in_two_is_still_found() {
+        // The title line is 600 bytes and 65,000 bytes of replies follow it, so the last
+        // 64 KB of the file begins in the middle of it.
+        let long_title = "T".repeat(560);
+        let after: String = (0..325).map(|n| filler(n, 200, "x")).collect();
+        assert_eq!(after.len(), 65_000);
+        assert!(ai_title(&long_title).len() > 600);
+        let (_tmp, path, size) = long_transcript(
+            &[opening("what the conversation opened with")],
+            2 * KB * KB,
+            &[ai_title(&long_title), after],
+        );
+
+        let (title, _, read) = summary_of(&path);
+
+        assert_eq!(title, "T".repeat(120), "a title is its first 120 characters");
+        assert!(read <= 400 * KB, "read {read} of {size} bytes");
+    }
+
+    #[test]
+    fn a_short_conversation_is_read_once() {
+        let (_tmp, path, size) = long_transcript(
+            &[opening("what the conversation opened with")],
+            0,
+            &[reply_at("2026-07-03T08:00:00.000Z"), ai_title("Named by the AI")],
+        );
+
+        let (title, last, read) = summary_of(&path);
+
+        assert_eq!((title.as_str(), last.as_str()), ("Named by the AI", "2026-07-03T08:00:00.000Z"));
+        assert_eq!(read, size);
+    }
+
+    #[test]
+    fn text_of_more_than_one_byte_at_the_edge_of_a_look_is_no_obstacle() {
+        // Replies full of two- and three-byte characters, at 97 different offsets, so
+        // some look is bound to begin inside one.
+        for shift in 0..97 {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("session.jsonl");
+            let mut out = opening("what the conversation opened with");
+            out.push_str(&"p".repeat(shift));
+            out.push('\n');
+            for n in 0..2500 {
+                out.push_str(&filler(n, 211, "é✓日本"));
+            }
+            out.push_str(&reply_at("2026-07-03T08:00:00.000Z"));
+            out.push_str(&ai_title("Named by the AI"));
+            fs::write(&path, &out).unwrap();
+
+            let (title, last, _) = summary_of(&path);
+
+            assert_eq!((title.as_str(), last.as_str()), ("Named by the AI", "2026-07-03T08:00:00.000Z"), "shift {shift}");
+        }
+    }
+
+    #[test]
+    fn a_last_line_still_being_written_is_passed_over() {
+        let (_tmp, path, _) = long_transcript(
+            &[opening("what the conversation opened with")],
+            0,
+            &[ai_title("Named by the AI"), reply_at("2026-07-03T08:00:00.000Z"), r#"{"type":"assistant","timestamp":"2026-07-03T09"#.to_string()],
+        );
+
+        let (title, last, _) = summary_of(&path);
+
+        assert_eq!((title.as_str(), last.as_str()), ("Named by the AI", "2026-07-03T08:00:00.000Z"));
+    }
+
+    #[test]
+    fn a_file_with_nothing_to_name_it_by_is_left_out_of_the_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        fs::write(&path, concat!(
+            r#"{"type":"mode","mode":"default","sessionId":"s"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]},"timestamp":"2026-07-03T08:00:00.000Z"}"#, "\n",
+        )).unwrap();
+
+        assert!(super::summarize(&path).is_none());
+        assert!(super::summarize(&tmp.path().join("no-such.jsonl")).is_none());
+    }
+
+    #[test]
+    fn the_first_message_that_says_something_names_an_untitled_conversation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        fs::write(&path, concat!(
+            r#"{"type":"user","message":{"role":"user","content":"<ide_opened_file>The user opened the file a.java in the IDE.</ide_opened_file>"},"timestamp":"2026-07-03T07:59:00.000Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},{"type":"text","text":"the question itself"}]},"timestamp":"2026-07-03T08:00:00.000Z"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":"a later message"},"timestamp":"2026-07-03T08:05:00.000Z"}"#, "\n",
+        )).unwrap();
+
+        let (title, last, _) = summary_of(&path);
+
+        assert_eq!((title.as_str(), last.as_str()), ("the question itself", "2026-07-03T08:05:00.000Z"));
+    }
+
+    // ---- a conversation opened for the view in one reading ----
+
+    const OPEN_ROOT: &str = r"C:\msgtest";
+
+    /// Two exchanges, a compaction (`b1`), then a third exchange. The last reply carries
+    /// the usage a resume note is worked out from.
+    fn compacted_lines() -> Vec<&'static str> {
+        vec![
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"first question"},"timestamp":"2026-07-30T10:00:00.000Z"}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","model":"claude-opus-5","content":[{"type":"thinking","thinking":"hmm"}]},"timestamp":"2026-07-30T10:00:02.000Z"}"#,
+            r#"{"type":"assistant","uuid":"a2","message":{"id":"m1","model":"claude-opus-5","content":[{"type":"text","text":"first answer"}]},"timestamp":"2026-07-30T10:00:03.000Z"}"#,
+            r#"{"type":"assistant","uuid":"a3","message":{"id":"m2","model":"claude-opus-5","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.java"}}]},"timestamp":"2026-07-30T10:00:04.000Z"}"#,
+            r#"{"type":"user","uuid":"r1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"contents"}]},"timestamp":"2026-07-30T10:00:05.000Z"}"#,
+            r#"{"type":"assistant","uuid":"a4","message":{"id":"m3","model":"claude-opus-5","content":[{"type":"text","text":"read it"}]},"timestamp":"2026-07-30T10:00:06.000Z"}"#,
+            r#"{"type":"system","subtype":"compact_boundary","uuid":"b1","parentUuid":null,"compactMetadata":{"trigger":"manual","preTokens":900000,"postTokens":13000},"timestamp":"2026-07-30T11:00:00.000Z"}"#,
+            r#"{"type":"user","uuid":"s1","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."},"timestamp":"2026-07-30T10:59:59.000Z"}"#,
+            r#"{"type":"user","uuid":"u2","message":{"role":"user","content":"<command-name>/compact</command-name>"},"timestamp":"2026-07-30T10:59:00.000Z"}"#,
+            r#"{"type":"user","uuid":"u3","message":{"role":"user","content":"second question"},"timestamp":"2026-07-30T11:05:00.000Z"}"#,
+            r#"{"type":"assistant","uuid":"a5","message":{"id":"m4","model":"claude-sonnet-5","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-07-30T11:05:02.000Z"}"#,
+            r#"{"type":"user","uuid":"r2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"a b c"}]},"timestamp":"2026-07-30T11:05:03.000Z"}"#,
+            r#"{"type":"assistant","uuid":"a6","message":{"id":"m5","model":"claude-sonnet-5","content":[{"type":"text","text":"second answer"}],"usage":{"input_tokens":3,"cache_read_input_tokens":70000,"cache_creation_input_tokens":646,"cache_creation":{"ephemeral_1h_input_tokens":646}}},"timestamp":"2026-07-30T11:05:04.000Z"}"#,
+        ]
+    }
+
+    /// Writes `lines` as conversation `sess1` of a fake home and runs `f` against it.
+    fn with_transcript<T>(tag: &str, lines: &[&str], f: impl FnOnce() -> T) -> T {
+        let mut env = EnvGuard::lock();
+        let (home, dir) = msg_home(tag);
+        fs::write(dir.join("sess1.jsonl"), lines.join("\n") + "\n").unwrap();
+        env.set_home(&home);
+        let out = f();
+        let _ = fs::remove_dir_all(&home);
+        out
+    }
+
+    fn opened(from_last_compaction: bool) -> serde_json::Value {
+        serde_json::from_str(&super::open_session(OPEN_ROOT, "sess1", from_last_compaction)).expect("an answer in JSON")
+    }
+
+    fn before(boundary: &str) -> serde_json::Value {
+        serde_json::from_str(&super::open_session_before(OPEN_ROOT, "sess1", boundary)).expect("an answer in JSON")
+    }
+
+    fn items_of_answer(answer: &serde_json::Value) -> Vec<serde_json::Value> {
+        answer["items"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// Where the last compaction's own item sits among a conversation's items.
+    fn last_compact(items: &[serde_json::Value]) -> usize {
+        items.iter().rposition(|it| it["t"] == "compact").expect("a compaction among the items")
+    }
+
+    #[test]
+    fn a_conversation_opens_as_the_loader_gives_it_with_each_reply_named() {
+        let (whole, loaded) = with_transcript("open-whole", &compacted_lines(), || {
+            (opened(false), super::load_session_history(OPEN_ROOT, "sess1"))
+        });
+        let loaded: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+
+        // The same items, save for what names a reply's line and its time.
+        let mut plain = items_of_answer(&whole);
+        for item in plain.iter_mut().filter(|it| it["t"] == "text") {
+            let item = item.as_object_mut().unwrap();
+            item.remove("id");
+            item.remove("at");
+        }
+        assert_eq!(serde_json::Value::Array(plain), loaded);
+
+        let named: Vec<(String, String)> = items_of_answer(&whole)
+            .iter()
+            .filter(|it| it["t"] == "text")
+            .map(|it| (it["id"].as_str().unwrap().to_string(), it["at"].as_str().unwrap().to_string()))
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("a2".to_string(), "2026-07-30T10:00:03.000Z".to_string()),
+                ("a4".to_string(), "2026-07-30T10:00:06.000Z".to_string()),
+                ("a6".to_string(), "2026-07-30T11:05:04.000Z".to_string()),
+            ]
+        );
+        assert_eq!(whole["cut"], serde_json::json!({ "uuid": "b1", "at": "2026-07-30T11:00:00.000Z" }));
+        assert!(whole["earlier"].is_null(), "nothing was left out: {}", whole["earlier"]);
+    }
+
+    #[test]
+    fn the_resume_note_comes_with_the_conversation() {
+        let (whole, tail, note) = with_transcript("open-note", &compacted_lines(), || {
+            (opened(false), opened(true), crate::promptcache::resume_note(OPEN_ROOT, "sess1"))
+        });
+
+        // Written in July 2026 and read by today's clock: long cold.
+        assert!(note.starts_with("Idle ") && note.ends_with("about 71k tokens."), "{note}");
+        assert_eq!(whole["note"], note.as_str());
+        assert_eq!(tail["note"], note.as_str(), "the note is of the whole conversation, whatever part is drawn");
+    }
+
+    #[test]
+    fn opened_from_its_last_compaction_a_conversation_starts_at_that_line() {
+        let (whole, tail) = with_transcript("open-tail", &compacted_lines(), || (opened(false), opened(true)));
+        let all = items_of_answer(&whole);
+        let cut = last_compact(&all);
+
+        assert!(cut > 0 && cut < all.len() - 1, "the fixture has items on both sides: {cut} of {}", all.len());
+        assert_eq!(items_of_answer(&tail), all[cut..].to_vec(), "exactly what the whole conversation ends with");
+        assert_eq!(tail["cut"], whole["cut"]);
+        assert_eq!(
+            tail["earlier"],
+            serde_json::json!({ "replies": ["a2", "a4"], "model": "claude-opus-5", "thinking": true }),
+            "what was left out: its replies, the model last used in it, and that it had thinking"
+        );
+    }
+
+    #[test]
+    fn the_part_before_a_compaction_is_had_by_naming_its_boundary() {
+        let (whole, head, unknown) = with_transcript("open-before", &compacted_lines(), || (opened(false), before("b1"), before("nope")));
+        let all = items_of_answer(&whole);
+        let cut = last_compact(&all);
+
+        assert_eq!(items_of_answer(&head), all[..cut].to_vec(), "exactly what the whole conversation begins with");
+        assert_eq!(items_of_answer(&unknown), Vec::<serde_json::Value>::new(), "no such compaction, nothing before it");
+    }
+
+    #[test]
+    fn compacted_twice_it_starts_at_the_second_and_either_part_before_can_be_asked_for() {
+        let mut lines = compacted_lines();
+        lines.extend([
+            r#"{"type":"system","subtype":"compact_boundary","uuid":"b2","parentUuid":null,"compactMetadata":{"trigger":"auto","preTokens":960000,"postTokens":19000},"timestamp":"2026-07-30T12:00:00.000Z"}"#,
+            r#"{"type":"user","uuid":"s2","isCompactSummary":true,"message":{"role":"user","content":"Continued again."},"timestamp":"2026-07-30T11:59:59.000Z"}"#,
+            r#"{"type":"assistant","uuid":"a7","message":{"id":"m6","model":"claude-sonnet-5","content":[{"type":"text","text":"carrying on"}]},"timestamp":"2026-07-30T12:00:05.000Z"}"#,
+        ]);
+        let (whole, tail, first, second) = with_transcript("open-twice", &lines, || (opened(false), opened(true), before("b1"), before("b2")));
+        let all = items_of_answer(&whole);
+        let cut = last_compact(&all);
+        let first_cut = all.iter().position(|it| it["t"] == "compact").unwrap();
+
+        assert!(first_cut < cut);
+        assert_eq!(items_of_answer(&tail), all[cut..].to_vec());
+        assert_eq!(tail["cut"]["uuid"], "b2");
+        assert_eq!(tail["earlier"]["replies"], serde_json::json!(["a2", "a4", "a6"]));
+        assert_eq!(tail["earlier"]["model"], "claude-sonnet-5", "the model last used before the second compaction");
+        assert_eq!(items_of_answer(&second), all[..cut].to_vec());
+        assert_eq!(items_of_answer(&first), all[..first_cut].to_vec());
+    }
+
+    #[test]
+    fn a_conversation_never_compacted_opens_whole_either_way() {
+        let lines: Vec<&str> = compacted_lines().into_iter().take(6).collect();
+        let (whole, tail) = with_transcript("open-plain", &lines, || (opened(false), opened(true)));
+
+        assert_eq!(items_of_answer(&whole).len(), 5, "a question, thinking, two replies and a tool");
+        assert_eq!(tail, whole);
+        assert!(whole["cut"].is_null() && whole["earlier"].is_null(), "{whole}");
+    }
+
+    #[test]
+    fn a_compaction_with_nothing_said_before_it_leaves_nothing_out() {
+        let lines: Vec<&str> = compacted_lines().into_iter().skip(6).collect();
+        let (whole, tail) = with_transcript("open-first", &lines, || (opened(false), opened(true)));
+
+        assert_eq!(items_of_answer(&tail), items_of_answer(&whole));
+        assert_eq!(tail["cut"]["uuid"], "b1");
+        assert!(tail["earlier"].is_null(), "{}", tail["earlier"]);
+    }
+
+    #[test]
+    fn a_reply_the_cli_wrote_itself_is_not_among_the_replies_left_out() {
+        let mut lines = compacted_lines();
+        lines.insert(6, r#"{"type":"assistant","uuid":"err","isApiErrorMessage":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: 529"}]},"timestamp":"2026-07-30T10:30:00.000Z"}"#);
+        let tail = with_transcript("open-synthetic", &lines, || opened(true));
+
+        assert_eq!(tail["earlier"]["replies"], serde_json::json!(["a2", "a4"]));
+        assert_eq!(tail["earlier"]["model"], "claude-opus-5", "<synthetic> is not a model");
+    }
+
+    #[test]
+    fn nothing_to_read_opens_as_an_empty_conversation() {
+        let (missing, outside, outside_before) = with_transcript("open-missing", &compacted_lines(), || {
+            (
+                super::open_session(OPEN_ROOT, "no-such-session", false),
+                super::open_session(OPEN_ROOT, r"..\C--msgtest\sess1", false),
+                super::open_session_before(OPEN_ROOT, r"..\C--msgtest\sess1", "b1"),
+            )
+        });
+
+        for answer in [missing, outside, outside_before] {
+            let answer: serde_json::Value = serde_json::from_str(&answer).expect("an answer in JSON");
+            assert_eq!(items_of_answer(&answer), Vec::<serde_json::Value>::new(), "{answer}");
+            assert!(answer["cut"].is_null() && answer["earlier"].is_null(), "{answer}");
         }
     }
 }

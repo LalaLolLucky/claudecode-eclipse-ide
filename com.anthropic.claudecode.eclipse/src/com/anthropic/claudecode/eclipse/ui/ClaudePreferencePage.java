@@ -17,6 +17,7 @@ import org.eclipse.swt.events.FocusAdapter;
 import org.eclipse.swt.events.FocusEvent;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.widgets.Button;
+import org.eclipse.swt.widgets.Combo;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Label;
@@ -40,6 +41,8 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
     private BooleanFieldEditor dictationMacOS;
     private BooleanFieldEditor debugMode;
     private BooleanFieldEditor terminalOnly;
+    private BooleanFieldEditor bypassAllowed;
+    private DropDownFieldEditor initialPermissionMode;
     private Label codeViewHeading;
 
     /** The Claude Code view's own options: greyed out while the terminal is used exclusively. */
@@ -111,6 +114,94 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         }
     }
 
+    /**
+     * A drop-down whose choices can be replaced while the page is open, which JFace's own
+     * {@code ComboFieldEditor} cannot do: its entries are fixed when it is built. It has no
+     * label of its own; the page puts the preference's name and description above it.
+     */
+    private static final class DropDownFieldEditor extends FieldEditor {
+
+        private Combo combo;
+        /** Each a {label, stored value} pair. */
+        private String[][] choices;
+        private String value = "";
+
+        DropDownFieldEditor(String name, String[][] choices, Composite parent) {
+            this.choices = choices;
+            init(name, "");
+            createControl(parent);
+        }
+
+        /**
+         * Replaces the choices. A value that is no longer among them goes back to the
+         * first, which is what the page then saves.
+         */
+        void setChoices(String[][] newChoices) {
+            choices = newChoices;
+            show(value);
+        }
+
+        /** Shows {@code wanted}, or the first choice when it is not one of them. */
+        private void show(String wanted) {
+            String[] labels = new String[choices.length];
+            int at = 0;
+            for (int i = 0; i < choices.length; i++) {
+                labels[i] = choices[i][0];
+                if (choices[i][1].equals(wanted)) at = i;
+            }
+            value = choices[at][1];
+            if (combo != null && !combo.isDisposed()) {
+                combo.setItems(labels);
+                combo.select(at);
+            }
+        }
+
+        @Override
+        public int getNumberOfControls() {
+            return 1;
+        }
+
+        @Override
+        protected void adjustForNumColumns(int numColumns) {
+            ((GridData) combo.getLayoutData()).horizontalSpan = numColumns;
+        }
+
+        @Override
+        protected void doFillIntoGrid(Composite parent, int numColumns) {
+            // The page calls this again once it knows its column count, so the combo is
+            // made the first time and only placed after that.
+            if (combo == null) {
+                combo = new Combo(parent, SWT.READ_ONLY);
+                combo.setFont(parent.getFont());
+                combo.addListener(SWT.Selection, e -> {
+                    int at = combo.getSelectionIndex();
+                    if (at < 0) return;
+                    String old = value;
+                    value = choices[at][1];
+                    setPresentsDefaultValue(false);
+                    fireValueChanged(VALUE, old, value);
+                });
+                show(value);
+            }
+            combo.setLayoutData(new GridData(SWT.BEGINNING, SWT.CENTER, false, false, numColumns, 1));
+        }
+
+        @Override
+        protected void doLoad() {
+            show(getPreferenceStore().getString(getPreferenceName()));
+        }
+
+        @Override
+        protected void doLoadDefault() {
+            show(getPreferenceStore().getDefaultString(getPreferenceName()));
+        }
+
+        @Override
+        protected void doStore() {
+            getPreferenceStore().setValue(getPreferenceName(), value);
+        }
+    }
+
     /** One decision-card timeout's mode radio group + its dependent custom-seconds field. */
     private record TimeoutFieldPair(RadioGroupFieldEditor mode, IntegerFieldEditor seconds) {}
     private final List<TimeoutFieldPair> timeoutFields = new ArrayList<>();
@@ -173,12 +264,13 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                 "Enable Thinking by default",
                 getFieldEditorParent()));
 
-        addField(new BooleanFieldEditor(
+        bypassAllowed = new BooleanFieldEditor(
                 Constants.PREF_LIVE_AUTO_MODE,
                 // The VS Code extension's own wording for this setting
                 // (claudeCode.allowDangerouslySkipPermissions), verbatim.
                 "Allow bypass permissions mode. Recommended only for sandboxes with no internet access.",
-                getFieldEditorParent()));
+                getFieldEditorParent());
+        addField(bypassAllowed);
 
         terminalOnly = new BooleanFieldEditor(
                 Constants.PREF_TERMINAL_ONLY,
@@ -186,6 +278,29 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                         + "Disables Claude Code view.",
                 getFieldEditorParent());
         addField(terminalOnly);
+
+        // Reaches both views as well. The name, the description and the values are the VS
+        // Code extension's for this setting (claudeCode.initialPermissionMode), verbatim;
+        // bypass permissions is taken off the list while the box above does not allow it —
+        // see updateInitialPermissionModeChoices().
+        initialPermissionMode = addDropDown(
+                Constants.PREF_INITIAL_PERMISSION_MODE,
+                "Initial Permission Mode",
+                "Initial permission mode for new conversations. Unset defers to the Claude Code CLI's resolved\n"
+                        + "default for the session. 'manual' is an alias for 'default', the mode labeled Manual in the UI;\n"
+                        + "set either to always start in Manual.",
+                modeChoices(true));
+        addField(initialPermissionMode);
+
+        // The VS Code extension's for this setting too (claudeCode.archiveInactiveSessions).
+        // It reaches the Claude Code view's history; the Terminal's is the CLI's own.
+        addField(addDropDown(
+                Constants.PREF_ARCHIVE_INACTIVE_SESSIONS,
+                "Archive Inactive Sessions",
+                "Archive a session after this long with no activity. Sessions that are open, running, waiting for\n"
+                        + "input, or unread are never archived automatically.",
+                new String[][] { { "Never", "0" }, { "1 day", "1" }, { "2 days", "2" }, { "7 days", "7" },
+                        { "14 days", "14" } }));
 
         addSectionHeading("Claude Terminal view configuration:", true);
 
@@ -238,6 +353,11 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         addCodeViewOption(new BooleanFieldEditor(
                 Constants.PREF_HIDE_ROOT_DIRECTORIES_ROW,
                 "Hide the root directories row (for single-folder use)",
+                getFieldEditorParent()));
+
+        addCodeViewOption(new BooleanFieldEditor(
+                Constants.PREF_HIDE_BEFORE_COMPACTION,
+                "Hide messages from before a compaction",
                 getFieldEditorParent()));
 
         Label statusSeparator = new Label(getFieldEditorParent(), SWT.SEPARATOR | SWT.HORIZONTAL);
@@ -401,6 +521,45 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         heading.setText(text);
         heading.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 3, 1));
         return heading;
+    }
+
+    /**
+     * A drop-down preference, laid out as the VS Code extension's settings page lays its own
+     * out: the name, what it does, then the choices. The caller adds the editor to the page.
+     */
+    private DropDownFieldEditor addDropDown(String preference, String name, String description,
+            String[][] choices) {
+        Label nameLabel = new Label(getFieldEditorParent(), SWT.NONE);
+        nameLabel.setText(name);
+        nameLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 3, 1));
+
+        Label descriptionLabel = new Label(getFieldEditorParent(), SWT.NONE);
+        descriptionLabel.setText(description);
+        descriptionLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 3, 1));
+
+        return new DropDownFieldEditor(preference, choices, getFieldEditorParent());
+    }
+
+    /** The initial permission modes as the drop-down takes them: each is its own label. */
+    private static String[][] modeChoices(boolean bypassAllowed) {
+        List<String> modes = InitialPermissionMode.choices(bypassAllowed);
+        String[][] choices = new String[modes.size()][];
+        for (int i = 0; i < choices.length; i++) {
+            choices[i] = new String[] { modes.get(i), modes.get(i) };
+        }
+        return choices;
+    }
+
+    /**
+     * Lists bypass permissions among the initial permission modes only while "Allow bypass
+     * permissions mode" is ticked. Read from the editor rather than the store, so it follows
+     * unsaved clicks; unticked with that mode chosen, the choice goes back to unset.
+     */
+    private void updateInitialPermissionModeChoices() {
+        if (bypassAllowed == null || initialPermissionMode == null) {
+            return;
+        }
+        initialPermissionMode.setChoices(modeChoices(bypassAllowed.getBooleanValue()));
     }
 
     private void addCodeViewOption(FieldEditor editor) {
@@ -568,6 +727,7 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         updateStatuslineDependentsEnabled();
         updateAllTimeoutSecondsEnabled();
         updateCodeViewOptionsEnabled();
+        updateInitialPermissionModeChoices();
         // Loading values into the editors fires neither IS_VALID nor VALUE, so a
         // range already persisted as inverted (from a build before this check
         // existed) would otherwise open as valid with Apply enabled.
@@ -580,6 +740,7 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         updateStatuslineDependentsEnabled();
         updateAllTimeoutSecondsEnabled();
         updateCodeViewOptionsEnabled();
+        updateInitialPermissionModeChoices();
     }
 
     @Override
@@ -602,6 +763,9 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         }
         if (event.getSource() == terminalOnly && FieldEditor.VALUE.equals(event.getProperty())) {
             updateCodeViewOptionsEnabled();
+        }
+        if (event.getSource() == bypassAllowed && FieldEditor.VALUE.equals(event.getProperty())) {
+            updateInitialPermissionModeChoices();
         }
         if (FieldEditor.VALUE.equals(event.getProperty())) {
             for (TimeoutFieldPair pair : timeoutFields) {

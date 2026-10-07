@@ -24,10 +24,13 @@
   --mode-manual: #c6613f;     /* composer border: Manual permission mode */
   --mode-plan: #297aa0;       /* composer border: Plan permission mode */
   --mode-accept-edits: #bfbfbf; /* composer border: Edit automatically permission mode */
+  --mode-bypass: #9f3f3f;     /* composer border: Bypass permissions mode, the same in the light theme */
   /* Send-arrow color on the two light mode fills above: white on them is under 3:1. */
   --mode-on-accept-edits: #1e1e1e;
   --mode-on-auto: #1e1e1e;
   --sel: #2d84af;             /* VSCode-style selection blue (cards/answers) */
+  --hist-count: #35839b;      /* count on the history's "Archived sessions" row, both themes */
+  --bm-selected: #515053;     /* the picked row in the Bookmarks panel */
   --sel-hover: #3a93bf;
   --green: #4eb87a;           /* action dots */
   --green-bg: rgba(78,184,122,.16);
@@ -105,6 +108,7 @@
   --mode-on-accept-edits: #fff;
   --mode-on-auto: #fff;
   --sel: #0a6ebd;             /* selection blue tuned for light bg */
+  --bm-selected: #d6d6d6;
   --sel-hover: #0b7fd4;
   --green: #2e9e5b;
   --green-bg: rgba(46,158,91,.14);

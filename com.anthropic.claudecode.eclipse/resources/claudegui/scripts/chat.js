@@ -237,16 +237,19 @@ function addUserMessage(text, ctx, images, id, ts, pane, ctxTarget) {
     // clientHeight only differs from scrollHeight once something is actually capping it —
     // measuring first (the original bug here) always saw them equal, since nothing had
     // constrained the height yet, so nothing ever counted as overflowing.
-    requestAnimationFrame(() => {
-      body.classList.add('clampable');
-      if (body.scrollHeight <= body.clientHeight + 2) { body.classList.remove('clampable'); return; }
-      const more = document.createElement('button');
-      more.type = 'button'; more.className = 'clamp-toggle more'; more.textContent = 'Show more';
-      more.onclick = () => box.classList.add('expanded');
-      const less = document.createElement('button');
-      less.type = 'button'; less.className = 'clamp-toggle less'; less.textContent = 'Show less';
-      less.onclick = () => box.classList.remove('expanded');
-      box.appendChild(more); box.appendChild(less);
+    measureWhenShown(body, {
+      mark: () => body.classList.add('clampable'),
+      overflows: () => body.scrollHeight > body.clientHeight + 2,
+      settle: cut => {
+        if (!cut) { body.classList.remove('clampable'); return; }
+        const more = document.createElement('button');
+        more.type = 'button'; more.className = 'clamp-toggle more'; more.textContent = 'Show more';
+        more.onclick = () => box.classList.add('expanded');
+        const less = document.createElement('button');
+        less.type = 'button'; less.className = 'clamp-toggle less'; less.textContent = 'Show less';
+        less.onclick = () => box.classList.remove('expanded');
+        box.appendChild(more); box.appendChild(less);
+      }
     });
   }
   turn.appendChild(box); pane.appendChild(turn);
@@ -290,6 +293,7 @@ function appendAssistant(t) {
     curTurn.appendChild(curBody);
   }
   curText += t;
+  curBody._replyText = curText;   // Claude's own words: what bookmarks.js marks the reply with once it has finished
   curBody.querySelector('.a-body').innerHTML = renderMarkdown(curText);
   relinkTurn(curTurn);
   scrollBottom();
@@ -436,16 +440,58 @@ function makeMoreHint(label, getFullText) {
   hint.onclick = () => { if (window._openTextInEditor) window._openTextInEditor(getFullText()); };
   return hint;
 }
+/* Blocks that are cut short only when their content overflows — a tool's input or output,
+   a diff, a long prompt — are measured a frame after they are drawn, once they are laid
+   out. One drawn out of sight has no size to measure: in a tab that is not in front, or
+   under a closed "Messages before compaction". Measured there it would be taken for
+   short and never cut. So it waits, marked .unmeasured with its measurement on it, and
+   is measured when it comes into view (measureRevealed).
+
+   A measurement is three steps, so that many can be taken with one layout between them:
+   mark() sets the class that caps the block, overflows() reads whether its content is
+   then cut, and settle(cut) takes the class off again or adds what expands the block. */
+/** @param {HTMLElement} el  the block that is capped
+ *  @param {{mark: Function, overflows: Function, settle: Function}} measurement */
+function measureWhenShown(el, measurement) {
+  requestAnimationFrame(() => {
+    if (!el.getClientRects().length) {
+      // Out of sight with the whole of its turn: later. Hidden within a turn that shows
+      // (a closed block of its own) is measured now, as it always was.
+      const turn = el.closest('.pane > *');
+      if (turn && !turn.getClientRects().length) { el._measure = measurement; el.classList.add('unmeasured'); return; }
+    }
+    measurement.mark();
+    measurement.settle(measurement.overflows());
+  });
+}
+/* Measures what was drawn out of sight under `root` and shows now: when a tab comes to
+   the front, and when "Messages before compaction" is opened. All marked, then all read,
+   then all settled — one at a time, each would have the browser lay the conversation out
+   again. */
+function measureRevealed(root) {
+  if (!root) return;
+  const due = [].filter.call(root.querySelectorAll('.unmeasured'), el => el._measure && el.getClientRects().length);
+  if (!due.length) return;
+  due.forEach(el => { el.classList.remove('unmeasured'); el._measure.mark(); });
+  const cut = due.map(el => el._measure.overflows());
+  due.forEach((el, i) => { const measurement = el._measure; el._measure = null; measurement.settle(cut[i]); });
+}
 /** Measures `contentEl` against `block`'s CSS-capped height AFTER layout and only then
  *  appends a more-hint — the cap itself is pure CSS (.io-block.capped), this just decides
- *  whether there's anything to expand. Called once per block, right after it's inserted. */
+ *  whether there's anything to expand. Called once per block, when it is made; the
+ *  measuring waits for the block to be laid out (measureWhenShown). */
 function capIfOverflowing(block, contentEl, label, getFullText) {
-  block.classList.add('capped');
-  // Reading scrollHeight forces layout — fine here since this runs once per new block,
-  // not per streamed chunk (chat.js's autoScroll doc comment explains why THAT path
-  // avoids it).
-  if (contentEl.scrollHeight <= contentEl.clientHeight + 2) { block.classList.remove('capped'); return; }
-  block.appendChild(makeMoreHint(label, getFullText));
+  measureWhenShown(block, {
+    mark: () => block.classList.add('capped'),
+    // Reading scrollHeight forces layout — fine here since this runs once per new block,
+    // not per streamed chunk (chat.js's autoScroll doc comment explains why THAT path
+    // avoids it).
+    overflows: () => contentEl.scrollHeight > contentEl.clientHeight + 2,
+    settle: cut => {
+      if (cut) block.appendChild(makeMoreHint(label, getFullText));
+      else block.classList.remove('capped');
+    }
+  });
 }
 /** Parses one line of tool-result text for a leading "path:line[:col]" prefix (grep -n /
  *  ripgrep / JDT reference style). Returns null when the line doesn't look like a hit,
@@ -578,7 +624,7 @@ function appendIoRow(block, label, text) {
   // some paths (history reconstruction builds the whole turn before it's in the DOM), so
   // measuring scrollHeight/clientHeight immediately would see 0/0 and never cap anything.
   const fullWord = label === 'IN' ? 'input' : label === 'OUT' ? 'output' : label.toLowerCase();
-  requestAnimationFrame(() => capIfOverflowing(item, pre, 'View full ' + fullWord, () => text));
+  capIfOverflowing(item, pre, 'View full ' + fullWord, () => text);
   return item;
 }
 /** A fresh `.io-block` holding a single row — the common case (a tool with only an IN, or
@@ -1059,7 +1105,7 @@ function buildToolDiff(name, input) {
   } else {
     // Every row IS in the DOM; only add the link if they actually overflow the CSS cap
     // (.code-block.capped pre, chat.css) — measured, not guessed, same as makeIoBlock.
-    requestAnimationFrame(() => capIfOverflowing(block, pre, 'View full diff', fullText));
+    capIfOverflowing(block, pre, 'View full diff', fullText);
   }
   const parts = [];
   if (added) parts.push('Added ' + added + ' line' + (added > 1 ? 's' : ''));
@@ -1200,6 +1246,7 @@ function doCancel() {
   // backfill trigger — so claim the sent bubble's transcript id here, or a stopped
   // turn's message would have no hover actions until the conversation is reloaded.
   backfillMessageIds(t);
+  if (typeof refreshReplies === 'function') refreshReplies(t);   // the replies that did finish get their buttons
 }
 /* Redden the last (in-progress) tool line's dot in the current turn. Returns true
    if a tool line was found, so the caller can pick the right interrupted label. */
@@ -1211,11 +1258,12 @@ function markInterrupted() {
   return true;
 }
 /* Append the italic "Tool interrupted" / "Interrupted" note as its own turn, last
-   (below the "Request cancelled." system line). */
-function addInterrupted(text) {
-  const pane = streamPane() || (activeTab() ? activeTab().pane : messagesEl);
+   (below the "Request cancelled." system line). With `into`, the note goes there instead
+   and nothing is scrolled: a conversation being rebuilt from history, off screen. */
+function addInterrupted(text, into) {
+  const pane = into || streamPane() || (activeTab() ? activeTab().pane : messagesEl);
   if (!pane) return;
   const note = document.createElement('div'); note.className = 'interrupted'; note.textContent = text;
   const turn = document.createElement('div'); turn.className = 'turn'; turn.appendChild(note); pane.appendChild(turn);
-  scrollBottom();
+  if (!into) scrollBottom();
 }

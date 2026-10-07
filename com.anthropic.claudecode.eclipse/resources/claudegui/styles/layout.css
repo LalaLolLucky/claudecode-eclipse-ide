@@ -25,6 +25,12 @@ body { min-width: 150px; }
   transform-origin: 0 0; transform: scale(var(--z, 1));
   display: flex; flex-direction: column; }
 
+/* The conversation — transcript, then composer, as the view always was — and beside it
+   the Bookmarks panel (panels.css). In a view under 500px the panel goes below instead. */
+#content-row { flex: 1; display: flex; min-width: 0; min-height: 0; }
+#convo-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+@media (max-width: 500px) { #content-row { flex-direction: column; } }
+
 /* ── Top toolbar (VSCode editor-tab strip) ───────────────── */
 #toolbar { display: flex; align-items: stretch; height: 35px; flex-shrink: 0;
   background: var(--tab-bg); border-bottom: 1px solid var(--border-soft); }
@@ -102,7 +108,9 @@ body { min-width: 150px; }
   padding: 0 4px; color: var(--fg); font-size: 12.5px; font-weight: inherit; outline: none; }
 .pane > .turn:first-child { margin-top: 0; }
 #toolbar .spacer { flex: 1; }
-#toolbar .tools { display: flex; align-items: center; gap: 2px; padding-right: 8px; }
+/* padding-left: what keeps the buttons off the last tab once the tabs fill the strip and
+   the spacer between them has nothing left to give. */
+#toolbar .tools { display: flex; align-items: center; gap: 2px; padding-left: 6px; padding-right: 8px; }
 .tbtn { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;
   border-radius: 5px; color: var(--fg-dim); cursor: pointer; }
 .tbtn:hover { background: var(--bg-hover); color: var(--fg); }
@@ -259,7 +267,7 @@ body { min-width: 150px; }
 #input-wrap.mode-acceptEdits { border-color: var(--mode-accept-edits); }
 #input-wrap.mode-plan { border-color: var(--mode-plan); }
 #input-wrap.mode-auto { border-color: var(--mode-auto); }
-#input-wrap.mode-bypassPermissions { border-color: var(--mode-auto); }
+#input-wrap.mode-bypassPermissions { border-color: var(--mode-bypass); }
 #input-wrap.blur { border-color: var(--border); }
 .input-row { display: flex; align-items: flex-start; gap: 8px; }
 /* The column right of the textarea: the mic, and under it the send button once the bar
@@ -434,7 +442,7 @@ body { min-width: 150px; }
 #send.mode-acceptEdits { background: var(--mode-accept-edits); color: var(--mode-on-accept-edits); }
 #send.mode-plan { background: var(--mode-plan); }
 #send.mode-auto { background: var(--mode-auto); color: var(--mode-on-auto); }
-#send.mode-bypassPermissions { background: var(--mode-auto); color: var(--mode-on-auto); }
+#send.mode-bypassPermissions { background: var(--mode-bypass); }
 #send.disabled { cursor: default; opacity: .5; }
 
 
@@ -443,4 +451,6 @@ body { min-width: 150px; }
 body.setup-guide-mode #composer,
 body.setup-guide-mode #supertab-row,
 body.setup-guide-mode #cwd-row,
-body.setup-guide-mode #supertab-toggle-collapsed { display: none !important; }
+body.setup-guide-mode #supertab-toggle-collapsed,
+body.setup-guide-mode #bookmarks-toggle,
+body.setup-guide-mode #bookmarks-panel { display: none !important; }

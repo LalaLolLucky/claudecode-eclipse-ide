@@ -40,16 +40,39 @@ public final class RewindService {
 
     // ── Public API (returns JSON strings for the JS bridge) ─────────────────
 
-    /** Typed user messages of a session, in order: {@code [{id,text,ts}]}. */
+    /**
+     * Typed user messages of a session, in order: {@code [{id,text,ts}]}, with
+     * {@code "beforeCompaction": true} on each one from before the conversation's last
+     * compaction. Those can be rewound to like any other (the fork keeps the lines before
+     * the message, which is the conversation as it was, uncompacted); the mark is for the
+     * page, which leaves them out while it is hiding what was said before a compaction.
+     */
     public static String list(String workspaceRoot, String sessionId) {
-        JsonArray out = new JsonArray();
         try {
-            for (JsonObject line : readSession(workspaceRoot, sessionId)) {
-                JsonObject m = typedUserMessage(line);
-                if (m != null) out.add(m);
+            return listOf(readSession(workspaceRoot, sessionId)).toString();
+        } catch (Throwable ignored) {
+            return "[]";
+        }
+    }
+
+    /** {@link #list} over the lines of a transcript. */
+    static JsonArray listOf(List<JsonObject> lines) {
+        JsonArray out = new JsonArray();
+        for (JsonObject line : lines) {
+            if (isCompactBoundary(line)) {
+                for (JsonElement before : out) before.getAsJsonObject().addProperty("beforeCompaction", true);
+                continue;
             }
-        } catch (Throwable ignored) {}
-        return out.toString();
+            JsonObject m = typedUserMessage(line);
+            if (m != null) out.add(m);
+        }
+        return out;
+    }
+
+    /** The line a compaction of the conversation itself leaves (a subagent's is its own). */
+    private static boolean isCompactBoundary(JsonObject line) {
+        return "system".equals(str(line, "type")) && "compact_boundary".equals(str(line, "subtype"))
+                && !bool(line, "isSidechain");
     }
 
     /**

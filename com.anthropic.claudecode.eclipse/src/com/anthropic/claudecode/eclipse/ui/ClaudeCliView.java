@@ -929,8 +929,12 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             TerminalLaunchArgs.Options options = new TerminalLaunchArgs.Options(
                     prefs.getBoolean(Constants.PREF_TERMINAL_MCP_TOOLS),
                     prefs.getBoolean(Constants.PREF_LIVE_AUTO_MODE),
-                    prefs.getBoolean(Constants.PREF_REMOTE_CONTROL_STARTUP));
-            if (!options.mcpTools() && !options.bypass() && !options.remoteControl()) return List.of();
+                    prefs.getBoolean(Constants.PREF_REMOTE_CONTROL_STARTUP),
+                    InitialPermissionMode.current());
+            if (!options.mcpTools() && !options.bypass() && !options.remoteControl()
+                    && options.permissionMode().isEmpty()) {
+                return List.of();
+            }
 
             long started = System.nanoTime();
             List<String> added = TerminalLaunchArgs.build(userArgs, options,
@@ -1374,9 +1378,10 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             for (String a : extraArgs) userArgs.add(a);
             for (String a : userArgs) argTokens.add(quoteArg(a));
 
-            // What the preferences add: the plug-in's tools, bypass permissions mode and
-            // Remote Control on startup. After the user's own arguments, and only what the
-            // installed CLI is known to take — see TerminalLaunchArgs.
+            // What the preferences add: the plug-in's tools, bypass permissions mode, the
+            // initial permission mode and Remote Control on startup. After the user's own
+            // arguments, and only what the installed CLI is known to take — see
+            // TerminalLaunchArgs.
             for (String a : preferenceArgs(claudeCmd, userArgs, port)) argTokens.add(quoteArg(a));
             // Where the claudeCodeEclipse tool takes this tab's Remote Control to start from.
             remoteControlOn = argTokens.contains(TerminalLaunchArgs.REMOTE_CONTROL)

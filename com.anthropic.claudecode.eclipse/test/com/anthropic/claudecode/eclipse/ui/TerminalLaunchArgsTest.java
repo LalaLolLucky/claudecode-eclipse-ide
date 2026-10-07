@@ -27,10 +27,11 @@ class TerminalLaunchArgsTest {
     /** A CLI that knows every flag asked about. */
     private static final Predicate<String> CURRENT = flag -> true;
 
-    private static final Options NOTHING = new Options(false, false, false);
-    private static final Options TOOLS = new Options(true, false, false);
-    private static final Options BYPASS = new Options(false, true, false);
-    private static final Options REMOTE = new Options(false, false, true);
+    private static final Options NOTHING = new Options(false, false, false, "");
+    private static final Options TOOLS = new Options(true, false, false, "");
+    private static final Options BYPASS = new Options(false, true, false, "");
+    private static final Options REMOTE = new Options(false, false, true, "");
+    private static final Options PLAN = new Options(false, false, false, "plan");
 
     private static Predicate<String> knowing(String... flags) {
         return Set.of(flags)::contains;
@@ -135,7 +136,7 @@ class TerminalLaunchArgsTest {
 
     @Test
     void remoteControlComesLastSoItsOptionalNameCannotSwallowAnotherArgument() {
-        List<String> all = TerminalLaunchArgs.build(List.of(), new Options(true, true, true), CURRENT, CONFIG);
+        List<String> all = TerminalLaunchArgs.build(List.of(), new Options(true, true, true, ""), CURRENT, CONFIG);
 
         assertEquals("--remote-control", all.get(all.size() - 1));
         assertEquals("--allow-dangerously-skip-permissions", all.get(0));
@@ -143,8 +144,39 @@ class TerminalLaunchArgsTest {
     }
 
     @Test
+    void theInitialPermissionModeIsTheModeTheSessionStartsIn() {
+        assertEquals(List.of("--permission-mode", "plan"),
+                TerminalLaunchArgs.build(List.of(), PLAN, CURRENT, CONFIG));
+    }
+
+    @Test
+    void aCliThatDoesNotKnowThePermissionModeFlagIsNotGivenIt() {
+        assertEquals(List.of(), TerminalLaunchArgs.build(List.of(), PLAN, knowing("--mcp-config"), CONFIG));
+    }
+
+    @Test
+    void aUsersOwnStartingModeIsLeftAsTheyGaveIt() {
+        assertEquals(List.of(),
+                TerminalLaunchArgs.build(List.of("--permission-mode", "acceptEdits"), PLAN, CURRENT, CONFIG));
+        assertEquals(List.of(),
+                TerminalLaunchArgs.build(List.of("--permission-mode=acceptEdits"), PLAN, CURRENT, CONFIG));
+        // Starts the session in bypass, so it is a starting mode of the user's own too.
+        assertEquals(List.of(),
+                TerminalLaunchArgs.build(List.of("--dangerously-skip-permissions"), PLAN, CURRENT, CONFIG));
+    }
+
+    @Test
+    void thePermissionModeComesBeforeRemoteControlWhichStaysLast() {
+        List<String> all = TerminalLaunchArgs.build(List.of(), new Options(true, true, true, "plan"), CURRENT, CONFIG);
+
+        assertEquals("--remote-control", all.get(all.size() - 1));
+        assertEquals("plan", all.get(all.indexOf("--permission-mode") + 1));
+        assertEquals(8, all.size());
+    }
+
+    @Test
     void everyFlagThatMayBePassedIsOneTheCliIsAskedAbout() {
-        for (String token : TerminalLaunchArgs.build(List.of(), new Options(true, true, true), CURRENT, CONFIG)) {
+        for (String token : TerminalLaunchArgs.build(List.of(), new Options(true, true, true, "plan"), CURRENT, CONFIG)) {
             if (token.startsWith("--")) assertTrue(TerminalLaunchArgs.PROBED.contains(token), token);
         }
         assertTrue(TerminalLaunchArgs.PROBED.contains("--disallowedTools"));

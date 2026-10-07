@@ -756,6 +756,106 @@ public final class NativeCore {
     public static native boolean sessionRename(String claudeCmd, String workspaceRoot,
             String sessionId, String title);
 
+    // ── Session archive (the Claude Code view's own record) ──────────────────
+
+    /**
+     * The history list with the archive applied: {@code sessionsJson} (what
+     * {@link #sessionList} gave for {@code workspaceRoot}) with an {@code archived} flag on
+     * every row, after archiving the rows that have been inactive for {@code days} — one of
+     * 1, 2, 7 or 14; anything else archives nothing and only marks the rows. A
+     * conversation named in {@code inUseJson} (a JSON array of session ids) is never
+     * archived by this call.
+     *
+     * <p>The record is the file at {@code storePath}; no transcript is touched. Reads that
+     * file and one file time per row: call from a background thread.
+     *
+     * @return {@code {"sessions": [...], "archivedNow": [ids this call archived]}}
+     */
+    public static native String sessionArchiveApply(String storePath, String workspaceRoot,
+            String sessionsJson, int days, String inUseJson);
+
+    /**
+     * Archives ({@code archived}) or unarchives the conversations of {@code idsJson}, a
+     * JSON array of session ids, in the record at {@code storePath}. An unarchive is
+     * remembered, so {@link #sessionArchiveApply} does not archive the conversation again
+     * straight away.
+     *
+     * @return true when it was recorded
+     */
+    public static native boolean sessionArchiveSet(String storePath, String idsJson, boolean archived);
+
+    // ── Bookmarks (replies the user marked, per conversation) ────────────────
+
+    /**
+     * The replies {@link #sessionLoad} renders as text, in order, as a JSON array of
+     * {@code {id, text, at}}: the transcript line each one is, its raw text and that
+     * line's timestamp ({@code ""} when it has none). The page matches these to the
+     * replies on screen by text, as it does for {@link #sessionMessageIds}.
+     */
+    public static native String sessionReplyIds(String workspaceRoot, String sessionId);
+
+    /**
+     * A conversation's bookmarks, oldest reply first, as a JSON array of
+     * {@code {uuid, addedAt, writtenAt?}}. They are kept one file per conversation in
+     * {@code dir}; a conversation with none has no file.
+     */
+    public static native String sessionBookmarks(String dir, String sessionId);
+
+    /**
+     * Bookmarks the reply {@code uuid} of a conversation ({@code on}) or takes its
+     * bookmark away.
+     *
+     * @param writtenAtMs when the reply was written, 0 when that is not known
+     * @return {@code {"ok": <whether it was recorded>, "bookmarks": [the list as it now is]}}
+     */
+    public static native String sessionBookmarkSet(String dir, String sessionId, String uuid,
+            boolean on, long writtenAtMs);
+
+    /**
+     * The text of replies of a conversation, read from its transcript: a JSON object of
+     * {@code uuid → text}, null for one the transcript does not hold. For a bookmarked
+     * reply that is not on screen. Reads the transcript.
+     */
+    public static native String sessionBookmarkTexts(String workspaceRoot, String sessionId,
+            String uuidsJson);
+
+    // ── Prompt cache (what resuming a saved conversation will cost) ──────────
+
+    /**
+     * The note a reopened conversation ends with when the prompt cache no longer holds
+     * it: how long it sat idle and about how many tokens its next message will cache
+     * again, or that it was compacted and nothing has been sent since. Judged from the
+     * transcript's own usage numbers and the clock, without asking the API.
+     *
+     * @return the sentence, or {@code ""} when there is none to show (the cache is still
+     *         warm, or the conversation has no reply to go by)
+     */
+    public static native String sessionResumeNote(String workspaceRoot, String sessionId);
+
+    // ── Opening a saved conversation ─────────────────────────────────────────
+
+    /**
+     * A saved conversation for the view to draw, from one reading of its transcript:
+     * {@code {items, note, cut, earlier}} — the render items {@link #sessionLoad} gives,
+     * each reply also carrying its transcript line ({@code id}) and that line's time
+     * ({@code at}); the note of {@link #sessionResumeNote}; and the conversation's last
+     * compaction ({@code {uuid, at}}, or null).
+     *
+     * <p>With {@code fromLastCompaction} the items begin at that compaction, and
+     * {@code earlier} ({@code {replies, model, thinking}}, null when nothing was left
+     * out) says what the view still has to know of the part before it. Reads the whole
+     * transcript: call it off the UI thread.
+     */
+    public static native String sessionOpen(String workspaceRoot, String sessionId, boolean fromLastCompaction);
+
+    /**
+     * The render items of the part of a conversation before one of its compactions —
+     * the one whose boundary line is {@code boundaryUuid}, as {@link #sessionOpen} named
+     * it — as {@code {items}}; empty when the conversation has no such compaction. Reads
+     * the whole transcript: call it off the UI thread.
+     */
+    public static native String sessionOpenBefore(String workspaceRoot, String sessionId, String boundaryUuid);
+
     // ── Session history (web — claude.ai) ────────────────────────────────────
 
     /**

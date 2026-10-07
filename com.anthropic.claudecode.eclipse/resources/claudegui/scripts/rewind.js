@@ -12,7 +12,12 @@ function openRewindDialog() {
   if (t.sessionId && window._rewindList) {
     try { msgs = JSON.parse(window._rewindList(t.sessionId) || '[]') || []; } catch (e) { msgs = []; }
   }
-  msgs = msgs.map(m => ({ id: m.id, text: stripMeta(m.text || ''), ts: m.ts }))
+  // What was said before the last compaction can still be rewound to, and is offered
+  // here like the rest — unless the view is hiding it (stream.js, "Hide messages from
+  // before a compaction"), in which case it is not offered here either.
+  const hiding = document.documentElement.classList.contains('hide-pre-compact');
+  msgs = msgs.filter(m => !(hiding && m.beforeCompaction === true))
+             .map(m => ({ id: m.id, text: stripMeta(m.text || ''), ts: m.ts }))
              .filter(m => m.id && m.text);
   msgs.reverse();   // newest first, like VSCode
   rwState = { tab: t, msgs, sel: 0, phase: 'list', confirmSel: 0 };

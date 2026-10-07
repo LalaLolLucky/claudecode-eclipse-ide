@@ -64,6 +64,35 @@ function parseUserContent(s) {
 
 let histSessions = [], histLoading = false, histLoaded = false;
 function setHistoryLoading(v) { histLoading = v; }   // list shows "Loading…"; button stays the clock
+/* Every request for the list is numbered, and the view hands the number back with its
+   answer. Two things follow. An answer that a later one has overtaken is dropped: scans
+   run side by side (a tab asks for the list too, to learn its title) and finish in any
+   order. And the open panel says "Loading…" until the answer to its OWN request, or to a
+   later one, is in — a list asked for before it was opened is not the list as it is now,
+   and showing the one kept from last time let a row be picked that was hours out of date. */
+let histAsked = 0;       // the number of the last request
+let histShown = 0;       // the request the list in hand answers
+let histAwaited = 0;     // the request the panel is waiting on
+let histAskedAt = 0;     // when the panel asked, so a request that is never answered is not waited on forever
+const HIST_ANSWER_WAIT_MS = 60000;
+/** Asks the view for the session list. `openIdsJson` — the conversations open in tabs —
+ *  is the panel's alone: naming them is what asks for the inactive ones to be archived.
+ *  @returns {number} the request's number, 0 when there is no view to ask */
+function requestSessionList(openIdsJson) {
+  if (!window._listSessionsAsync) return 0;
+  histAsked++;
+  window._listSessionsAsync(openIdsJson === undefined ? null : openIdsJson, histAsked);
+  return histAsked;
+}
+/* Whether the view behind the page keeps an archive at all (a native library from
+   before it does not). Without one nothing is grouped and no row offers to archive. */
+let histArchiveOn = false;
+/* The "Archived sessions" group starts closed and is left as the user last had it. */
+let histArchivedCollapsed = true;
+try { if (localStorage.getItem('claude.histArchivedCollapsed') === '0') histArchivedCollapsed = false; } catch (e) {}
+/* The conversations open in a tab, whichever folder they are under: what the archive
+   never files away on its own. A restored tab not shown yet counts as open too. */
+function openSessionIds() { return tabs.map(t => t.sessionId).filter(Boolean); }
 
 /* Search scope: 'title' (default) → 'own' (titles + the user's own messages) →
    'all' (titles + the full conversation, including Claude's replies) → back to
@@ -149,17 +178,33 @@ function updateSearchBusy() {
 /* Load the session list off the UI thread (the first call extracts the bundled
    PHP runtime + spawns php, which would otherwise freeze the click). */
 function loadHistoryAsync() {
-  if (histLoading) return;
+  // One request of the panel's at a time — unless the last has gone a minute unanswered.
+  if (histLoading && Date.now() - histAskedAt < HIST_ANSWER_WAIT_MS) return;
   setHistoryLoading(true);
-  renderHistoryList();   // show "Loading…" (or cached items if we have them) right away
-  if (window._listSessionsAsync) { window._listSessionsAsync(); return; }
+  renderHistoryList();   // "Loading…", never the list kept from the last opening
+  // Naming the open conversations is what asks for the inactive ones to be archived:
+  // only this, the panel's own request, does (a tab asking for its title does not).
+  if (window._listSessionsAsync) {
+    histAskedAt = Date.now();
+    histAwaited = requestSessionList(JSON.stringify(openSessionIds()));
+    return;
+  }
   // Fallback: old synchronous bridge.
   try { histSessions = JSON.parse(window._listSessions() || '[]'); } catch (e) { histSessions = []; }
   histLoaded = true; setHistoryLoading(false); renderHistoryList();
 }
-window.onHistoryLoaded = function(json) {
+/** @param {number} [asked] the number of the request this answers (none from a view
+ *    that does not hand it back: such an answer is taken as it comes) */
+window.onHistoryLoaded = function(json, archiveOn, asked) {
+  asked = Number(asked) || 0;
+  if (asked && asked < histShown) return;   // overtaken by the answer to a later request
+  if (asked) histShown = asked;
   try { histSessions = JSON.parse(json || '[]'); } catch (e) { histSessions = []; }
-  histLoaded = true; setHistoryLoading(false); renderHistoryList();
+  histArchiveOn = archiveOn === true;
+  histLoaded = true;
+  // What the panel waits for is the list as of its opening: its own answer, or a later one.
+  if (!asked || asked >= histAwaited) { histAwaited = 0; setHistoryLoading(false); }
+  renderHistoryList();
   syncTabTitles(histSessions);
   clampOpenMenu();   // the list may be a different width than "Loading…" — re-pin so it isn't cut off
 };
@@ -189,9 +234,9 @@ function openHistoryPanel(resumeInPlace) {
   searchRequestId++; searchInFlight = false; contentMatches = {};
   updateSearchBusy();
   updateSearchScopeButton();
-  // Open the panel immediately; show cached results if we have them, otherwise a
-  // "Loading…" state — and (re)load in the background either way.
-  renderHistoryList();
+  // Open the panel immediately on "Loading…" and ask for the list as it is now. The core
+  // reads only the two ends of each transcript (session.rs, summarize), so the answer
+  // is a moment away — which is what lets the panel wait for it every time.
   loadHistoryAsync();
   panel.classList.add('open');
   if (s) setTimeout(() => s.focus(), 0);
@@ -305,7 +350,7 @@ function renderHistoryList() {
   const q = (document.getElementById('hist-search') ? document.getElementById('hist-search').value : '').toLowerCase();
   const list = document.getElementById('history-list');
   list.innerHTML = '';
-  if (histLoading && !histLoaded) { list.innerHTML = '<div class="h-empty">Loading…</div>'; return; }
+  if (histLoading) { list.innerHTML = '<div class="h-empty">Loading…</div>'; return; }
   const items = histSessions.filter(s =>
     (s.display || '').toLowerCase().includes(q) ||
     (searchScope !== 'title' && Object.prototype.hasOwnProperty.call(contentMatches, s.sessionId)));
@@ -314,31 +359,91 @@ function renderHistoryList() {
     list.innerHTML = '<div class="h-empty">' + empty + '</div>';
     return;
   }
-  items.forEach(s => {
-    const it = document.createElement('div'); it.className = 'item'; it.dataset.sid = s.sessionId;
-    const main = document.createElement('div'); main.className = 'h-main';
-    const title = document.createElement('div'); title.className = 'h-title'; title.textContent = stripContext(s.display) || '(untitled)';
-    const time = document.createElement('div'); time.className = 'h-time'; time.textContent = relTime(s.timestamp);
-    main.appendChild(title); main.appendChild(time);
-    const titleMatched = (s.display || '').toLowerCase().includes(q);
-    if (q && !titleMatched && contentMatches[s.sessionId]) {
-      const snippet = document.createElement('div'); snippet.className = 'h-snippet';
-      snippet.textContent = contentMatches[s.sessionId];
-      main.appendChild(snippet);
-    }
-    const actions = document.createElement('div'); actions.className = 'h-actions';
-    const rename = document.createElement('span'); rename.className = 'h-action h-rename'; rename.title = 'Rename';
-    rename.innerHTML = ICONS.PENCIL;
-    rename.onclick = (e) => { e.stopPropagation(); startHistoryRename(it, s); };
-    const del = document.createElement('span'); del.className = 'h-action h-del'; del.title = 'Delete';
-    del.innerHTML = ICONS.TRASH;
-    del.onclick = (e) => { e.stopPropagation(); deleteHistory(s.sessionId); };
-    actions.appendChild(rename); actions.appendChild(del);
-    it.appendChild(main); it.appendChild(actions);
-    it.onclick = () => loadHistory(s.sessionId, s.display);
-    list.appendChild(it);
-  });
+  const archived = items.filter(s => s.archived);
+  items.filter(s => !s.archived).forEach(s => list.appendChild(historyRow(s, q)));
+  if (!archived.length) return;
+  // While a search is typed the group is open and cannot be closed, so a match inside
+  // it is never hidden behind it.
+  const collapsed = !q && histArchivedCollapsed;
+  list.appendChild(archivedGroupRow(archived.length, collapsed, !q));
+  if (!collapsed) archived.forEach(s => list.appendChild(historyRow(s, q)));
 }
+/* One conversation's row. Hovered, it offers Rename and — where there is an archive —
+   Archive session, or Unarchive session on a row already in the archive. */
+function historyRow(s, q) {
+  const it = document.createElement('div'); it.className = 'item'; it.dataset.sid = s.sessionId;
+  const main = document.createElement('div'); main.className = 'h-main';
+  const title = document.createElement('div'); title.className = 'h-title'; title.textContent = stripContext(s.display) || '(untitled)';
+  const time = document.createElement('div'); time.className = 'h-time'; time.textContent = relTime(s.timestamp);
+  main.appendChild(title); main.appendChild(time);
+  const titleMatched = (s.display || '').toLowerCase().includes(q);
+  if (q && !titleMatched && contentMatches[s.sessionId]) {
+    const snippet = document.createElement('div'); snippet.className = 'h-snippet';
+    snippet.textContent = contentMatches[s.sessionId];
+    main.appendChild(snippet);
+  }
+  const actions = document.createElement('div'); actions.className = 'h-actions';
+  const rename = document.createElement('span'); rename.className = 'h-action h-rename'; rename.title = 'Rename';
+  rename.innerHTML = ICONS.PENCIL;
+  rename.onclick = (e) => { e.stopPropagation(); startHistoryRename(it, s); };
+  actions.appendChild(rename);
+  if (histArchiveOn) {
+    const move = document.createElement('span');
+    move.className = 'h-action ' + (s.archived ? 'h-unarchive' : 'h-archive');
+    move.title = s.archived ? 'Unarchive session' : 'Archive session';
+    move.innerHTML = s.archived ? ICONS.UNARCHIVE : ICONS.ARCHIVE;
+    move.onclick = (e) => { e.stopPropagation(); setHistoryArchived(s, !s.archived); };
+    actions.appendChild(move);
+  }
+  it.appendChild(main); it.appendChild(actions);
+  it.onclick = () => loadHistory(s.sessionId, s.display);
+  return it;
+}
+/* The row the archived conversations sit under: a chevron, the name and their count.
+   A click opens or closes the group; `canToggle` is off while a search is typed. */
+function archivedGroupRow(count, collapsed, canToggle) {
+  const row = document.createElement('div'); row.className = 'item h-group';
+  row.title = !canToggle ? 'Archived sessions' : (collapsed ? 'Expand Archived sessions' : 'Collapse Archived sessions');
+  const chev = document.createElement('span'); chev.className = 'h-group-chev';
+  chev.innerHTML = collapsed ? ICONS.CHEVRON : ICONS.CHEVRONDOWN;
+  const name = document.createElement('span'); name.className = 'h-group-name'; name.textContent = 'Archived sessions';
+  const n = document.createElement('span'); n.className = 'h-group-count'; n.textContent = String(count);
+  row.appendChild(chev); row.appendChild(name); row.appendChild(n);
+  // stopPropagation: re-rendering detaches this row mid-click, and ui.js takes a click
+  // on a detached node for one outside the panel (see cycleSearchScope).
+  row.onclick = (e) => {
+    e.stopPropagation();
+    if (!canToggle) return;
+    histArchivedCollapsed = !histArchivedCollapsed;
+    try { localStorage.setItem('claude.histArchivedCollapsed', histArchivedCollapsed ? '1' : '0'); } catch (err) {}
+    renderHistoryList();
+  };
+  return row;
+}
+/* Files a conversation under "Archived sessions", or takes it back out. Nothing of the
+   conversation is changed; it is only listed elsewhere. */
+function setHistoryArchived(session, archived) {
+  let recorded = false;
+  try {
+    recorded = !!(window._setSessionsArchived
+      && window._setSessionsArchived(JSON.stringify([session.sessionId]), archived));
+  } catch (e) {}
+  if (!recorded) return;
+  session.archived = archived;
+  renderHistoryList();
+  // Archived while open in a tab, it is put away with the rest: the tab closes, as the
+  // VS Code extension leaves a session it has just archived.
+  if (archived) {
+    const open = tabs.find(t => t.sessionId === session.sessionId);
+    if (open) closeTab(open.id);
+  }
+}
+/* The view took conversations back out of the archive (the notice's Unarchive): show
+   the list as it now is, if it is being looked at. */
+window.onSessionsUnarchived = function() {
+  const panel = document.getElementById('history-panel');
+  if (panel && panel.classList.contains('open') && histActive === 'local') loadHistoryAsync();
+};
 function startHistoryRename(itemEl, session) {
   const main = itemEl.querySelector('.h-main');
   const titleEl = itemEl.querySelector('.h-title');
@@ -378,6 +483,8 @@ function startHistoryRename(itemEl, session) {
     else if (e.key === 'Escape') { e.preventDefault(); inp.onblur = null; finish(false); }
   };
 }
+/* Not on a row any more: the rows archive instead (setHistoryArchived). This and its
+   bridge (_deleteSession) remain the way to remove a conversation for good. */
 function deleteHistory(id) {
   try { if (window._deleteSession) window._deleteSession(id); } catch (e) {}
   histSessions = histSessions.filter(s => s.sessionId !== id);
@@ -402,20 +509,431 @@ function appendThinkStatic(turn, text) {
   }
   turn.appendChild(el);
 }
-function appendTextStatic(turn, text) {
+/* `id` and `at` are the transcript line this reply is and when it was written, when the
+   view sent them along with the conversation (see "Opening a saved conversation"
+   below). Without them the reply learns its line afterwards, by its text
+   (bookmarks.js, backfillReplyIds). */
+function appendTextStatic(turn, text, id, at) {
   if (!text || !text.trim()) return;
   const el = document.createElement('div'); el.className = 'a-item';
   el.innerHTML = '<span class="dot"></span><span class="a-body"></span>';
   el.querySelector('.a-body').innerHTML = renderMarkdown(text);
+  if (typeof sealReply === 'function') sealReply(el, text);   // one of Claude's replies: copy and bookmark under it
+  if (id && el.classList.contains('reply')) {
+    el.dataset.rid = id;
+    const when = Date.parse(at || '');
+    if (!isNaN(when)) el._replyAt = when;
+  }
   turn.appendChild(el);
+}
+/* The line a reopened conversation ends with when its next message will cost more than
+   usual: the prompt cache no longer holds it. The core writes the sentence from the
+   transcript's own usage numbers (promptcache.rs); here it is only placed, as a line of
+   the same kind as "Interrupted" in a turn of its own, so whatever is said next goes
+   under it. No line when there is nothing to say. */
+function resumeNoteTurn(text) {
+  if (!text) return null;
+  const note = document.createElement('div'); note.className = 'resume-note'; note.textContent = text;
+  const turn = document.createElement('div'); turn.className = 'turn'; turn.appendChild(note);
+  return turn;
+}
+/* The same sentence asked for on its own, for a conversation that did not come with it
+   (one read the old way, see loadHistory). Empty when the native library is from before
+   the note. With the tab's folder, for the reason backfillMessageIds gives. */
+function resumeNoteFor(t, id) {
+  try { return (window._resumeNote && window._resumeNote(id, rootPathOf(t))) || ''; } catch (e) { return ''; }
+}
+
+/* ===================== Opening a saved conversation =====================
+
+   A long conversation is megabytes of transcript and thousands of lines to draw. Read
+   and drawn in one go on the UI thread, opening one held all of Eclipse for seconds. So:
+
+   - The view reads it on a thread of its own (_openSessionAsync) and says when it has
+     it (onSessionOpened). The tab is there at once, saying "Loading…", with the
+     settings the conversation was saved with already in force.
+   - Its end is drawn first, which is where a reopened conversation lands, and the older
+     messages are filled in above it a few at a time, between turns of the page. What
+     takes the time is not making the elements but the browser laying them out, so the
+     parts are small and each is laid out before the clock is read again.
+   - Only while its tab is in front. What is drawn out of sight is laid out all at once
+     the moment it shows, which is the wait this is here to avoid; a tab left while its
+     conversation is coming in goes on from where it was when it is shown again
+     (resumeDrawing).
+   - While "Hide messages from before a compaction" is on, the part before the last
+     compaction is not read into items and not drawn. It is fetched when the preference
+     is off and its line is opened (fetchEarlierPart).
+
+   Whatever is said in the tab meanwhile stays below: after the first, immediate part of
+   loadHistory nothing here empties the pane, and nothing here touches the render state a
+   turn in progress is using (loadRender).
+
+   A view that cannot read a conversation this way (a native library from before
+   sessionOpen) and a caller that cannot wait (opts.sync) have it as before: read and
+   drawn on the spot, all of it. */
+
+/* How many items, at least, the first draw of a conversation holds: its end. */
+let HIST_TAIL_ITEMS = 30;
+/* How many items, at most, are drawn and laid out at a time after that — where the
+   conversation can be drawn apart that finely (historyParts). */
+let HIST_PART_ITEMS = 16;
+/* How long one turn of the page may go on drawing older messages before it lets the
+   page answer the user again. */
+let HIST_SLICE_MS = 40;
+/* Puts off the next part of a drawing. A timer, not an animation frame: a view that is
+   not showing is given no frames, and its conversation would never be finished. */
+let laterDraw = fn => setTimeout(fn, 0);
+let openAsks = 0;              // the number of the last request made of the view
+const openAsked = {};          // request number → what it was for, until it is answered
+let openInBackground = true;   // until the view answers that it cannot
+/* What tells that the reader has taken the transcript over (also holdBottomWhileSettling). */
+const READER_TAKES_OVER = ['wheel', 'touchstart', 'pointerdown'];
+
+const histKind = it => it.t || (it.role === 'user' ? 'user' : 'text');   // back-compat with old text-only format
+// Only real model ids — skip "<synthetic>" (CLI-injected messages) and blanks.
+const histModel = it => (typeof it.model === 'string' && it.model.indexOf('claude-') === 0) ? it.model : '';
+/* The kinds of item after which no "Compacted chat" line is being held back for its
+   /compact bubble: each of them draws that line first. */
+const HIST_SETTLED = { text: true, tool: true, thinking: true, error: true, answered: true };
+/* The kinds an assistant turn is made of: consecutive ones share one turn and its rail. */
+const HIST_RUN = { text: true, tool: true, thinking: true };
+
+/* Where a conversation's items can be drawn apart and come out the same as drawn in one
+   go: after any settled item. `cuts` are those indexes. `joins[k]` says that cut k falls
+   inside an assistant turn, so the two halves are one turn once both are in the pane
+   (placeHistoryPart). `modelBefore[k]` is the model in effect on reaching cut k, for the
+   "Switched to" lines; `turnModel[i]` the model user message i's turn ran on — the first
+   one named before the next user message. */
+function historyParts(items) {
+  const n = items.length, turnModel = new Array(n);
+  let next = '';
+  for (let i = n - 1; i >= 0; i--) {
+    if (histKind(items[i]) === 'user') { turnModel[i] = next; next = ''; }
+    else if (histModel(items[i])) next = histModel(items[i]);
+  }
+  const cuts = [], joins = {}, modelBefore = {};
+  let rendered = null;
+  for (let i = 0; i < n; i++) {
+    const kind = histKind(items[i]);
+    if (i > 0 && HIST_SETTLED[histKind(items[i - 1])]) {
+      cuts.push(i); modelBefore[i] = rendered;
+      if (HIST_RUN[kind] && HIST_RUN[histKind(items[i - 1])]) joins[i] = true;
+    }
+    if (kind === 'user' && turnModel[i]) rendered = turnModel[i];
+  }
+  return { cuts: cuts, joins: joins, modelBefore: modelBefore, turnModel: turnModel };
+}
+/* Where the part that ends at item `end` starts: at the cut furthest back that keeps it
+   to HIST_PART_ITEMS items, or the nearest one when none is that close (a run of items
+   that cannot be drawn apart). */
+function partStart(cuts, end) {
+  if (end <= HIST_PART_ITEMS) return 0;
+  let nearest = 0;
+  for (let i = 0; i < cuts.length && cuts[i] < end; i++) {
+    if (end - cuts[i] <= HIST_PART_ITEMS) return cuts[i];
+    nearest = cuts[i];
+  }
+  return nearest;
+}
+/* The same going forward: where the part that starts at item `at` ends, of `n` items. */
+function partEnd(cuts, at, n) {
+  if (n - at <= HIST_PART_ITEMS) return n;
+  let furthest = 0;
+  for (let i = 0; i < cuts.length; i++) {
+    if (cuts[i] <= at) continue;
+    if (cuts[i] - at > HIST_PART_ITEMS) return furthest || cuts[i];
+    furthest = cuts[i];
+  }
+  return furthest || n;
+}
+/* What a conversation's items say it was last run with: the model it last used (resume
+   with it), and whether it had thinking on — any thinking block says so. */
+function historySaid(items) {
+  const said = { model: '', thinking: false };
+  items.forEach(it => {
+    if (histModel(it)) said.model = histModel(it);
+    if (histKind(it) === 'thinking') said.thinking = true;
+  });
+  return said;
+}
+
+/**
+ * Draws items[from..to) of a conversation into a box of their own, which is returned
+ * for its children to be moved into the pane. `from` is 0 or one of the cuts, so
+ * nothing drawn before it reaches into this part, save the assistant turn it may be cut
+ * in: that turn's two halves are made one when both are in the pane (placeHistoryPart).
+ * @param {Tab} t  the tab the conversation is in (for its folder)
+ * @param {string} id  the conversation
+ * @param {{modelBefore: Object, turnModel: string[]}} parts  see historyParts
+ * @param {number} foldAt  index of the conversation's last compaction: what is drawn
+ *   of the items before it is marked as from before a compaction (stream.js,
+ *   foldBeforeCompaction). -1 for none, Infinity when all of these items are.
+ * @param {string|null} modelBefore  the model in effect on reaching `from`
+ */
+function drawHistoryPart(t, id, items, parts, from, to, foldAt, modelBefore) {
+  const box = document.createElement('div');
+  // Group consecutive assistant blocks (thinking / tool / text) into one turn with
+  // its dotted rail; user messages and answer cards are their own turns.
+  let aTurn = null;
+  let renderedModel = modelBefore; // model in effect while reconstructing → switch dividers
+  function assistantTurn() {
+    if (!aTurn || !aTurn.parentNode) { aTurn = document.createElement('div'); aTurn.className = 'turn'; box.appendChild(aTurn); }
+    return aTurn;
+  }
+  // Compaction markers: the transcript stores boundary + summary BEFORE the
+  // "/compact" command echo, but live rendering showed the bubble first — hold the
+  // "Compacted chat" line and flush it after that bubble (or before whatever
+  // renders next, e.g. after an auto-compact) so a reload reads like the live run.
+  let pendingCompact = null;   // { trigger, freed, text }
+  function flushCompact() {
+    if (!pendingCompact) return;
+    addCompacted(box, pendingCompact.trigger, pendingCompact.freed, pendingCompact.text);
+    pendingCompact = null;
+  }
+  function markBefore() {
+    for (let el = box.firstElementChild; el; el = el.nextElementSibling) el.classList.add('pre-compact');
+  }
+  for (let i = from; i < to; i++) {
+    const it = items[i], ty = histKind(it);
+    // What was said above the last compaction is folded away the moment the loop
+    // reaches it: before its own line, and the /compact bubble that line follows, are drawn.
+    if (i === foldAt) {
+      flushCompact();   // an earlier compaction's line still held back belongs inside, in its place
+      aTurn = null;
+      markBefore();
+    }
+    if (ty === 'compact') {
+      aTurn = null;
+      pendingCompact = { trigger: it.trigger || 'manual',
+        freed: Math.max(0, (it.preTokens || 0) - (it.postTokens || 0)), text: '' };
+    } else if (ty === 'teleported') {
+      // The boundary between the conversation as it arrived from claude.ai and
+      // whatever was said here afterwards.
+      aTurn = null;
+      box.appendChild(makeTeleportDivider());
+    } else if (ty === 'compact_summary') {
+      if (pendingCompact) pendingCompact.text = it.text || '';
+      else { aTurn = null; addCompacted(box, 'manual', 0, it.text || ''); }
+    } else if (ty === 'user') {
+      // Reconstruct "Switched to <model>" dividers from the transcript (the model
+      // is recorded per turn) so past model switches persist across reloads.
+      const tm = parts.turnModel[i];
+      if (tm) { if (renderedModel !== null && tm !== renderedModel) box.appendChild(makeSwitchDivider(tm)); renderedModel = tm; }
+      aTurn = null;
+      const p = parseUserContent(it.content || '');
+      const isCompactCmd = p.text.trim() === '/compact';
+      // A line that paints nothing (e.g. the <local-command-caveat> the CLI
+      // inserts between the summary and the "/compact" echo) can't be the
+      // bubble the pending compact marker is waiting to render after.
+      const imgs = (it.images || []).map(imageFromBlock)
+        .concat((it.documents || []).map(d => documentFromBlock(d, it.id, id))).filter(Boolean);
+      const invisible = !p.text && !p.chip && !imgs.length;
+      if (!isCompactCmd && !invisible) flushCompact();
+      // Bracketed markers the CLI writes as user lines are not messages anyone
+      // sent. Each pattern must match the WHOLE text: a real message that merely
+      // QUOTES a marker ("[Request interrupted by user for tool use] still
+      // appears as a bubble") has to stay a normal bubble, or the user's words
+      // get thrown away. The trailing [^\]]* still absorbs suffix variants.
+      const marker = p.text.trim();
+      // An interruption renders live as the italic muted note (two variants,
+      // matching the two labels doCancel picks between) — a reload shows the same.
+      if (/^\[Request interrupted by user[^\]]*\]$/.test(marker)) {
+        addInterrupted(/for tool use/i.test(marker) ? 'Tool interrupted' : 'Interrupted', box);
+        continue;
+      }
+      // Image-scaling note the CLI injects beside an upload ("[Image: original
+      // 2352x4160, displayed at …]"). Internal metadata with no image block of
+      // its own — nothing to show, so it renders nothing at all.
+      if (/^\[Image:[^\]]*\]$/.test(marker)) continue;
+      // Messages sent with pasted images carry them as {media_type,data} blocks —
+      // rebuild the same chips the live bubble showed.
+      if (!invisible) addUserMessage(p.text, p.chip, imgs, it.id, it.ts, box, p.target);
+      if (isCompactCmd) flushCompact();
+    } else if (ty === 'answered') {
+      flushCompact();
+      aTurn = null;
+      addAnswered(it.text || '', box);
+    } else if (ty === 'error') {
+      // A backend error (rate limit, 529 overload, …). Live it is the muted
+      // "⚠ …" line onError paints — a reload rebuilds exactly that, never an
+      // assistant paragraph, so a past session reads the way it ran.
+      flushCompact();
+      aTurn = null;
+      const em = it.text || '';
+      addSystemToPane(box, '⚠ ' + (typeof augmentError === 'function' ? augmentError(em) : em));
+    } else if (ty === 'thinking') {
+      flushCompact();
+      appendThinkStatic(assistantTurn(), it.text || '');
+    } else if (ty === 'tool') {
+      flushCompact();
+      // A reconstructed Agent/Task call's own nested log (session.rs's agentLog field) —
+      // the disk-backed counterpart of chat.js's live agentLogs, so a reopened
+      // conversation's /agents popup (duration, tokens, model, Prompt, Tool calls, "Open
+      // transcript") works the same as it did live instead of losing it the moment the
+      // webview that ran it live is gone. Populated BEFORE makeToolLine so its isAgent
+      // branch can tell there's actually something to show and add the collapsible.
+      const isAgentTool = AGENT_KEYS.has(String(it.name || '').toLowerCase());
+      const hasLog = isAgentTool && it.agentLog && Array.isArray(it.agentLog.items) && it.agentLog.items.length > 0;
+      if (hasLog && it.id) {
+        const log = ensureAgentLog(it.id);
+        log.items = it.agentLog.items.map(x => Object.assign({}, x));   // fresh copies — no stale _el refs
+        log.tokens = it.agentLog.tokens || 0;
+        log.model = it.agentLog.model || '';
+        log.startedAt = it.agentLog.startedAt ? Date.parse(it.agentLog.startedAt) || 0 : 0;
+        log.endedAt = it.agentLog.endedAt ? Date.parse(it.agentLog.endedAt) || 0 : 0;
+        log.input = it.input || {};
+      }
+      const line = makeToolLine(it.name || 'tool', it.input || {}, it.status, it.errorText, rootPathOf(t), it.resultText, hasLog);
+      if (it.id) line.dataset.tuid = it.id;
+      if (hasLog) {
+        // Built directly from the line just created rather than through
+        // renderAgentLogItem's document.querySelector lookup: this turn isn't attached to
+        // the DOM yet (every part is built off-screen, in its box), so that lookup would
+        // find nothing.
+        const body = line.querySelector(':scope > .agent-log > .agent-log-body');
+        if (body) agentLogs.get(it.id).items.forEach(item => body.appendChild(buildAgentLogItemEl(item)));
+      }
+      assistantTurn().appendChild(line);
+    } else { // text
+      flushCompact();
+      appendTextStatic(assistantTurn(), it.text || it.content || '', it.id, it.at);
+    }
+  }
+  flushCompact();
+  if (to <= foldAt) markBefore();
+  // draw the connector rails
+  box.querySelectorAll(':scope > .turn').forEach(relinkTurn);
+  return box;
+}
+/* The line a tab shows where messages are still to come: the system line's look. */
+function loadingLine() {
+  const turn = document.createElement('div'); turn.className = 'turn opening';
+  turn.innerHTML = '<div class="a-item muted"><span class="dot gray"></span><span class="sys"></span></div>';
+  turn.querySelector('.sys').textContent = 'Loading…';
+  return turn;
+}
+/**
+ * Moves a drawn part into a tab's pane, before `ref`. Its replies show their bookmarks
+ * as they go in; what stands above a message from before a compaction is from before it
+ * too (one that finished while the older messages were still to come marks what was
+ * there, and they are not yet); and the pane has its "Messages before compaction" line
+ * as soon as it holds anything for one.
+ *
+ * A part cut inside an assistant turn (historyParts, `joins`) is made one turn again
+ * with its other half, which is already in the pane:
+ * @param {Element|null} [after]   that half when it follows this part: the part's last
+ *   turn goes in at its front
+ * @param {Element|null} [before]  that half when it precedes this part: the part's
+ *   first turn goes on at its end
+ */
+function placeHistoryPart(t, box, ref, after, before) {
+  if (ref && ref.classList && ref.classList.contains('pre-compact')) {
+    for (let el = box.firstElementChild; el; el = el.nextElementSibling) el.classList.add('pre-compact');
+  }
+  if (typeof paintReplyMark === 'function') box.querySelectorAll('.a-item.reply').forEach(el => paintReplyMark(el, t));
+  if (before && box.firstElementChild) {
+    const run = box.firstElementChild;
+    while (run.firstChild) before.appendChild(run.firstChild);
+    run.remove();
+    relinkTurn(before);
+  }
+  if (after && box.lastElementChild) {
+    const run = box.lastElementChild;
+    while (run.lastChild) after.insertBefore(run.lastChild, after.firstChild);
+    run.remove();
+    relinkTurn(after);
+  }
+  const part = document.createDocumentFragment();
+  while (box.firstChild) part.appendChild(box.firstChild);
+  t.pane.insertBefore(part, ref);
+  ensurePreCompactHead(t.pane, false);
+}
+/**
+ * Changes what stands above `anchor` in a tab's pane without moving what the reader is
+ * looking at. #messages is one scroll container: what goes in above the view pushes it
+ * down unless the position is moved along. Measured on the anchor itself, so it comes
+ * out right whether or not the browser has already moved the position on its own.
+ * @param {boolean} [flowing] the change adds below something the reader may be looking
+ *   at (a section they opened, filling downwards): then the position is left alone
+ *   unless the change was above the view altogether, and never sent to the bottom.
+ */
+function keepingPlace(t, anchor, change, flowing) {
+  if (t !== activeTab() || !anchor || !anchor.getBoundingClientRect) { change(); return; }
+  const viewTop = messagesEl.getBoundingClientRect().top;
+  const was = anchor.getBoundingClientRect().top, scrolled = messagesEl.scrollTop;
+  change();
+  if (flowing) {
+    if (was >= viewTop) { if (messagesEl.scrollTop !== scrolled) messagesEl.scrollTop = scrolled; }
+    else { const moved = anchor.getBoundingClientRect().top - was; if (moved) messagesEl.scrollTop += moved; }
+    followTail = isNearBottom();   // no scroll event says so when the position did not move
+    updateJumpToLatest();
+    return;
+  }
+  if (followTail) { messagesEl.scrollTop = messagesEl.scrollHeight; return; }
+  const moved = anchor.getBoundingClientRect().top - was;
+  if (moved) messagesEl.scrollTop += moved;
+}
+/* Whether `opening` is still what tab `t` is waiting on: the tab has not been closed,
+   cleared, or given another conversation since. */
+function stillOpening(t, opening) { return tabs.indexOf(t) >= 0 && t.opening === opening; }
+
+/* Restore a conversation's settings. Our own sidecar (saved per session id) is
+   authoritative — it's the ONLY source of effort and it captures the user's last
+   selection; the transcript is the fallback for model + thinking. `said` is what the
+   transcript says (historySaid), null while it has not been read yet: then only what
+   the sidecar holds is set, and this runs again once the transcript is in. */
+function restoreSettings(t, id, said) {
+  let saved = {};
+  try { saved = JSON.parse(window._loadSessionPrefs ? window._loadSessionPrefs(id) : '{}') || {}; } catch (e) {}
+  // What the sidecar actually returned for the id History handed us. Debug mode only.
+  // Read next to the [PREFS-SAVE] lines: a save of defaults appearing just ABOVE this
+  // one, under the same id, is the issue #114 signature.
+  try {
+    if (window.__ccDebug && window._debugLog)
+      _debugLog('[PREFS-LOAD] sid=' + String(id).slice(0, 8) + ' -> ' + JSON.stringify(saved)
+        + ' (tab=' + t.id + ' active=' + (t === activeTab()) + ' transcript=' + (said ? 'read' : 'pending') + ')');
+  } catch (e) {}
+
+  // Write the restored values into the TAB first, then paint the composer from the
+  // tab via applyTabSettings. Doing it the other way round (assigning the module
+  // globals directly) only worked while loadHistory was guaranteed to be rendering
+  // the active tab — a restore can rebuild a BACKGROUND tab, and createTab() ->
+  // switchTab() -> applyTabSettings() has already painted this tab's DEFAULTS by the
+  // time we get here. Storing first makes the tab the single source of truth for both.
+  if (saved.thinking === '1') t.thinking = true;
+  else if (saved.thinking === '0') t.thinking = false;
+  else if (said) t.thinking = said.thinking;
+
+  const model = saved.model || (said ? said.model : '');
+  if (model) t.model = model;
+
+  if (saved.effort !== undefined && saved.effort !== '') {
+    const ei = parseInt(saved.effort, 10);
+    if (!isNaN(ei)) t.effortIdx = ei;
+  }
+  // Permission mode is a launch flag the transcript never records, so the sidecar
+  // is the only source. A conversation with none saved (one from before permMode
+  // existed, or from the Claude Terminal) starts in the mode a new one would.
+  t.permMode = saved.permMode || defaultPermMode();
+
+  // One chokepoint for the composer + status bar, and it already sequences thinking
+  // before effort (the effort cap depends on the thinking flag) and reconciles an
+  // illegal stored pair through enforceThinkingGate. Only the visible tab paints;
+  // a background tab keeps its values and paints when the user switches to it —
+  // which calls this very function.
+  if (t === activeTab()) applyTabSettings(t);
 }
 /**
  * @param {Tab} [targetTab] render INTO this existing tab instead of picking one. Used
  *   by the restore path (viewstate.js), which has already built the tab and only needs
  *   its transcript rebuilt — so neither the "already open" dedupe nor the two entry
  *   point behaviours below apply to it.
+ * @param {{sync?: boolean, then?: (readerMoved: boolean) => void}} [opts] sync: the
+ *   conversation is read and drawn before this returns, for a caller that goes on to
+ *   use it. then: called once all of it is drawn (see "Opening a saved conversation").
  */
-function loadHistory(id, title, targetTab) {
+function loadHistory(id, title, targetTab, opts) {
+  opts = opts || {};
   closeMenus();
   // Read-and-reset IMMEDIATELY: historyResumeInPlace must never outlive this one
   // open→pick cycle. Past this line the module flag is back to its default, so any
@@ -433,14 +951,6 @@ function loadHistory(id, title, targetTab) {
     const already = tabs.find(tb => tb.sessionId === id);
     if (already) { if (already.id !== activeId) switchTab(already.id); return; }
   }
-  let items = [];
-  // Java reads a conversation from the folder in front unless told which. A tab handed in
-  // need not be in that folder: one restored from the last Eclipse session and rebuilt while
-  // another folder is in front (the claudeCodeEclipse tool sends to tabs that are not shown).
-  try {
-    items = JSON.parse((targetTab ? window._loadSession(id, rootPathOf(targetTab)) : window._loadSession(id)) || '[]');
-  } catch (e) {}
-
   // Two entry points, two behaviors (resumeInPlace, read above from historyResumeInPlace
   // — set by whichever openHistory* function opened the panel, see window.openHistory*):
   //
@@ -484,189 +994,14 @@ function loadHistory(id, title, targetTab) {
   }
   const pane = t.pane;
   pane.innerHTML = '';                  // clear old content (or createTab()'s WELCOME_HTML)
+  pane.classList.remove('pre-open');    // and with it an opened "Messages before compaction"
   t.sessionId = id;                     // continuing this tab resumes the session
   setTabTitle(t, title);
-  if (!items.length) { addSystem('This conversation is empty or could not be loaded.'); }
-
-  // Group consecutive assistant blocks (thinking / tool / text) into one turn with
-  // its dotted rail; user messages and answer cards are their own turns.
-  let aTurn = null;
-  let lastModel = '';    // the model this conversation last used (resume with it)
-  let sawThinking = false; // any thinking block ⇒ this conversation had thinking ON
-  let renderedModel = null; // model in effect while reconstructing → switch dividers
-  function assistantTurn() {
-    if (!aTurn || !aTurn.parentNode) { aTurn = document.createElement('div'); aTurn.className = 'turn'; pane.appendChild(aTurn); }
-    return aTurn;
-  }
-  // The model a given turn ran on (the next assistant model before the next user msg).
-  function turnModelAt(idx) {
-    for (let j = idx + 1; j < items.length; j++) {
-      const jt = items[j].t || (items[j].role === 'user' ? 'user' : 'text');
-      if (jt === 'user') break;
-      if (typeof items[j].model === 'string' && items[j].model.indexOf('claude-') === 0) return items[j].model;
-    }
-    return '';
-  }
-  // Compaction markers: the transcript stores boundary + summary BEFORE the
-  // "/compact" command echo, but live rendering showed the bubble first — hold the
-  // "Compacted chat" line and flush it after that bubble (or before whatever
-  // renders next, e.g. after an auto-compact) so a reload reads like the live run.
-  let pendingCompact = null;   // { trigger, freed, text }
-  function flushCompact() {
-    if (!pendingCompact) return;
-    addCompacted(pane, pendingCompact.trigger, pendingCompact.freed, pendingCompact.text);
-    pendingCompact = null;
-  }
-  items.forEach((it, i) => {
-    const ty = it.t || (it.role === 'user' ? 'user' : 'text');   // back-compat with old text-only format
-    // Only real model ids — skip "<synthetic>" (CLI-injected messages) and blanks.
-    if (typeof it.model === 'string' && it.model.indexOf('claude-') === 0) lastModel = it.model;
-    if (ty === 'thinking') sawThinking = true;
-    if (ty === 'compact') {
-      aTurn = null;
-      pendingCompact = { trigger: it.trigger || 'manual',
-        freed: Math.max(0, (it.preTokens || 0) - (it.postTokens || 0)), text: '' };
-    } else if (ty === 'teleported') {
-      // The boundary between the conversation as it arrived from claude.ai and
-      // whatever was said here afterwards.
-      aTurn = null;
-      pane.appendChild(makeTeleportDivider());
-    } else if (ty === 'compact_summary') {
-      if (pendingCompact) pendingCompact.text = it.text || '';
-      else { aTurn = null; addCompacted(pane, 'manual', 0, it.text || ''); }
-    } else if (ty === 'user') {
-      // Reconstruct "Switched to <model>" dividers from the transcript (the model
-      // is recorded per turn) so past model switches persist across reloads.
-      const tm = turnModelAt(i);
-      if (tm) { if (renderedModel !== null && tm !== renderedModel) pane.appendChild(makeSwitchDivider(tm)); renderedModel = tm; }
-      aTurn = null;
-      const p = parseUserContent(it.content || '');
-      const isCompactCmd = p.text.trim() === '/compact';
-      // A line that paints nothing (e.g. the <local-command-caveat> the CLI
-      // inserts between the summary and the "/compact" echo) can't be the
-      // bubble the pending compact marker is waiting to render after.
-      const imgs = (it.images || []).map(imageFromBlock)
-        .concat((it.documents || []).map(d => documentFromBlock(d, it.id, id))).filter(Boolean);
-      const invisible = !p.text && !p.chip && !imgs.length;
-      if (!isCompactCmd && !invisible) flushCompact();
-      // Bracketed markers the CLI writes as user lines are not messages anyone
-      // sent. Each pattern must match the WHOLE text: a real message that merely
-      // QUOTES a marker ("[Request interrupted by user for tool use] still
-      // appears as a bubble") has to stay a normal bubble, or the user's words
-      // get thrown away. The trailing [^\]]* still absorbs suffix variants.
-      const marker = p.text.trim();
-      // An interruption renders live as the italic muted note (two variants,
-      // matching the two labels doCancel picks between) — a reload shows the same.
-      if (/^\[Request interrupted by user[^\]]*\]$/.test(marker)) {
-        addInterrupted(/for tool use/i.test(marker) ? 'Tool interrupted' : 'Interrupted');
-        return;
-      }
-      // Image-scaling note the CLI injects beside an upload ("[Image: original
-      // 2352x4160, displayed at …]"). Internal metadata with no image block of
-      // its own — nothing to show, so it renders nothing at all.
-      if (/^\[Image:[^\]]*\]$/.test(marker)) return;
-      // Messages sent with pasted images carry them as {media_type,data} blocks —
-      // rebuild the same chips the live bubble showed.
-      if (!invisible) addUserMessage(p.text, p.chip, imgs, it.id, it.ts, null, p.target);
-      if (isCompactCmd) flushCompact();
-    } else if (ty === 'answered') {
-      flushCompact();
-      aTurn = null;
-      addAnswered(it.text || '', pane);
-    } else if (ty === 'error') {
-      // A backend error (rate limit, 529 overload, …). Live it is the muted
-      // "⚠ …" line onError paints — a reload rebuilds exactly that, never an
-      // assistant paragraph, so a past session reads the way it ran.
-      flushCompact();
-      aTurn = null;
-      const em = it.text || '';
-      addSystemToPane(pane, '⚠ ' + (typeof augmentError === 'function' ? augmentError(em) : em));
-    } else if (ty === 'thinking') {
-      flushCompact();
-      appendThinkStatic(assistantTurn(), it.text || '');
-    } else if (ty === 'tool') {
-      flushCompact();
-      // A reconstructed Agent/Task call's own nested log (session.rs's agentLog field) —
-      // the disk-backed counterpart of chat.js's live agentLogs, so a reopened
-      // conversation's /agents popup (duration, tokens, model, Prompt, Tool calls, "Open
-      // transcript") works the same as it did live instead of losing it the moment the
-      // webview that ran it live is gone. Populated BEFORE makeToolLine so its isAgent
-      // branch can tell there's actually something to show and add the collapsible.
-      const isAgentTool = AGENT_KEYS.has(String(it.name || '').toLowerCase());
-      const hasLog = isAgentTool && it.agentLog && Array.isArray(it.agentLog.items) && it.agentLog.items.length > 0;
-      if (hasLog && it.id) {
-        const log = ensureAgentLog(it.id);
-        log.items = it.agentLog.items.map(x => Object.assign({}, x));   // fresh copies — no stale _el refs
-        log.tokens = it.agentLog.tokens || 0;
-        log.model = it.agentLog.model || '';
-        log.startedAt = it.agentLog.startedAt ? Date.parse(it.agentLog.startedAt) || 0 : 0;
-        log.endedAt = it.agentLog.endedAt ? Date.parse(it.agentLog.endedAt) || 0 : 0;
-        log.input = it.input || {};
-      }
-      const line = makeToolLine(it.name || 'tool', it.input || {}, it.status, it.errorText, rootPathOf(t), it.resultText, hasLog);
-      if (it.id) line.dataset.tuid = it.id;
-      if (hasLog) {
-        // Built directly from the line just created rather than through
-        // renderAgentLogItem's document.querySelector lookup: this turn isn't attached to
-        // the DOM yet (the whole pane is built off-screen, see flushCompact/assistantTurn
-        // above), so that lookup would find nothing.
-        const body = line.querySelector(':scope > .agent-log > .agent-log-body');
-        if (body) agentLogs.get(it.id).items.forEach(item => body.appendChild(buildAgentLogItemEl(item)));
-      }
-      assistantTurn().appendChild(line);
-    } else { // text
-      flushCompact();
-      appendTextStatic(assistantTurn(), it.text || it.content || '');
-    }
-  });
-  flushCompact();
-  // draw the connector rails
-  pane.querySelectorAll(':scope > .turn').forEach(relinkTurn);
-  // This reconstruction may be for a BACKGROUND tab (not the one on screen) — only
-  // refresh the toolbar pill when it's the one actually showing right now.
-  if (t === activeTab() && typeof updateAgentsBtn === 'function') updateAgentsBtn();
-  // Restore this conversation's settings. Our own sidecar (saved per session id)
-  // is authoritative — it's the ONLY source of effort and it captures the user's
-  // last selection; the transcript is the fallback for model + thinking.
-  let saved = {};
-  try { saved = JSON.parse(window._loadSessionPrefs ? window._loadSessionPrefs(id) : '{}') || {}; } catch (e) {}
-  // What the sidecar actually returned for the id History handed us. Debug mode only.
-  // Read next to the [PREFS-SAVE] lines: a save of defaults appearing just ABOVE this
-  // one, under the same id, is the issue #114 signature.
-  try {
-    if (window.__ccDebug && window._debugLog)
-      _debugLog('[PREFS-LOAD] sid=' + String(id).slice(0, 8) + ' -> ' + JSON.stringify(saved)
-        + ' (tab=' + t.id + ' active=' + (t === activeTab()) + ')');
-  } catch (e) {}
-
-  // Write the restored values into the TAB first, then paint the composer from the
-  // tab via applyTabSettings. Doing it the other way round (assigning the module
-  // globals directly) only worked while loadHistory was guaranteed to be rendering
-  // the active tab — the targetTab branch above (viewstate's deferred restore) can
-  // rebuild a BACKGROUND tab, and createTab() -> switchTab() -> applyTabSettings()
-  // has already painted this tab's DEFAULTS by the time we get here. Storing first
-  // makes the tab the single source of truth for both cases.
-  let think = sawThinking;
-  if (saved.thinking === '1') think = true; else if (saved.thinking === '0') think = false;
-  t.thinking = think;
-
-  const model = saved.model || lastModel;
-  if (model) t.model = model;
-
-  if (saved.effort !== undefined && saved.effort !== '') {
-    const ei = parseInt(saved.effort, 10);
-    if (!isNaN(ei)) t.effortIdx = ei;
-  }
-  // Permission mode is a launch flag the transcript never records, so the sidecar
-  // is the only source. Entries saved before permMode existed fall back to default.
-  t.permMode = saved.permMode || DEFAULT_PERM_MODE;
-
-  // One chokepoint for the composer + status bar, and it already sequences thinking
-  // before effort (the effort cap depends on the thinking flag) and reconciles an
-  // illegal stored pair through enforceThinkingGate. Only the visible tab paints;
-  // a background tab keeps its values and paints when the user switches to it —
-  // which calls this very function.
-  if (t === activeTab()) applyTabSettings(t);
+  if (typeof renderTerminalTip === 'function') renderTerminalTip();   // the welcome it goes with is gone
+  // What this tab is now waiting on. Whatever it was waiting on before is no longer
+  // that, and is dropped when it arrives (stillOpening).
+  const opening = t.opening = { id: id, then: opts.then || null, line: null, joinTo: null, resume: null, touched: false, unwatch: null };
+  t.earlier = null;
   // The pane was emptied above, and a Remote Control bridge coming up in this tab
   // had its indicator in it. Both of the ways a conversation gets reconstructed run
   // through here AFTER the tab was switched on: reopening from history (createTab
@@ -674,19 +1009,243 @@ function loadHistory(id, title, targetTab) {
   // session (enabled at startup, rendered lazily on the switch that first shows it).
   // No-op unless the tab is genuinely still connecting.
   if (typeof showWorkingFor === 'function') showWorkingFor(t);
-  // A reopened conversation lands on its newest message, like a live one. #messages is
-  // shared by every pane, so only move it when the tab just rebuilt is the visible one —
-  // a restore rendering a background tab must not yank the view.
-  if (t === activeTab()) {
-    const pinBottom = () => {
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-      followTail = true;   // set directly: a write to the position already held fires no scroll event
-      updateJumpToLatest();
-      updatePinnedPrompt();
-    };
-    pinBottom();
-    holdBottomWhileSettling(t, pinBottom);
+  if (!opts.sync && askForConversation(t, opening)) {
+    // Its own settings at once, not when the transcript is in: a message sent
+    // meanwhile goes out with them.
+    restoreSettings(t, id, null);
+    return;
   }
+  let items = [];
+  // Java reads a conversation from the folder in front unless told which. A tab handed in
+  // need not be in that folder: one restored from the last Eclipse session and rebuilt while
+  // another folder is in front (the claudeCodeEclipse tool sends to tabs that are not shown).
+  try {
+    items = JSON.parse((targetTab ? window._loadSession(id, rootPathOf(targetTab)) : window._loadSession(id)) || '[]');
+  } catch (e) {}
+  drawOpened(t, opening, { items: items }, true);
+}
+/* Asks the view to read a tab's conversation in the background, and puts "Loading…"
+   where it will go. False when the view cannot: the caller then reads it itself. While
+   messages from before a compaction are hidden, only what follows the last one is asked for. */
+function askForConversation(t, opening) {
+  if (!openInBackground || !window._openSessionAsync || !window._takeOpenedSession) return false;
+  const request = ++openAsks;
+  openAsked[request] = { t: t, opening: opening };   // before the call: its answer must find it
+  let asked = false;
+  try { asked = !!window._openSessionAsync(request, opening.id, rootPathOf(t), hidingBeforeCompaction(), ''); } catch (e) {}
+  if (!asked) { delete openAsked[request]; return false; }
+  opening.line = loadingLine();
+  t.pane.insertBefore(opening.line, t.pane.firstChild);
+  return true;
+}
+/* The view has read what request `request` asked for (`read` false: it cannot, its
+   native library is from before sessionOpen). The page fetches it by that number, also
+   when nothing is waiting for it any more, so that the view lets go of it. */
+window.onSessionOpened = function(request, read) {
+  const asked = openAsked[request];
+  delete openAsked[request];
+  let json = null;
+  if (read) { try { json = window._takeOpenedSession(request); } catch (e) {} }
+  if (!asked) return;
+  const t = asked.t;
+  const got = () => { try { return JSON.parse(json || 'null'); } catch (e) { return null; } };
+  if (asked.earlier) { if (tabs.indexOf(t) >= 0 && t.earlier === asked.earlier) drawEarlierPart(t, asked.earlier, got()); return; }
+  if (!stillOpening(t, asked.opening)) return;
+  if (!read) {
+    // This view opens conversations as it always did, from here on without asking first.
+    openInBackground = false;
+    let items = [];
+    try { items = JSON.parse(window._loadSession(asked.opening.id, rootPathOf(t)) || '[]'); } catch (e) {}
+    drawOpened(t, asked.opening, { items: items }, true);
+    return;
+  }
+  drawOpened(t, asked.opening, got() || { items: [] }, false);
+};
+/**
+ * Draws a conversation that has been read into its tab, where "Loading…" stands (or
+ * at the top of a pane that has none), above whatever has been said there since.
+ * @param {{items: Object[], note?: string, cut?: {uuid: string}, earlier?: Object}} got
+ *   what the view read (session.rs, open_session), or just the items of the old loader
+ * @param {boolean} inOneGo  all of it now, in front or not, for a caller that needs it
+ *   whole on return
+ */
+function drawOpened(t, opening, got, inOneGo) {
+  const pane = t.pane, id = opening.id;
+  const items = Array.isArray(got.items) ? got.items : [];
+  // The part before the last compaction, when the view left it out: which replies it
+  // holds, and what names it for fetching (fetchEarlierPart).
+  const left = (got.earlier && got.cut && got.cut.uuid) ? got.earlier : null;
+  if (left) {
+    t.earlier = { id: id, uuid: got.cut.uuid, ids: new Set(left.replies || []), state: 'out',
+      waiting: [], line: null, joinTo: null, resume: null };
+  }
+  const said = historySaid(items);
+  if (left) { said.thinking = said.thinking || !!left.thinking; said.model = said.model || left.model || ''; }
+  restoreSettings(t, id, said);
+
+  const n = items.length, parts = historyParts(items);
+  let foldAt = -1;
+  items.forEach((it, i) => { if (it.t === 'compact') foldAt = i; });
+  // The model in effect where these items begin: the left-out part's last, if there is one.
+  const firstModel = (left && left.model) || null;
+  const modelAt = k => k ? parts.modelBefore[k] : firstModel;
+  // Its end first: from the last cut that leaves enough of it.
+  let from = 0;
+  if (!inOneGo && n > HIST_TAIL_ITEMS) parts.cuts.forEach(k => { if (n - k >= HIST_TAIL_ITEMS) from = k; });
+
+  const first = () => {
+    const box = drawHistoryPart(t, id, items, parts, from, n, foldAt, modelAt(from));
+    if (!n) addSystemToPane(box, 'This conversation is empty or could not be loaded.');
+    else {
+      const note = resumeNoteTurn(typeof got.note === 'string' ? got.note : resumeNoteFor(t, id));
+      if (note) box.appendChild(note);
+    }
+    const waiting = opening.line && opening.line.parentNode === pane;
+    placeHistoryPart(t, box, waiting ? opening.line.nextSibling : pane.firstChild);
+    if (waiting) opening.joinTo = parts.joins[from] ? opening.line.nextElementSibling : null;
+    if (t.earlier) ensurePreCompactHead(pane, true);   // its line, for what is still to be fetched
+    if (!from) openingDone(t, opening);
+    // A reopened conversation lands on its newest message, like a live one. #messages is
+    // shared by every pane, so only move it when the tab just rebuilt is the visible one —
+    // a restore rendering a background tab must not yank the view.
+    if (t === activeTab()) {
+      const pinBottom = () => {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        followTail = true;   // set directly: a write to the position already held fires no scroll event
+        updateJumpToLatest();
+        updatePinnedPrompt();
+      };
+      pinBottom();
+      holdBottomWhileSettling(t, pinBottom);
+    }
+    if (!from) { if (opening.then) opening.then(false); return; }
+    if (opening.then) {
+      // Whoever asked to be told when it is all in is told whether the reader has moved since.
+      const took = () => { opening.touched = true; opening.unwatch(); };
+      opening.unwatch = () => READER_TAKES_OVER.forEach(ev => messagesEl.removeEventListener(ev, took));
+      READER_TAKES_OVER.forEach(ev => messagesEl.addEventListener(ev, took, { passive: true }));
+    }
+    laterDraw(older);
+  };
+  // The older messages, the part next above each time, until the first is in. Each part
+  // is laid out as it is placed (keepingPlace measures), so the clock below counts what
+  // the browser spends on it and not only the making of its elements.
+  let end = from;
+  const older = () => {
+    if (!stillOpening(t, opening) || opening.line.parentNode !== pane) return;
+    if (t !== activeTab()) { opening.resume = older; return; }
+    const began = Date.now();
+    do {
+      const start = partStart(parts.cuts, end);
+      const box = drawHistoryPart(t, id, items, parts, start, end, foldAt, modelAt(start));
+      const next = opening.line.nextElementSibling;
+      // The half of an assistant turn this part ends in, if it is still what follows.
+      const into = (parts.joins[end] && opening.joinTo && opening.joinTo === next) ? next : null;
+      keepingPlace(t, into ? (into.firstElementChild || into) : next,
+        () => placeHistoryPart(t, box, opening.line.nextSibling, into, null));
+      opening.joinTo = parts.joins[start] ? opening.line.nextElementSibling : null;
+      end = start;
+    } while (end > 0 && Date.now() - began < HIST_SLICE_MS);
+    if (end > 0) { laterDraw(older); return; }
+    openingDone(t, opening);
+    if (opening.then) opening.then(opening.touched);
+  };
+  if (inOneGo || t === activeTab()) first();
+  else opening.resume = first;
+}
+/* A tab's conversation is all in: "Loading…" goes, and its replies, its bookmarks and
+   the toolbar are brought up to date with it. */
+function openingDone(t, opening) {
+  if (opening.unwatch) opening.unwatch();
+  if (opening.line) keepingPlace(t, opening.line.nextElementSibling, () => opening.line.remove());
+  t.opening = null;
+  // Each reply that did not come with its transcript line learns it, and shows its
+  // bookmark if it has one.
+  if (typeof refreshReplies === 'function') refreshReplies(t);
+  // This reconstruction may be for a BACKGROUND tab (not the one on screen) — only
+  // refresh the toolbar pill when it's the one actually showing right now.
+  if (t === activeTab() && typeof updateAgentsBtn === 'function') updateAgentsBtn();
+  // The prompt that belongs at the top of the view may be one that has only just come in.
+  if (t === activeTab()) updatePinnedPrompt();
+}
+/* A tab has come to the front: a conversation that was being drawn into it when it was
+   left, or that arrived while it was not showing, goes on from where it was. */
+function resumeDrawing(t) {
+  const opening = t && t.opening, e = t && t.earlier;
+  if (opening && opening.resume) { const go = opening.resume; opening.resume = null; go(); }
+  if (e && e.resume) { const go = e.resume; e.resume = null; go(); }
+}
+
+/* ---- the part before the last compaction, when it was not read ----
+   t.earlier is what a tab knows of it: the boundary line that names it (`uuid`), the
+   replies it holds (`ids`, for the bookmarks of them), and where it stands: 'out' (not
+   fetched), 'asked', or 'in' (drawn, under "Messages before compaction"). */
+
+/* Whether a reply is in a part of the tab's conversation that has not been fetched. */
+function earlierHolds(t, uuid) {
+  const e = t && t.earlier;
+  return !!(e && e.state !== 'in' && e.ids.has(uuid));
+}
+/**
+ * Fetches the part of a tab's conversation that was left out and draws it under its
+ * line, once. Nothing while messages from before a compaction are hidden: it would be
+ * drawn to be kept out of sight.
+ * @param {Function} [then] called when the part is in (at once when it already is, or
+ *   when nothing was left out); not called if it cannot be fetched
+ */
+function fetchEarlierPart(t, then) {
+  const e = t && t.earlier;
+  if (!e || e.state === 'in') { if (then) then(); return; }
+  if (hidingBeforeCompaction()) return;
+  if (then) e.waiting.push(then);
+  if (e.state === 'asked') return;
+  const request = ++openAsks;
+  openAsked[request] = { t: t, earlier: e };
+  let asked = false;
+  try { asked = !!(window._openSessionAsync && window._openSessionAsync(request, e.id, rootPathOf(t), false, e.uuid)); } catch (err) {}
+  if (!asked) { delete openAsked[request]; e.waiting = []; return; }
+  e.state = 'asked';
+  e.line = loadingLine(); e.line.classList.add('pre-compact');
+  const head = ensurePreCompactHead(t.pane, true);
+  t.pane.insertBefore(e.line, head.nextSibling);
+}
+/* The left-out part has been read: drawn from its first message down, a part at a time,
+   above "Loading…", which stays under what is in so far until all of it is. */
+function drawEarlierPart(t, e, got) {
+  const items = (got && Array.isArray(got.items)) ? got.items : null;
+  const here = () => tabs.indexOf(t) >= 0 && t.earlier === e && e.line && e.line.parentNode === t.pane;
+  if (!items || !here()) {
+    // Not to be had: as it was before it was asked for, so that it can be asked for again.
+    if (e.line) e.line.remove();
+    e.line = null; e.state = 'out'; e.waiting = [];
+    return;
+  }
+  const n = items.length, parts = historyParts(items);
+  let at = 0;
+  const further = () => {
+    if (!here()) return;
+    if (t !== activeTab()) { e.resume = further; return; }
+    const began = Date.now();
+    while (at < n) {
+      const to = partEnd(parts.cuts, at, n);
+      const box = drawHistoryPart(t, e.id, items, parts, at, to, Infinity, at ? parts.modelBefore[at] : null);
+      const prev = e.line.previousElementSibling;
+      // The half of an assistant turn this part begins in, if it is still what precedes.
+      const onto = (parts.joins[at] && e.joinTo && e.joinTo === prev) ? prev : null;
+      keepingPlace(t, e.line, () => placeHistoryPart(t, box, e.line, null, onto), true);
+      e.joinTo = parts.joins[to] ? e.line.previousElementSibling : null;
+      at = to;
+      if (Date.now() - began >= HIST_SLICE_MS) break;
+    }
+    if (at < n) { laterDraw(further); return; }
+    keepingPlace(t, e.line.nextElementSibling, () => e.line.remove(), true);
+    e.line = null; e.state = 'in';
+    if (typeof refreshReplies === 'function') refreshReplies(t);
+    const waiting = e.waiting;
+    e.waiting = [];
+    waiting.forEach(fn => fn());
+  };
+  further();
 }
 
 /* Blocks size themselves AFTER they are inserted — the 2-line "Show more" clamp and capped
@@ -700,7 +1259,7 @@ let settleWatchStop = null;
 function holdBottomWhileSettling(t, pinBottom) {
   if (settleWatchStop) settleWatchStop();
   if (typeof ResizeObserver === 'undefined' || !t.pane) return;
-  const takeOver = ['wheel', 'touchstart', 'pointerdown'];
+  const takeOver = READER_TAKES_OVER;
   let timer = 0;
   const ro = new ResizeObserver(() => { if (t !== activeTab()) stop(); else pinBottom(); });
   function stop() {

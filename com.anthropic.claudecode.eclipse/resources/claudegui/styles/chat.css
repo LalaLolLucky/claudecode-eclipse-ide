@@ -312,7 +312,7 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 /* italic "Tool interrupted" / "Interrupted" note shown when the user stops a turn;
    aligned to the dot rail (4px), not the text indent */
-.interrupted { font-style: italic; color: var(--fg-faint); font-size: 12.5px; margin: 9px 0; padding-left: 4px; }
+.interrupted, .resume-note { font-style: italic; color: var(--fg-faint); font-size: 12.5px; margin: 9px 0; padding-left: 4px; }
 .a-item.muted { color: var(--fg-dim); }
 .a-item strong { color: var(--fg); font-weight: 600; }
 
@@ -511,6 +511,18 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
 
 /* assistant message body */
 .a-item .a-body { display: inline; }
+/* Under each of Claude's replies (bookmarks.js): copy, then bookmark. The row is always
+   there, so hovering a reply moves nothing; its buttons show while it is hovered, and
+   the bookmark stays in view for as long as the reply is bookmarked. */
+.a-item.reply > .a-actions { display: flex; align-items: center; gap: 2px; height: 16px; }
+.a-actions .copy-btn, .a-actions .bm-btn { position: static; opacity: 0; transition: none;
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 2px;
+  background: none; border: none; border-radius: 4px; color: var(--fg-dim); cursor: pointer; line-height: 0; }
+.a-actions .bm-btn[hidden] { display: none; }
+.a-actions .bm-btn svg { display: block; width: 14px; height: 14px; }
+.a-item.reply:hover > .a-actions .copy-btn, .a-item.reply:hover > .a-actions .bm-btn,
+.a-actions .bm-btn.on, .a-actions .copy-btn.copied { opacity: 1; }
+.a-actions .copy-btn:hover, .a-actions .bm-btn:hover { background: var(--bg-hover); color: var(--fg); }
 /* connecting line between consecutive dots on the left rail (JS adds .linked to
    every item that is followed by another item — avoids relying on :has()) */
 .a-item.linked::before { content: ''; position: absolute; left: 7px; top: 9px; bottom: -16px;
@@ -536,7 +548,7 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
 body.mode-acceptEdits .working .sb { color: var(--mode-accept-edits); }
 body.mode-plan .working .sb { color: var(--mode-plan); }
 body.mode-auto .working .sb { color: var(--mode-auto); }
-body.mode-bypassPermissions .working .sb { color: var(--mode-auto); }
+body.mode-bypassPermissions .working .sb { color: var(--mode-bypass); }
 /* pre-WRAP, not pre: the morph animation needs the literal spaces around the
    cursor preserved, but the token/elapsed suffix ("· ↑ 1.2k tokens · esc to
    interrupt") is long enough to run past a narrow panel, and plain `pre` would
@@ -550,21 +562,31 @@ body.mode-bypassPermissions .working .sb { color: var(--mode-auto); }
 body.mode-acceptEdits .working .gerund .cursor { color: var(--mode-accept-edits); }
 body.mode-plan .working .gerund .cursor { color: var(--mode-plan); }
 body.mode-auto .working .gerund .cursor { color: var(--mode-auto); }
-body.mode-bypassPermissions .working .gerund .cursor { color: var(--mode-auto); }
+body.mode-bypassPermissions .working .gerund .cursor { color: var(--mode-bypass); }
 @keyframes blink { 50% { opacity: 0; } }
 
 
 /* "Compacted chat · manual · Nk tokens freed" collapsible left after a /compact —
    italic muted head with a chevron; the summary text expands below it. */
-.compacted { margin: 12px 0 12px 2px; }
-.compacted .comp-head { display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+.compacted, .pre-compact-fold { margin: 12px 0 12px 2px; }
+.compacted .comp-head, .pre-compact-fold .comp-head { display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
   color: var(--fg-dim); font-style: italic; font-size: 12.5px; }
-.compacted .comp-head:hover { color: var(--fg-soft); }
-.compacted .chev { display: inline-flex; transition: transform .15s; opacity: .8; }
-.compacted.open .chev { transform: rotate(180deg); }
+.compacted .comp-head:hover, .pre-compact-fold .comp-head:hover { color: var(--fg-soft); }
+.compacted .chev, .pre-compact-fold .chev { display: inline-flex; transition: transform .15s; opacity: .8; }
+.compacted.open .chev, .pre-compact-fold.open .chev { transform: rotate(180deg); }
 .compacted .comp-body { display: none; margin-top: 8px; color: var(--fg-dim);
   font-size: 12.5px; line-height: 1.55; }
 .compacted.open .comp-body { display: block; }
+/* What was said above the last compaction (stream.js, foldBeforeCompaction): out of the
+   way until its "Messages before compaction" line is opened, and with the preference to
+   hide it, gone together with that line. Hidden, never removed: find.js passes over
+   what has no box, and a turn still in progress keeps its element. */
+.pane:not(.pre-open) > .pre-compact { display: none; }
+html.hide-pre-compact .pane > .pre-compact,
+html.hide-pre-compact .pane > .pre-compact-head { display: none; }
+/* With the line hidden too, what follows the fold is the first thing in the conversation
+   and takes the first turn's room above it. */
+html.hide-pre-compact .pane > .pre-compact + .turn:not(.pre-compact) { margin-top: 18px; }
 
 /* slash commands render in mono inside the user bubble (VSCode look) */
 .user-msg .body.mono-cmd { font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px; }
@@ -615,10 +637,19 @@ body.mode-bypassPermissions .working .gerund .cursor { color: var(--mode-auto); 
 .a-body li.task input { margin-right: 6px; vertical-align: -1px; }
 /* Opted OUT of the inherited overflow-wrap:anywhere — `display:block` +
    overflow-x already gives the table its own sideways scroller, so it is
-   contained without help, and breaking paths mid-token inside cells would
-   shred the columns for no containment gain. */
+   contained without help, and letting every word break would split the short
+   ones ("Sta|tus", "Do|ne") as soon as a table ran out of room: `anywhere`
+   takes a column's minimum width down to one character.
+   Inline code is let back in, in the conversation and in the Bookmarks panel's
+   reprint: a long file name in backticks may break, so it no longer holds its
+   column open at full length and leaves the prose beside it a word wide. A
+   long token written as plain text still does, and that table scrolls. */
 .a-body table { border-collapse: collapse; margin: 8px 0; font-size: 12px; display: block;
   overflow-x: auto; max-width: 100%; overflow-wrap: normal; }
+#messages .a-body table code, #bm-body .bm-reprint-text table code { overflow-wrap: anywhere; }
+/* a table that does scroll sideways: the code block's scrollbar (.code-block pre), not the browser's */
+.a-body table::-webkit-scrollbar { height: 8px; }
+.a-body table::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
 .a-body th, .a-body td { border: 1px solid var(--border); padding: 4px 9px; text-align: left; }
 .a-body th { background: var(--bg-chip); color: var(--fg); font-weight: 600; }
 .a-body td { color: var(--fg-soft); }
@@ -636,6 +667,8 @@ body.mode-bypassPermissions .working .gerund .cursor { color: var(--mode-auto); 
 .a-body pre code { display: block; padding: 10px 12px; overflow-x: auto; white-space: pre; color: var(--fg-soft);
   font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px; line-height: 1.5;
   overflow-wrap: normal; }
+.a-body pre code::-webkit-scrollbar { height: 8px; }
+.a-body pre code::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
 
 
 /* The claude.ai/code address in the Remote Control line. Styled like the links

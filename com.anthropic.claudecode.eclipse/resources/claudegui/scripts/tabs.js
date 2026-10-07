@@ -48,6 +48,13 @@ function defaultThinking() {
   catch (e) { return DEFAULT_THINKING; }
 }
 const DEFAULT_PERM_MODE = 'default';   // "Manual"
+/* The preference behind the permission mode a conversation starts in ("Initial
+   Permission Mode"), read per call like defaultThinking(). Unset, that is Manual, as it
+   was before the preference existed. */
+function defaultPermMode() {
+  try { return (window._initialPermissionMode && _initialPermissionMode()) || DEFAULT_PERM_MODE; }
+  catch (e) { return DEFAULT_PERM_MODE; }
+}
 function defaultModel() { return (typeof customModel !== 'undefined' && customModel) ? customModel : ''; }
 /** @returns {Tab|null} */
 function activeTab() { return tabs.find(t => t.id === activeId) || null; }
@@ -181,7 +188,7 @@ function createTab(opts) {
     model: setting('model', defaultModel()),
     effortIdx: setting('effortIdx', DEFAULT_EFFORT_IDX),
     thinking: setting('thinking', defaultThinking()),
-    permMode: setting('permMode', DEFAULT_PERM_MODE) });
+    permMode: setting('permMode', defaultPermMode()) });
   switchTab(id);
   const created = tabs[tabs.length - 1];
   // With "Enable remote control on startup" set, a new conversation comes up
@@ -227,6 +234,7 @@ function switchTab(id) {
   if (typeof syncComposer === 'function') syncComposer();           // send/stop reflects THIS tab
   if (typeof updateAgentsBtn === 'function') updateAgentsBtn();     // toolbar pill reflects THIS tab's agents
   if (typeof switchToContextRing === 'function') switchToContextRing(id);  // ring reflects THIS tab's context
+  if (typeof renderBookmarks === 'function') renderBookmarks();     // the panel shows THIS tab's bookmarks
   // The root rides along: Java scopes session history, rewind and the status bar to
   // the conversation's own folder, not to the workspace root.
   try { if (window._activeTab) window._activeTab(id, rootPathOf(t)); } catch (e) {} // status bar follows active tab
@@ -259,6 +267,10 @@ function switchTab(id) {
   // position the container already holds (e.g. switching back to a tab left at the exact
   // same spot) is a no-op that fires nothing — same reasoning as the followTail line above.
   if (typeof updatePinnedPrompt === 'function') updatePinnedPrompt();
+  // What was drawn into this tab while it was not showing has had no size to be measured
+  // by, and a conversation that was coming in when it was left goes on from there.
+  if (t && typeof measureRevealed === 'function') measureRevealed(t.pane);
+  if (t && typeof resumeDrawing === 'function') resumeDrawing(t);
   // A conversation restored from the last Eclipse session holds only its session id
   // until it is first shown (see viewstate.js) — rebuilding every transcript at
   // startup would cost one full reconstruction per tab, for panes nobody is looking
@@ -270,17 +282,36 @@ function switchTab(id) {
     t._restore = null;                    // cleared FIRST — this must not re-enter
     // The tab's title as it stands, not the stored one: it may have been read from the
     // session since (refreshStaleTitles), and the stored one would put "Claude Code" back.
-    loadHistory(rs.sessionId, t.title || rs.title, t);
-    if (rs.scrollTop > 0) {
-      messagesEl.scrollTop = Math.min(rs.scrollTop, messagesEl.scrollHeight);
-      t.scrollTop = messagesEl.scrollTop;
-      // Only meaningful while the lock is armed; with it off the transcript follows
-      // unconditionally and followTail is forced true on every switch anyway.
-      if (scrollLocked) { followTail = false; t.followTail = false; }
-    }
+    // The place is put back once the whole conversation is drawn: it is a distance from
+    // the top, and the older messages come in after the newest (history.js).
+    loadHistory(rs.sessionId, t.title || rs.title, t, { then: readerMoved => placeRestoredTab(t, rs, readerMoved) });
+  }
+}
+/* How near its end a restored conversation has to have been left to count as left AT
+   its end, where it then stays, following. The page is not to the pixel the one the
+   distance was taken in: the note a reopened conversation may end with is new in it. */
+const RESTORED_AT_END_SLOP = 200;
+/* Puts a tab restored from the last Eclipse session back where the user left it, now
+   that its conversation is drawn — unless that was at its end, or they have moved the
+   transcript themselves in the meantime. */
+function placeRestoredTab(t, rs, readerMoved) {
+  if (!(rs.scrollTop > 0) || readerMoved) return;
+  // A frame on. The blocks drawn last are cut to size in a frame of their own
+  // (measureWhenShown), and the distance was taken in a page where they already were.
+  requestAnimationFrame(() => {
+    if (t !== activeTab() || t.opening) return;
+    if (rs.scrollTop >= messagesEl.scrollHeight - messagesEl.clientHeight - RESTORED_AT_END_SLOP) return;
+    // The watch that keeps a reopened conversation on its newest message while its
+    // blocks size themselves would take it straight back there.
+    if (settleWatchStop) settleWatchStop();
+    messagesEl.scrollTop = rs.scrollTop;
+    t.scrollTop = messagesEl.scrollTop;
+    // Only meaningful while the lock is armed; with it off the transcript follows
+    // unconditionally and followTail is forced true on every switch anyway.
+    if (scrollLocked) { followTail = false; t.followTail = false; }
     if (typeof updatePinnedPrompt === 'function') updatePinnedPrompt();
     updateJumpToLatest();
-  }
+  });
 }
 /* Loads a tab's stored model/effort/thinking/permission-mode into the composer UI
    + status bar.
@@ -472,7 +503,7 @@ function refreshTabTitle(t) {
   // The list is the VIEWED folder's: a tab in another folder is not in it, so it waits
   // (titleStale) and switchTab asks again once its folder is the one being viewed.
   if (t.rootId && t.rootId !== activeRootId) { t.titleStale = true; return; }
-  window._listSessionsAsync();   // lands in onHistoryLoaded → syncTabTitles
+  requestSessionList();   // lands in onHistoryLoaded → syncTabTitles
 }
 /* One list request for every tab of the viewed folder that is waiting for its title —
  * whichever of them was selected, since syncTabTitles names them all from one list.
@@ -489,7 +520,7 @@ function refreshStaleTitles() {
     if (t.titleAsks >= TITLE_ASKS) { t.titleStale = false; t.titleAsks = 0; }
     waiting = true;
   }
-  if (waiting) window._listSessionsAsync();
+  if (waiting) requestSessionList();
 }
 function syncTabTitles(sessions) {
   let changed = false;
@@ -604,6 +635,8 @@ function clearTab(t) {
   // A conversation restored from the last Eclipse session and not shown yet would be
   // rebuilt into the emptied pane the first time the tab is shown (see switchTab).
   t._restore = null;
+  // And one still being read or drawn is no longer waited on (history.js).
+  t.opening = null; t.earlier = null;
   // Drop the process so the next send starts a genuinely new conversation
   // (spawns without --resume) instead of continuing the one just cleared.
   if (window._disposeTab) window._disposeTab(t.id);

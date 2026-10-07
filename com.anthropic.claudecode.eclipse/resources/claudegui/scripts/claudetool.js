@@ -144,11 +144,12 @@
   function send(t, text) {
     // A tab restored from the last Eclipse session holds only its session id until it
     // is first shown (see switchTab). Rebuilt here first, or that later rebuild would
-    // empty the pane this turn is rendering into.
+    // empty the pane this turn is rendering into. Read on the spot, not in the
+    // background: the message about to be sent is written to the same transcript.
     if (t._restore) {
       const rs = t._restore;
       t._restore = null;
-      loadHistory(rs.sessionId, rs.title, t);
+      loadHistory(rs.sessionId, rs.title, t, { sync: true });
     }
     const target = rtab;           // whichever tab the page was rendering into
     t.cancelled = false;
@@ -346,7 +347,7 @@
       }
       if (req.remoteControl) requireRemoteControl();
       const r = resolve(req, { model: defaultModel(), effortIdx: DEFAULT_EFFORT_IDX,
-        thinking: defaultThinking(), permMode: DEFAULT_PERM_MODE }, null);
+        thinking: defaultThinking(), permMode: defaultPermMode() }, null);
       const where = folderFor(req);
       closeMenus();
       // A folder not open yet gets its tab from here, not from addRoot: that one would
@@ -436,7 +437,8 @@
       const title = (typeof req.title === 'string' && req.title.trim()) ? req.title.trim() : 'Claude Code';
       const rootId = where.rootId || addRoot(where.path, { select: false }).id;
       const t = createTab({ rootId: rootId, sessionId: id, title: title, titled: true });
-      loadHistory(id, title, t);
+      // Read on the spot: the answer describes the tab as its conversation leaves it.
+      loadHistory(id, title, t, { sync: true });
       return result(t, []);
     },
     closeTab: function (req) {

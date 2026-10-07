@@ -40,6 +40,8 @@
     <div id="tabs"></div>
     <div class="spacer"></div>
     <div class="tools">
+      <!-- Opens the Bookmarks panel beside the conversation (bookmarks.js). -->
+      <div class="tbtn" id="bookmarks-toggle" title="Bookmarks" aria-expanded="false" onclick="toggleBookmarksPanel()">__BOOKMARK__</div>
       <!-- The root row's toggle in its collapsed home; shown only while that row is hidden. -->
       <div class="tbtn" id="supertab-toggle-collapsed" title="Show root directories" style="display:none" onclick="toggleSupertabs()">__CHEVUP__</div>
       <!-- split / lock / more-actions hidden: not wired yet -->
@@ -56,6 +58,10 @@
     <span class="ub-btn" onclick="runCliUpdate()">Update</span>
     <span class="ub-x" title="Dismiss" onclick="dismissUpdateBanner()">__X__</span>
   </div>
+
+  <!-- The conversation, and beside it (under it in a narrow view) the Bookmarks panel. -->
+  <div id="content-row">
+  <div id="convo-col">
 
   <!-- Messages (one .pane per tab, added by JS) -->
   <div id="messages">
@@ -138,6 +144,20 @@
       </div>
     </div>
   </div>
+
+  </div><!-- /#convo-col -->
+
+  <!-- Bookmarks: the replies marked in the conversation in front (bookmarks.js). -->
+  <div id="bookmarks-panel" hidden>
+    <div id="bm-resize" role="separator" tabindex="0" title="Resize bookmarks panel" aria-label="Resize bookmarks panel"></div>
+    <div class="bm-head">
+      <span class="bm-ic">__BOOKMARKED__</span>
+      <span class="bm-title">Bookmarks</span>
+      <span class="tbtn bm-close" title="Close" onclick="hideBookmarksPanel()">__X__</span>
+    </div>
+    <div id="bm-body"></div>
+  </div>
+  </div><!-- /#content-row -->
 
   </div><!-- /#zoom-root -->
 
@@ -285,6 +305,7 @@
 <script src="scripts/teleport.js"></script>
 <script src="scripts/remotecontrol.js"></script>
 <script src="scripts/msgactions.js"></script>
+<script src="scripts/bookmarks.js"></script>
 <script src="scripts/slash.js"></script>
 <script src="scripts/mentions.js"></script>
 <script src="scripts/advisor.js"></script>

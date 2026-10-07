@@ -161,7 +161,12 @@
 #history-list .h-action, #history-web .h-action { color: var(--fg-faint); padding: 4px; border-radius: 4px; visibility: hidden; cursor: pointer; }
 #history-list .item:hover .h-action, #history-web .item:hover .h-action { visibility: visible; }
 #history-list .h-action:hover, #history-web .h-action:hover { color: var(--fg); background: var(--bg-hover); }
-#history-list .h-action.h-del:hover { color: var(--red); }
+/* The "Archived sessions" row: a chevron, the name, and how many it holds. */
+#history-list .h-group { color: var(--fg-dim); }
+#history-list .h-group-chev { display: flex; flex-shrink: 0; color: var(--fg-faint); }
+#history-list .h-group-name { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#history-list .h-group-count { flex-shrink: 0; background: var(--hist-count); color: var(--on-accent);
+  font-size: 10.5px; font-weight: 600; line-height: 1.5; border-radius: 9px; padding: 0 7px; }
 #history-list .h-rename-input { flex: 1; background: var(--bg-code); border: 1px solid var(--accent); border-radius: 4px;
   padding: 3px 6px; color: var(--fg); font-size: 12.5px; outline: none; }
 .h-empty { color: var(--fg-dim); font-size: 12px; padding: 14px; text-align: center; }
@@ -553,3 +558,53 @@ body.teleporting #composer { display: none; }
 #ctx-ring-tip.open { display: block; }
 #ctx-ring-tip .crt-line { font-size: 12.5px; color: var(--fg); line-height: 1.4; }
 #ctx-ring-tip .crt-line.crt-dim { color: var(--fg-dim); margin-top: 6px; }
+
+/* ── Bookmarks panel (bookmarks.js) ───────────────────────
+   The replies bookmarked in the conversation in front: a list, and under it the one
+   picked. Beside the conversation; under it in a view narrower than 500px. Its width
+   (or height) is the user's once #bm-resize has been dragged. */
+#bookmarks-panel { position: relative; display: flex; flex-direction: column; overflow: hidden; min-width: 0;
+  flex: 0 0 clamp(240px, 30%, 420px); border-left: 1px solid var(--border); background: var(--bg); }
+#bookmarks-panel[hidden] { display: none; }
+#bm-resize { position: absolute; top: 0; bottom: 0; left: 0; width: 6px; z-index: 1; cursor: col-resize; touch-action: none; }
+#bm-resize:hover, #bm-resize.resizing, #bm-resize:focus-visible { background: var(--sel); outline: none; }
+#bookmarks-panel .bm-head { display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid var(--border); }
+#bookmarks-panel .bm-ic { display: flex; flex-shrink: 0; color: var(--fg); }
+#bookmarks-panel .bm-ic svg { width: 14px; height: 14px; }
+#bookmarks-panel .bm-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg); font-weight: 600; }
+#bm-body { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; padding: 8px; }
+.bm-msg { color: var(--fg); opacity: .6; font-size: 12px; font-style: italic; }
+.bm-msg.bm-pick { padding: 0 4px; }
+.bm-list { list-style: none; flex: 0 1 auto; max-height: 35%; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
+.bm-row { display: flex; align-items: baseline; gap: 12px; width: 100%; padding: 8px 12px; border: none;
+  border-bottom: 1px solid var(--border); background: none; color: var(--fg-soft); font: inherit; text-align: left; cursor: pointer; }
+.bm-list li:last-child .bm-row { border-bottom: none; }
+.bm-row:hover { background: var(--bg-hover); }
+.bm-row.selected, .bm-row.selected:hover, .bm-row.selected .bm-row-time { background: var(--bm-selected); color: var(--fg); }
+.bm-row-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bm-row-time { flex-shrink: 0; white-space: nowrap; color: var(--fg-dim); font-size: 11px; }
+.bm-reprint { display: flex; flex-direction: column; flex: 1; min-height: 0; border: 1px solid var(--border); border-radius: 4px; }
+.bm-reprint-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0;
+  padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.bm-link { padding: 0; border: none; background: none; color: var(--fg-dim); font: inherit; text-decoration: underline; cursor: pointer; }
+.bm-link:hover { color: var(--fg); }
+.bm-notshown { color: var(--fg-dim); }
+.bm-remove { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 22px; height: 22px; padding: 3px;
+  border: none; border-radius: 4px; background: none; color: var(--fg-dim); cursor: pointer; }
+.bm-remove:hover { background: var(--bg-hover); color: var(--fg); }
+.bm-remove svg { display: block; width: 16px; height: 16px; }
+.bm-reprint > .bm-msg { padding: 8px; }
+.bm-reprint-text { flex: 1; min-height: 0; overflow: auto; padding: 6px 8px; line-height: 1.55; color: var(--fg-soft);
+  overflow-wrap: anywhere; user-select: text; }
+/* The panel's two scrollers carry the conversation's own scrollbar (chat.css, #messages):
+   they stand right beside it, on the same background. */
+.bm-list::-webkit-scrollbar, .bm-reprint-text::-webkit-scrollbar { width: 9px; height: 9px; }
+.bm-list::-webkit-scrollbar-thumb, .bm-reprint-text::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 5px; border: 2px solid var(--bg); }
+.bm-list::-webkit-scrollbar-track, .bm-reprint-text::-webkit-scrollbar-track,
+.bm-reprint-text::-webkit-scrollbar-corner { background: transparent; }
+@media (max-width: 500px) {
+  #bookmarks-panel { flex: 0 0 clamp(180px, 45%, 360px); border-left: none; border-top: 1px solid var(--border); }
+  #bm-resize { inset: 0 0 auto; width: auto; height: 6px; cursor: row-resize; }
+}

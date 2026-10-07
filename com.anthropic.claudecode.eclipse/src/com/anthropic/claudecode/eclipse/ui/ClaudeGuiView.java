@@ -142,6 +142,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction applySettingsFn;
     @SuppressWarnings("unused") private BrowserFunction thinkingDefaultFn;
     @SuppressWarnings("unused") private BrowserFunction bypassModeAllowedFn;
+    @SuppressWarnings("unused") private BrowserFunction initialPermissionModeFn;
     @SuppressWarnings("unused") private BrowserFunction remoteControlStartupFn;
     @SuppressWarnings("unused") private BrowserFunction teleportRepoCheckFn;
     @SuppressWarnings("unused") private BrowserFunction teleportRunFn;
@@ -150,6 +151,18 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction loadSessionFn;
     @SuppressWarnings("unused") private BrowserFunction deleteSessionFn;
     @SuppressWarnings("unused") private BrowserFunction renameSessionFn;
+    @SuppressWarnings("unused") private BrowserFunction setSessionsArchivedFn;
+    @SuppressWarnings("unused") private BrowserFunction replyIdsFn;
+    @SuppressWarnings("unused") private BrowserFunction bookmarksFn;
+    @SuppressWarnings("unused") private BrowserFunction setBookmarkFn;
+    @SuppressWarnings("unused") private BrowserFunction bookmarkTextsFn;
+    @SuppressWarnings("unused") private BrowserFunction resumeNoteFn;
+    @SuppressWarnings("unused") private BrowserFunction openSessionAsyncFn;
+    @SuppressWarnings("unused") private BrowserFunction takeOpenedSessionFn;
+    /** Conversations read in the background (see {@code _openSessionAsync}), each waiting
+     *  under its request's number for the page to fetch it. */
+    private final java.util.concurrent.ConcurrentHashMap<Long, String> openedSessions =
+            new java.util.concurrent.ConcurrentHashMap<>();
     @SuppressWarnings("unused") private BrowserFunction currentContextFn;
     @SuppressWarnings("unused") private BrowserFunction decideFn;
     @SuppressWarnings("unused") private BrowserFunction answerQuestionFn;
@@ -229,6 +242,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private org.eclipse.jface.util.IPropertyChangeListener historyShowTimestampsPrefListener;
     // Live-applies PREF_HIDE_ROOT_DIRECTORIES_ROW changes without a restart or page reload.
     private org.eclipse.jface.util.IPropertyChangeListener hideRootRowPrefListener;
+    // Live-applies PREF_HIDE_BEFORE_COMPACTION changes without a restart or page reload.
+    private org.eclipse.jface.util.IPropertyChangeListener hideBeforeCompactionPrefListener;
     // Live-applies PREF_SMART_SCROLL_LOCK changes without a restart or page reload.
     private org.eclipse.jface.util.IPropertyChangeListener smartScrollLockPrefListener;
     private org.eclipse.jface.util.IPropertyChangeListener dictationPrefListener;
@@ -342,6 +357,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         registerStatusPrefListener();
         registerHistoryShowTimestampsPrefListener();
         registerHideRootRowPrefListener();
+        registerHideBeforeCompactionPrefListener();
         registerSmartScrollLockPrefListener();
         registerDictationPrefListener();
         registerThemeListener();
@@ -474,12 +490,22 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             // Captured HERE, on the UI thread: a tab switch during the scan would
             // otherwise move activeRootPath and hand back another folder's sessions.
             final String root = activeRoot();
+            // The history panel names the conversations open in tabs when it asks, and only
+            // then is the list swept for inactive ones. A tab asking for its title (tabs.js)
+            // names none: it must not archive anything, or raise the notice mid-turn.
+            final boolean sweep = a.length > 0 && a[0] instanceof String;
+            final String openIds = sweep ? (String) a[0] : "[]";
+            // The page numbers its requests and gets the number back with the answer: scans
+            // run side by side and finish in any order, and it shows only the newest.
+            final long asked = a.length > 1 && a[1] instanceof Number n ? n.longValue() : 0L;
             new Thread(() -> {
-                String json = safeSessionList(root);
+                SessionArchive.Listing list = SessionArchive.apply(root, safeSessionList(root), openIds, sweep);
                 Display.getDefault().asyncExec(() -> {
                     if (b != null && !b.isDisposed() && pageLoaded) {
-                        b.execute("window.onHistoryLoaded && window.onHistoryLoaded('" + esc(json) + "')");
+                        b.execute("window.onHistoryLoaded && window.onHistoryLoaded('"
+                                + esc(list.sessionsJson()) + "', " + list.available() + ", " + asked + ")");
                     }
+                    showArchiveNotice(list.archivedNow());
                 });
             }, "claude-history-load").start();
             return null;
@@ -596,6 +622,88 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             if (a.length > 0 && a[0] instanceof String id) deleteSessionFile(id);
             return null;
         });
+        // Files conversations under "Archived sessions" in the history, or takes them back
+        // out: a JSON array of session ids, and which way. Answers whether it was recorded.
+        setSessionsArchivedFn = new SimpleFunction(browser, "_setSessionsArchived", a ->
+                Boolean.valueOf(a.length > 1 && a[0] instanceof String ids && a[1] instanceof Boolean archived
+                        && SessionArchive.set(ids, archived)));
+        // Bookmarks: the replies of a conversation the user marked. The core keeps them
+        // (bookmarks.rs), one file per conversation; an answer of null is a native library
+        // from before them, and the page then offers no bookmarks at all.
+        //
+        // Which transcript line each reply on screen is: (session id, its folder).
+        replyIdsFn = new SimpleFunction(browser, "_replyIds", a -> {
+            if (!(a.length > 0 && a[0] instanceof String id)) return null;
+            String root = a.length > 1 && a[1] instanceof String r && !r.isBlank() ? r : activeRoot();
+            try { return NativeCore.sessionReplyIds(root, id); } catch (Throwable t) { return null; }
+        });
+        // A conversation's bookmarks: (session id).
+        bookmarksFn = new SimpleFunction(browser, "_bookmarks", a -> {
+            if (!(a.length > 0 && a[0] instanceof String id)) return null;
+            try { return NativeCore.sessionBookmarks(bookmarksDir(), id); } catch (Throwable t) { return null; }
+        });
+        // Bookmark a reply or take its bookmark away: (session id, reply line, on, when
+        // the reply was written in ms or 0).
+        setBookmarkFn = new SimpleFunction(browser, "_setBookmark", a -> {
+            if (!(a.length > 2 && a[0] instanceof String id && a[1] instanceof String uuid
+                    && a[2] instanceof Boolean on)) {
+                return null;
+            }
+            long writtenAt = a.length > 3 && a[3] instanceof Number n ? n.longValue() : 0L;
+            try { return NativeCore.sessionBookmarkSet(bookmarksDir(), id, uuid, on, writtenAt); }
+            catch (Throwable t) { return null; }
+        });
+        // The text of bookmarked replies that are not on screen: (session id, its folder,
+        // a JSON array of reply lines).
+        bookmarkTextsFn = new SimpleFunction(browser, "_bookmarkTexts", a -> {
+            if (!(a.length > 2 && a[0] instanceof String id && a[2] instanceof String uuids)) return null;
+            String root = a[1] instanceof String r && !r.isBlank() ? r : activeRoot();
+            try { return NativeCore.sessionBookmarkTexts(root, id, uuids); } catch (Throwable t) { return null; }
+        });
+        // The line a reopened conversation ends with when the prompt cache no longer
+        // holds it: (session id, its folder). Empty when there is none to show; null is a
+        // native library from before it, and the page then shows none either.
+        resumeNoteFn = new SimpleFunction(browser, "_resumeNote", a -> {
+            if (!(a.length > 0 && a[0] instanceof String id)) return null;
+            String root = a.length > 1 && a[1] instanceof String r && !r.isBlank() ? r : activeRoot();
+            try { return NativeCore.sessionResumeNote(root, id); } catch (Throwable t) { return null; }
+        });
+        // Opening a saved conversation without holding the UI thread: (request number,
+        // session id, its folder, whether from its last compaction on, or the boundary of
+        // the compaction whose earlier part is wanted). The core reads the transcript once,
+        // on a thread of its own; the answer then waits here under the request's number and
+        // the page — told only that number — fetches it with _takeOpenedSession. A
+        // function's return value is how _loadSession has always carried megabytes to the
+        // page; handing them over as script text is what this avoids. A native library
+        // from before sessionOpen answers false, and the page opens the conversation as
+        // it used to.
+        openSessionAsyncFn = new SimpleFunction(browser, "_openSessionAsync", a -> {
+            if (!(a.length > 1 && a[0] instanceof Number n && a[1] instanceof String id)) return null;
+            final long request = n.longValue();
+            final String root = a.length > 2 && a[2] instanceof String r && !r.isBlank() ? r : activeRoot();
+            final boolean fromLastCompaction = a.length > 3 && Boolean.TRUE.equals(a[3]);
+            final String before = a.length > 4 && a[4] instanceof String u && !u.isEmpty() ? u : null;
+            final Browser b = browser;
+            new Thread(() -> {
+                String json = null;
+                try {
+                    json = before != null ? NativeCore.sessionOpenBefore(root, id, before)
+                                          : NativeCore.sessionOpen(root, id, fromLastCompaction);
+                } catch (Throwable t) { /* no such native: answered as false below */ }
+                final boolean read = json != null;
+                if (read) openedSessions.put(request, json);
+                Display.getDefault().asyncExec(() -> {
+                    if (b != null && !b.isDisposed() && pageLoaded) {
+                        b.execute("window.onSessionOpened && window.onSessionOpened(" + request + ", " + read + ")");
+                    } else {
+                        openedSessions.remove(request);
+                    }
+                });
+            }, "claude-session-open").start();
+            return Boolean.TRUE;
+        });
+        takeOpenedSessionFn = new SimpleFunction(browser, "_takeOpenedSession", a ->
+            a.length > 0 && a[0] instanceof Number n ? openedSessions.remove(n.longValue()) : null);
         renameSessionFn = new SimpleFunction(browser, "_renameSession", a -> {
             if (a.length > 1 && a[0] instanceof String id && a[1] instanceof String newTitle)
                 renameSessionFile(id, newTitle);
@@ -777,6 +885,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         bypassModeAllowedFn = new SimpleFunction(browser, "_bypassModeAllowed", a ->
                 Boolean.valueOf(Activator.getDefault().getPreferenceStore()
                         .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_LIVE_AUTO_MODE)));
+        // The permission mode a new conversation starts in (a preference), empty for
+        // unset — which the page takes as Manual, the mode it has always started in.
+        initialPermissionModeFn = new SimpleFunction(browser, "_initialPermissionMode", a ->
+                InitialPermissionMode.current());
         loadSessionPrefsFn = new SimpleFunction(browser, "_loadSessionPrefs", a ->
             (a.length > 0 && a[0] instanceof String id) ? SessionPrefsStore.load(id) : "{}");
         // Runs `claude update` — the CLI's own updater, so it works whichever way
@@ -1270,6 +1382,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
 
         browser.addProgressListener(org.eclipse.swt.browser.ProgressListener.completedAdapter(e -> {
             pageLoaded = true;
+            openedSessions.clear();   // whatever a page before this one asked for and never fetched
             // WebView2 init is async — retry here where the webview provably exists.
             disableDevTools();
             disableZoom();
@@ -1284,6 +1397,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             pushDictationAvailability(); // no dictation on macOS, or without ALSA on Linux/FreeBSD
             pushHistoryShowTimestamps(); // whether to show a timestamp above your own messages
             pushHideRootDirectoriesRow(); // whether the root directories row is hidden entirely
+            pushHideBeforeCompaction(); // whether what was said above a compaction is hidden or only folded
             pushSpinnerVerbs();      // which gerund categories the working indicator cycles
             // An "Open Claude Code Here" that arrived while the view was still loading.
             String queuedRoot = pendingRootPath;
@@ -1961,6 +2075,16 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         Activator.getDefault().getPreferenceStore().addPropertyChangeListener(hideRootRowPrefListener);
     }
 
+    /** Live-applies a Preferences change to "Hide messages from before a compaction"
+     *  without needing a page reload — mirrors {@link #registerHideRootRowPrefListener()}. */
+    private void registerHideBeforeCompactionPrefListener() {
+        hideBeforeCompactionPrefListener = event -> {
+            if (!com.anthropic.claudecode.eclipse.Constants.PREF_HIDE_BEFORE_COMPACTION.equals(event.getProperty())) return;
+            Display.getDefault().asyncExec(this::pushHideBeforeCompaction);
+        };
+        Activator.getDefault().getPreferenceStore().addPropertyChangeListener(hideBeforeCompactionPrefListener);
+    }
+
     /** Live-applies a Preferences change to Smart Scroll Lock without needing a page
      *  reload — mirrors {@link #registerStatusPrefListener()}. */
     private void registerSmartScrollLockPrefListener() {
@@ -2458,6 +2582,20 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         boolean hide = Activator.getDefault().getPreferenceStore()
                 .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_HIDE_ROOT_DIRECTORIES_ROW);
         browser.execute("window.onHideRootDirectoriesRow && window.onHideRootDirectoriesRow(" + hide + ")");
+    }
+
+    /**
+     * Tells the page whether what was said above a conversation's last compaction is
+     * hidden outright, or kept under its "Messages before compaction" line. Re-pushed on
+     * activation and on every live Preferences change (see
+     * {@link #registerHideBeforeCompactionPrefListener()}); the page applies it to every
+     * open tab at once — see {@code window.onHideBeforeCompaction}.
+     */
+    private void pushHideBeforeCompaction() {
+        if (browser == null || browser.isDisposed() || !pageLoaded) return;
+        boolean hide = Activator.getDefault().getPreferenceStore()
+                .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_HIDE_BEFORE_COMPACTION);
+        browser.execute("window.onHideBeforeCompaction && window.onHideBeforeCompaction(" + hide + ")");
     }
 
     /**
@@ -3202,6 +3340,45 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         return true;
     }
 
+    /** Where the conversations' bookmarks are kept: beside the view's other per-session state. */
+    private static String bookmarksDir() {
+        return Activator.getDefault().getStateLocation().append("session-bookmarks").toOSString();
+    }
+
+    /**
+     * Tells the user, the first time it happens, that conversations were archived for
+     * inactivity, and offers to take them back out or to open the preference. UI thread,
+     * and never from inside a call the Browser is still executing: see _confirmCloseView.
+     */
+    private void showArchiveNotice(List<String> archivedNow) {
+        if (archivedNow.isEmpty() || browser == null || browser.isDisposed()) return;
+        org.eclipse.jface.preference.IPreferenceStore prefs = Activator.getDefault().getPreferenceStore();
+        if (prefs.getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_ARCHIVE_NOTICE_SHOWN)) return;
+        // Before it is shown, as the VS Code extension does: once, whatever is answered.
+        prefs.setValue(com.anthropic.claudecode.eclipse.Constants.PREF_ARCHIVE_NOTICE_SHOWN, true);
+        try {
+            // No default button: Enter is not an answer to either offer.
+            MessageDialog dlg = new MessageDialog(browser.getShell(), "Claude Code", null,
+                    SessionArchive.notice(archivedNow.size(), prefs.getInt(
+                            com.anthropic.claudecode.eclipse.Constants.PREF_ARCHIVE_INACTIVE_SESSIONS)),
+                    MessageDialog.INFORMATION, new String[] { "Unarchive", "Open Settings" }, -1);
+            // The user's own decision: eclipseDialog lists it and never answers it.
+            dlg.create();
+            com.anthropic.claudecode.eclipse.tools.EclipseDialogTool.forUserOnly(dlg.getShell());
+            int answer = dlg.open();
+            if (answer == 0) {
+                if (SessionArchive.set(new Gson().toJson(archivedNow), false)) {
+                    executeJS("window.onSessionsUnarchived && window.onSessionsUnarchived()");
+                }
+            } else if (answer == 1) {
+                org.eclipse.ui.dialogs.PreferencesUtil.createPreferenceDialogOn(browser.getShell(),
+                        "com.anthropic.claudecode.eclipse.preferences", null, null).open();
+            }
+        } catch (Exception e) {
+            Activator.logError("Failed to show the archived-sessions notice", e);
+        }
+    }
+
     // History is served by the Rust core (session.rs), which reads the CLI's
     // per-project jsonl logs directly.
     private String safeSessionList() { return safeSessionList(activeRoot()); }
@@ -3623,6 +3800,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         pushDebugMode();
         pushHistoryShowTimestamps();
         pushHideRootDirectoriesRow();
+        pushHideBeforeCompaction();
         pushSpinnerVerbs();
     }
 
@@ -4266,6 +4444,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(hideRootRowPrefListener); }
             catch (Throwable ignored) {}
             hideRootRowPrefListener = null;
+        }
+        if (hideBeforeCompactionPrefListener != null) {
+            try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(hideBeforeCompactionPrefListener); }
+            catch (Throwable ignored) {}
+            hideBeforeCompactionPrefListener = null;
         }
         if (smartScrollLockPrefListener != null) {
             try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(smartScrollLockPrefListener); }

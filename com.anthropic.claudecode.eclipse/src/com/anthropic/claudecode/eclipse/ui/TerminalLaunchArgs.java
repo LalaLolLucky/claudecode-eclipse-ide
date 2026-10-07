@@ -9,7 +9,7 @@ import com.google.gson.JsonObject;
 /**
  * What the Claude Terminal adds to the {@code claude} command line, and to the settings file
  * it passes, for the preferences that reach it: the plug-in's tools, bypass permissions mode,
- * Remote Control on startup and thinking by default.
+ * the initial permission mode, Remote Control on startup and thinking by default.
  *
  * <p>Kept apart from {@link ClaudeCliView} because every line of it is a decision that can be
  * wrong for somebody's installed CLI: a flag an older CLI does not know makes it exit at once
@@ -26,12 +26,13 @@ final class TerminalLaunchArgs {
     static final String DISALLOWED_TOOLS_OLD = "--disallowedTools";
     static final String ALLOW_BYPASS = "--allow-dangerously-skip-permissions";
     static final String BYPASS = "--dangerously-skip-permissions";
+    static final String PERMISSION_MODE = "--permission-mode";
     static final String REMOTE_CONTROL = "--remote-control";
     static final String REMOTE_CONTROL_SHORT = "--rc";
 
     /** Every flag {@link #build} may pass: what the caller has to ask the CLI about. */
     static final List<String> PROBED = List.of(
-            MCP_CONFIG, DISALLOWED_TOOLS, DISALLOWED_TOOLS_OLD, ALLOW_BYPASS, REMOTE_CONTROL);
+            MCP_CONFIG, DISALLOWED_TOOLS, DISALLOWED_TOOLS_OLD, ALLOW_BYPASS, PERMISSION_MODE, REMOTE_CONTROL);
 
     /** The name the plug-in's server goes by, as in the Claude Code view's own launch. */
     private static final String SERVER = "eclipse";
@@ -48,8 +49,11 @@ final class TerminalLaunchArgs {
     private static final List<String> HIDDEN_TOOLS = List.of(
             "openDiff", "acceptDiff", "rejectDiff", "closeAllDiffTabs", "askUserQuestion", "approvalPrompt");
 
-    /** The preferences that add something to the command line. */
-    record Options(boolean mcpTools, boolean bypass, boolean remoteControl) {
+    /**
+     * The preferences that add something to the command line. {@code permissionMode} is the
+     * mode to start in as {@link InitialPermissionMode#resolve} gives it, empty for none.
+     */
+    record Options(boolean mcpTools, boolean bypass, boolean remoteControl, String permissionMode) {
     }
 
     private TerminalLaunchArgs() {
@@ -88,6 +92,14 @@ final class TerminalLaunchArgs {
                 args.add(deny);
                 args.add(hiddenTools());
             }
+        }
+
+        // The mode the session starts in, unless the user's own arguments already say:
+        // --dangerously-skip-permissions is a starting mode too.
+        if (!options.permissionMode().isEmpty() && !has(userArgs, PERMISSION_MODE) && !has(userArgs, BYPASS)
+                && cliKnows.test(PERMISSION_MODE)) {
+            args.add(PERMISSION_MODE);
+            args.add(options.permissionMode());
         }
 
         // Last: its name is optional, so whatever follows it must be another flag or
