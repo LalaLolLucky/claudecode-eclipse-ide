@@ -175,6 +175,7 @@ function createTab(opts) {
   const pane = document.createElement('div'); pane.className = 'pane'; pane.dataset.id = id;
   pane.innerHTML = WELCOME_HTML();
   messagesEl.appendChild(pane);
+  observePane(pane);
   // Per-conversation model/effort/thinking (VSCode-style). A NEW tab starts at the
   // DEFAULTS (not whatever the last-viewed convo used); each tab then remembers its
   // own. Defaults: high effort, thinking off, the user's configured default model.
