@@ -4,7 +4,35 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.13] — 2026-10-06 *(current)*
+## [3.2.14] — 2026-10-07 *(current)*
+
+### Added
+- Bookmarks: a bookmark button under each of Claude's replies, and a Bookmarks panel beside the conversation that lists that conversation's bookmarks.
+- A copy button under each of Claude's replies.
+- Session history can archive and unarchive sessions; archived ones sit under "Archived sessions".
+- New preference "Archive Inactive Sessions": sessions idle for the chosen time (14 days by default) are archived on their own.
+- New preference "Initial Permission Mode": the mode a new conversation starts in, in the Claude Code view and the Claude Terminal.
+- New preference "Hide messages from before a compaction" (on by default): after a compaction the earlier messages are hidden, in the conversation, the Bookmarks panel and the Rewind list. Turned off, they stay under an expandable "Messages before compaction" line.
+- A reopened conversation says when the prompt cache has likely expired and about how many tokens the next message will re-cache.
+
+### Changed
+- Session history rows archive a session instead of deleting it.
+- Bypass permissions mode has its own color in the Claude Code view.
+- Minor UI improvements.
+
+### Fixed
+- Session history no longer shows an out-of-date list when opened, and loads much faster.
+- Reopening a long conversation no longer holds up Eclipse while it loads: its tab opens at once, its newest messages are shown first and the older ones fill in above.
+- With Scroll Lock on, a tab restored at startup returns to where it was left instead of jumping to the end.
+- Tool output and long prompts drawn while their tab was not in front are shortened again once the tab is shown.
+- After an automatic compaction, what Claude writes next appears under the "Compacted chat" line instead of above it.
+
+### Security
+- Updated rustls to 0.23.45, which no longer accepts TLS 1.3 handshake messages sent at the wrong encryption level.
+
+---
+
+## [3.2.13] — 2026-10-06
 
 ### Added
 - New MCP tools: `eclipseShowView`, `eclipseOpenPerspective` and `eclipseDialog`. Claude can open and close views and perspectives, and answer dialogs in this Eclipse or another one.
