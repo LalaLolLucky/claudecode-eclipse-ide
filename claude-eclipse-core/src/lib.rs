@@ -3,7 +3,9 @@ mod bookmarks;
 mod bridge;
 mod chat;
 mod chrome;
+mod cli_ask;
 mod console;
+mod design_login;
 mod dialogs;
 mod freebsd_guide;
 mod launch;
@@ -21,6 +23,7 @@ mod alsa_capture;
 mod teleport;
 #[cfg(test)]
 mod test_support;
+mod user_settings;
 mod web_history;
 
 use chat::ChatManager;
@@ -760,6 +763,32 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatMcpR
         manager.mcp_request(&token, &request) as jboolean
     }));
     finish_export(&mut env, "chatMcpRequest", result, jni::sys::JNI_FALSE)
+}
+
+/// Asks this tab's live process for what one of the CLI's dialogs shows, under the
+/// page's `token`.
+///
+/// Fire-and-forget: the reply reaches Java as an `onCliReply` callback carrying the
+/// same token. Returns false when the tab has no live process, or the request is not
+/// one the page may send.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_chatCliRequest(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    token: JString,
+    request: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if handle == 0 {
+            return 0;
+        }
+        let manager = unsafe { &*(handle as *const ChatManager) };
+        let mut text = |s: JString| jstr(&mut env, &s);
+        let (token, request) = (text(token), text(request));
+        manager.cli_request(&token, &request) as jboolean
+    }));
+    finish_export(&mut env, "chatCliRequest", result, jni::sys::JNI_FALSE)
 }
 
 /// Applies a tab's launch settings (permission mode, effort, model, thinking) to its
@@ -1604,6 +1633,95 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_mcpEditC
         jout(&mut env, json, "")
     }));
     finish_export(&mut env, "mcpEditConfig", result, std::ptr::null_mut())
+}
+
+// ===========================================================================
+// CLI dialogs JNI entry point
+// ===========================================================================
+
+/// What the folder `cwd` offers, asked of a short-lived CLI that is sent
+/// `initialize` and nothing else: its slash commands, models and output styles.
+/// Returns `{"ok":true,"commands":[…],…}` or `{"ok":false,"error"}`.
+///
+/// **Blocking** — starts the CLI and waits for its answer, up to 20s. Off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_cliFetchCommands(
+    mut env: JNIEnv,
+    _class: JClass,
+    claude_cmd: JString,
+    cwd: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut text = |s: JString| jstr(&mut env, &s);
+        let (claude_cmd, cwd) = (text(claude_cmd), text(cwd));
+        let json = cli_ask::fetch_commands(&claude_cmd, &cwd);
+        jout(&mut env, json, "")
+    }));
+    finish_export(&mut env, "cliFetchCommands", result, std::ptr::null_mut())
+}
+
+/// Saves one change a dialog made, by running the CLI's own edit subcommand
+/// (`claude edit-… --json`) in `cwd` with the change as JSON on its stdin.
+/// Returns `{"ok":true,"output"}` or `{"ok":false,"error"}`.
+///
+/// **Blocking** — runs the CLI, up to 30s. Off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_cliEdit(
+    mut env: JNIEnv,
+    _class: JClass,
+    claude_cmd: JString,
+    cwd: JString,
+    subcommand: JString,
+    input: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut text = |s: JString| jstr(&mut env, &s);
+        let (claude_cmd, cwd, subcommand, input) = (text(claude_cmd), text(cwd), text(subcommand), text(input));
+        let json = cli_ask::edit(&claude_cmd, &cwd, &subcommand, &input);
+        jout(&mut env, json, "")
+    }));
+    finish_export(&mut env, "cliEdit", result, std::ptr::null_mut())
+}
+
+/// One step of the Claude Design sign-in (`start`, `wait`, `code`, `cancel`). See
+/// [`design_login::run`].
+///
+/// **Blocking** — `start` waits for the CLI to name its pages and `wait` for the
+/// sign-in to end, up to six minutes. Off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_cliDesignLogin(
+    mut env: JNIEnv,
+    _class: JClass,
+    claude_cmd: JString,
+    cwd: JString,
+    op: JString,
+    arg: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut text = |s: JString| jstr(&mut env, &s);
+        let (claude_cmd, cwd, op, arg) = (text(claude_cmd), text(cwd), text(op), text(arg));
+        let json = design_login::run(&claude_cmd, &cwd, &op, &arg);
+        jout(&mut env, json, "")
+    }));
+    finish_export(&mut env, "cliDesignLogin", result, std::ptr::null_mut())
+}
+
+/// Saves one of the command menu's settings in the user's own settings file. See
+/// [`user_settings::set`].
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_userSettingSet(
+    mut env: JNIEnv,
+    _class: JClass,
+    key: JString,
+    value: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut text = |s: JString| jstr(&mut env, &s);
+        let (key, value) = (text(key), text(value));
+        let json = user_settings::set(&key, &value);
+        jout(&mut env, json, "")
+    }));
+    finish_export(&mut env, "userSettingSet", result, std::ptr::null_mut())
 }
 
 // ===========================================================================

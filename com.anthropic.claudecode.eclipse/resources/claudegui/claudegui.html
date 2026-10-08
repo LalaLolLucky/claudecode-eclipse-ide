@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="styles/chat.css">
 <link rel="stylesheet" href="styles/cards.css">
 <link rel="stylesheet" href="styles/panels.css">
+<link rel="stylesheet" href="styles/dialogs.css">
 </head>
 <body>
 <div id="app">
@@ -120,7 +121,7 @@
       <div id="composer-bar">
         <div class="cb-left">
           <span class="pill" id="plus-btn" title="Add" onclick="openPlusMenu(this)">__PLUS__</span>
-          <span class="pill" id="slash-btn" title="Commands" onclick="toggleMenu('actions-menu', this)">__SLASH__</span>
+          <span class="pill" id="slash-btn" title="Show command menu (/)" onclick="toggleMenu('actions-menu', this)">__SLASH__</span>
           <span class="pill ctx-ring" id="ctx-ring-btn" onclick="sendCompact()" onmouseenter="showCtxRingTip()" onmouseleave="hideCtxRingTip()" style="display:none">
             <svg viewBox="0 0 20 20" width="16" height="16">
               <circle class="ctx-ring-track" cx="10" cy="10" r="8"></circle>
@@ -185,36 +186,25 @@
       <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
   </div>
 
-  <!-- actions menu (the / button): Context + Model sections + Slash Commands. The filter
-       box stays put; everything under it is the one part that scrolls (.menu-scroll). -->
+  <!-- actions menu (the / button, and typing / in the composer): cmdmenu.js draws its rows
+       into #actions-rows. The filter box stays put; everything under it is the one part that
+       scrolls (.menu-scroll). The two slider rows are kept here as built and moved into place. -->
   <div class="menu" id="actions-menu">
-    <input id="actions-slash-filter" type="text" placeholder="Filter commands…" oninput="filterActionsSlash(this.value)">
+    <input id="actions-slash-filter" type="text" placeholder="Filter actions…" oninput="filterActionsSlash(this.value)">
     <div class="menu-scroll">
-    <div id="actions-menu-extra">
-      <div class="head"><span class="h">Context</span></div>
-      <div class="item" onclick="openRewindDialog()"><span class="ic">__REWIND__</span><div class="txt"><span class="lbl">Rewind</span></div></div>
-      <div class="sep"></div>
-      <div class="head"><span class="h">Model</span></div>
-      <div class="item" onclick="openModelChooser(event)"><span class="ic">__SPARK__</span><div class="txt"><span class="lbl">Switch model<span id="cur-model" style="color:var(--fg-dim)">(Default)</span></span></div><span class="ic">__CHEVRON__</span></div>
-      <div class="effort"><span class="lbl"><span class="ic">__GAUGE__</span><span class="lbl-t">Effort<span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span></span>
+    <div id="actions-rows"></div>
+    <div id="actions-parts" hidden>
+      <div class="effort" id="row-effort"><span class="lbl"><span class="ic">__GAUGE__</span><span class="lbl-t">Effort<span class="eff-lbl" style="color:var(--fg-dim)">(High)</span></span></span>
         <span class="slider eff-slider" title="Effort" onmousedown="effortDown(event)"><span class="track"></span><span class="fill eff-fill"></span><span class="knob eff-knob"></span></span></div>
-      <div class="item" onclick="toggleThinking(event)"><span class="ic">__BRAIN__</span><div class="txt"><span class="lbl">Thinking</span></div><span class="check" id="think-check">__CHECK__</span></div>
-      <div class="item" onclick="openAccount()"><span class="ic">__USER__</span><div class="txt"><span class="lbl">Account &amp; usage…</span></div></div>
-      <div class="sep"></div>
-      <div class="head"><span class="h">Customize</span></div>
-      <div class="item" onclick="openMcpServers()"><span class="ic">__PLUG__</span><div class="txt"><span class="lbl">MCP servers</span></div></div>
-      <div class="sep"></div>
-    </div>
-    <div class="head"><span class="h">Slash Commands</span></div>
-    <div id="actions-slash"></div>
-    <div id="actions-menu-extra2">
-      <div class="sep"></div>
-      <div class="head"><span class="h">Appearance</span></div>
-      <div class="effort"><span class="lbl"><span class="ic">__ZOOM__</span><span class="lbl-t">Zoom level<span class="zoom-lbl" style="color:var(--fg-dim)">(100%)</span></span></span>
+      <div class="effort" id="row-zoom"><span class="lbl"><span class="ic">__ZOOM__</span><span class="lbl-t">Zoom level<span class="zoom-lbl" style="color:var(--fg-dim)">(100%)</span></span></span>
         <span class="slider zoom-slider" title="Zoom level" onmousedown="zoomDown(event)"><span class="track"></span><span class="fill zoom-fill"></span><span class="knob zoom-knob"></span></span></div>
     </div>
     </div>
   </div>
+
+  <!-- A dialog drawn from what the CLI says its own dialogs show (clidialogs.js): Slash
+       commands, Memory, Instructions, Status and the rest share this one window. -->
+  <div id="cli-overlay"><div id="cli-win"></div></div>
 
   <!-- model chooser: the heading and the list scroll together (.menu-scroll); the effort
        row under them stays put. -->
@@ -307,6 +297,8 @@
 <script src="scripts/msgactions.js"></script>
 <script src="scripts/bookmarks.js"></script>
 <script src="scripts/slash.js"></script>
+<script src="scripts/cmdmenu.js"></script>
+<script src="scripts/clidialogs.js"></script>
 <script src="scripts/mentions.js"></script>
 <script src="scripts/advisor.js"></script>
 <script src="scripts/markdown.js"></script>

@@ -20,8 +20,10 @@ updateCtxChip();
    clamped value is written straight back into the sidecar. */
 if (!restored) { setEffort(effortIdx); updateThinkingCheck(); }
 
-/* Populate the actions-menu slash list (needs SLASH_COMMANDS from slash.js). */
-buildActionsSlash();
+/* Draw the command menu and ask what the folder offers (cmdmenu.js). */
+cmdMenuInit();
+/* Nobody signed in: the login screen, here and for as long as that lasts (clidialogs.js). */
+signInWatchInit();
 
 /* Last: everything above is the state being restored INTO, and must not be saved
    over the state it was restored FROM. */

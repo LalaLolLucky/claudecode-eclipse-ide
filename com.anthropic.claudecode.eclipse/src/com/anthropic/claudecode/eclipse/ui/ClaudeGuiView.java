@@ -138,6 +138,13 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction remoteControlQrFn;
     @SuppressWarnings("unused") private BrowserFunction mcpFn;
     @SuppressWarnings("unused") private BrowserFunction mcpConfigFn;
+    @SuppressWarnings("unused") private BrowserFunction cliFn;
+    @SuppressWarnings("unused") private BrowserFunction commandsFn;
+    @SuppressWarnings("unused") private BrowserFunction ideFn;
+    @SuppressWarnings("unused") private BrowserFunction cliEditFn;
+    @SuppressWarnings("unused") private BrowserFunction reloadTabFn;
+    @SuppressWarnings("unused") private BrowserFunction designLoginFn;
+    @SuppressWarnings("unused") private BrowserFunction userSettingFn;
     @SuppressWarnings("unused") private BrowserFunction confirmDefaultModelFn;
     @SuppressWarnings("unused") private BrowserFunction applySettingsFn;
     @SuppressWarnings("unused") private BrowserFunction thinkingDefaultFn;
@@ -706,7 +713,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                     } else {
                         openedSessions.remove(request);
                     }
-                });
+                }));
             }, "claude-session-open").start();
             return Boolean.TRUE;
         });
@@ -1103,6 +1110,197 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 pushMcp(ti, res != null ? res : mcpError(token, "Not supported by this build."));
             }, "claude-mcp-config").start();
             return null;
+        });
+        // What the CLI's own dialogs show (Memory, Instructions, Status, …) is asked of
+        // the tab's process the way the MCP servers window asks, so this too may have to
+        // start it; the answer comes back as window.onCliReply under the page's token.
+        cliFn = new SimpleFunction(browser, "_cli", a -> {
+            if (a.length < 3 || !(a[0] instanceof String ti) || !(a[1] instanceof String token)
+                    || !(a[2] instanceof String request))
+                return null;
+            final String resumeId = a.length > 3 && a[3] instanceof String s ? s : "";
+            final String permMode = a.length > 4 && a[4] instanceof String s ? s : "";
+            final String effort   = a.length > 5 && a[5] instanceof String s ? s : "";
+            final String model    = launchModel(a.length > 6 && a[6] instanceof String s ? s : "");
+            final String thinking = launchThinking(a.length > 7 && a[7] instanceof String s ? s : "");
+            final String root     = a.length > 8 && a[8] instanceof String s ? s : "";
+            final ChatProcessManager m = managerFor(ti);
+            // Off the UI thread — spawning a child process would otherwise freeze it.
+            new Thread(() -> {
+                String err = null;
+                ClaudeCodeView.debug("[cli] → " + mcpRequestLabel(request) + " (" + token + ")");
+                try {
+                    m.setRoot(root);
+                    if (!m.cliRequest(token, request, resumeId, permMode, effort, model, thinking)) {
+                        err = "Claude could not be started.";
+                        ClaudeCodeView.debug("[cli] " + token + " not sent: no live process, or the request was refused");
+                    }
+                } catch (UnsatisfiedLinkError e) {
+                    err = "Not supported by this build.";   // a native library from before this channel
+                    ClaudeCodeView.debug("[cli] " + token + " not sent: " + e);
+                } catch (Throwable t) {
+                    err = "Claude could not be started.";
+                    ClaudeCodeView.debug("[cli] " + token + " not sent: " + t);
+                }
+                // Only a failure is reported from here; the answer is the CLI's reply.
+                if (err != null) pushCliReply(ti, mcpError(token, err));
+            }, "claude-cli-ask").start();
+            return null;
+        });
+        // What a folder offers before any of its tabs has a process: the slash commands
+        // above all. Asked of a short-lived CLI, so blocking and off the UI thread; the
+        // answer comes back as window.onCommands for that root.
+        commandsFn = new SimpleFunction(browser, "_commands", a -> {
+            if (a.length < 1 || !(a[0] instanceof String ti)) return null;
+            final String root = a.length > 1 && a[1] instanceof String s ? s : "";
+            final ChatProcessManager m = managerFor(ti);
+            new Thread(() -> {
+                String res;
+                try {
+                    m.setRoot(root);
+                    res = m.fetchCommands();
+                } catch (Throwable t) {   // UnsatisfiedLinkError included: an older native library
+                    ClaudeCodeView.debug("[cli] commands not fetched: " + t);
+                    res = null;
+                }
+                final String json = res != null && !res.isEmpty() ? res : "{\"ok\":false}";
+                ClaudeCodeView.debug("[cli] ← commands " + (json.startsWith("{\"ok\":true") ? "ok" : "failed"));
+                Display.getDefault().asyncExec(() -> executeJS("window.onCommands && window.onCommands('"
+                        + esc(ti) + "','" + esc(root) + "','" + esc(json) + "')"));
+            }, "claude-cli-commands").start();
+            return null;
+        });
+        // A change one of those dialogs makes is saved by the CLI's own edit subcommand, run in
+        // the tab's folder. Blocking, so off the UI thread; the outcome comes back on the same
+        // channel as the dialog requests, under the page's token.
+        cliEditFn = new SimpleFunction(browser, "_cliEdit", a -> {
+            if (a.length < 4 || !(a[0] instanceof String ti) || !(a[1] instanceof String token)
+                    || !(a[2] instanceof String subcommand) || !(a[3] instanceof String input))
+                return null;
+            final String root = a.length > 4 && a[4] instanceof String s ? s : "";
+            final ChatProcessManager m = managerFor(ti);
+            new Thread(() -> {
+                String reply;
+                ClaudeCodeView.debug("[cli] → " + subcommand + " (" + token + ")");
+                try {
+                    m.setRoot(root);
+                    com.google.gson.JsonObject res = com.google.gson.JsonParser.parseString(m.cliEdit(subcommand, input)).getAsJsonObject();
+                    com.google.gson.JsonObject o = new com.google.gson.JsonObject();
+                    o.addProperty("token", token);
+                    boolean ok = res.has("ok") && res.get("ok").getAsBoolean();
+                    o.addProperty("ok", ok);
+                    if (ok) o.add("response", res);
+                    else o.addProperty("error", res.has("error") ? res.get("error").getAsString() : "Unknown error");
+                    reply = o.toString();
+                } catch (UnsatisfiedLinkError e) {
+                    reply = mcpError(token, "Not supported by this build.");   // a native library from before this call
+                } catch (Throwable t) {
+                    ClaudeCodeView.debug("[cli] " + token + " failed: " + t);
+                    reply = mcpError(token, "Claude could not be started.");
+                }
+                pushCliReply(ti, reply);
+            }, "claude-cli-edit").start();
+            return null;
+        });
+        // The Claude Design sign-in, a step at a time (start, wait, code, cancel): the CLI's own
+        // `design-login`, run in the tab's folder. Blocking, so off the UI thread, each step on
+        // a thread of its own because "wait" lasts as long as the browser takes. The answer
+        // comes back on the dialogs' channel under the page's token.
+        designLoginFn = new SimpleFunction(browser, "_designLogin", a -> {
+            if (a.length < 3 || !(a[0] instanceof String ti) || !(a[1] instanceof String token)
+                    || !(a[2] instanceof String op))
+                return null;
+            final String arg = a.length > 3 && a[3] instanceof String s ? s : "";
+            final String root = a.length > 4 && a[4] instanceof String s ? s : "";
+            final ChatProcessManager m = managerFor(ti);
+            new Thread(() -> {
+                String reply;
+                ClaudeCodeView.debug("[cli] → design-login " + op + " (" + token + ")");
+                try {
+                    m.setRoot(root);
+                    com.google.gson.JsonObject o = new com.google.gson.JsonObject();
+                    o.addProperty("token", token);
+                    o.addProperty("ok", true);   // the step ran; how it went is in the response
+                    o.add("response", com.google.gson.JsonParser.parseString(m.designLogin(op, arg)));
+                    reply = o.toString();
+                } catch (UnsatisfiedLinkError e) {
+                    reply = mcpError(token, "Not supported by this build.");   // a native library from before this call
+                } catch (Throwable t) {
+                    ClaudeCodeView.debug("[cli] " + token + " failed: " + t);
+                    reply = mcpError(token, "Claude could not be started.");
+                }
+                pushCliReply(ti, reply);
+            }, "claude-design-login").start();
+            return null;
+        });
+        // A switch in the command menu whose setting lives in the user's own settings file,
+        // which the CLI will not write for us. Saved there, then every conversation open here
+        // that has a process is told, so the switch holds at once and not from the next start.
+        userSettingFn = new SimpleFunction(browser, "_userSetting", a -> {
+            if (a.length < 4 || !(a[0] instanceof String ti) || !(a[1] instanceof String token)
+                    || !(a[2] instanceof String key) || !(a[3] instanceof String valueJson))
+                return null;
+            new Thread(() -> {
+                String reply;
+                ClaudeCodeView.debug("[cli] → setting " + key + " = " + valueJson + " (" + token + ")");
+                try {
+                    com.google.gson.JsonObject res = com.google.gson.JsonParser.parseString(NativeCore.userSettingSet(key, valueJson)).getAsJsonObject();
+                    boolean ok = res.has("ok") && res.get("ok").getAsBoolean();
+                    if (ok) {
+                        com.google.gson.JsonObject settings = new com.google.gson.JsonObject();
+                        settings.add(key, com.google.gson.JsonParser.parseString(valueJson));
+                        com.google.gson.JsonObject tell = new com.google.gson.JsonObject();
+                        tell.addProperty("subtype", "apply_flag_settings");
+                        tell.add("settings", settings);
+                        final String request = tell.toString();
+                        // On the UI thread, as renameSessionFile is: a tab is disposed there
+                        // (chatDestroy), and a scan from this worker could reach a freed handle.
+                        Display.getDefault().asyncExec(() -> {
+                            int told = 0;
+                            for (ChatProcessManager m : managers.values()) {
+                                try { if (m.cliRequestIfRunning("apply-" + token, request)) told++; } catch (Throwable t) { /* that tab reads it when it next starts */ }
+                            }
+                            ClaudeCodeView.debug("[cli] setting " + key + " saved; " + told + " running conversation(s) told");
+                        });
+                    }
+                    com.google.gson.JsonObject o = new com.google.gson.JsonObject();
+                    o.addProperty("token", token);
+                    o.addProperty("ok", ok);
+                    if (ok) o.add("response", res);
+                    else o.addProperty("error", res.has("error") ? res.get("error").getAsString() : "Unknown error");
+                    reply = o.toString();
+                } catch (UnsatisfiedLinkError e) {
+                    reply = mcpError(token, "Not supported by this build.");   // a native library from before this call
+                } catch (Throwable t) {
+                    ClaudeCodeView.debug("[cli] " + token + " failed: " + t);
+                    reply = mcpError(token, "The setting was not saved.");
+                }
+                pushCliReply(ti, reply);
+            }, "claude-user-setting").start();
+            return null;
+        });
+        // "Reload Claude", offered after an instruction file is opened for editing: the tab's
+        // process is started afresh on the same conversation, which is when the CLI reads
+        // CLAUDE.md again. The same restart a deleted message already causes.
+        reloadTabFn = new SimpleFunction(browser, "_reloadTab", a -> {
+            if (a.length > 0 && a[0] instanceof String ti) {
+                ChatProcessManager m = managers.get(ti);
+                if (m != null) try { m.restartProcess(); } catch (Throwable t) { ClaudeCodeView.debug("[cli] reload failed: " + t); }
+            }
+            return null;
+        });
+        // The plugin's own errands for the command menu and its dialogs: things the IDE
+        // does, not the CLI. Answers with a short string the page branches on.
+        ideFn = new SimpleFunction(browser, "_ide", a -> {
+            final String what = a.length > 0 && a[0] instanceof String s ? s : "";
+            final String arg  = a.length > 1 && a[1] instanceof String s ? s : "";
+            final String text = a.length > 2 && a[2] instanceof String s ? s : "";
+            try {
+                return ideErrand(what, arg, text);
+            } catch (Throwable t) {
+                ClaudeCodeView.debug("[ide] " + what + " failed: " + t);
+                return "";
+            }
         });
         // Advisor model (/advisor): the CLI persists it GLOBALLY as "advisorModel"
         // in ~/.claude/settings.json ("fable"|"opus"|"sonnet"; absent = disabled).
@@ -2827,6 +3025,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         m.setOnAgentActivity(j -> display.asyncExec(() -> executeJS("window.onAgentActivity && window.onAgentActivity('" + tj + "','" + esc(j) + "')")));
         m.setOnNotice(t -> display.asyncExec(() -> executeJS("window.onNotice && window.onNotice('" + tj + "','" + esc(t) + "')")));
         m.setOnMcp(j -> pushMcp(tabId, j));
+        m.setOnCliReply(j -> pushCliReply(tabId, j));
+        m.setOnFastMode(j -> display.asyncExec(() -> executeJS("window.onFastMode && window.onFastMode('" + tj + "','" + esc(j) + "')")));
         // Remote Control goes to two places: the page, which writes the transcript
         // line and remembers the session url, and the status bar, which shows the
         // indicator. Only the ACTIVE tab may drive the bar — it shows one
@@ -3033,6 +3233,51 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         t.start();
     }
 
+    /** A session id as the CLI writes them: nothing that could be read as another argument. */
+    private static final java.util.regex.Pattern SESSION_ID = java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9-]{7,63}");
+
+    /**
+     * Moves a tab's conversation to the Claude Terminal, once the user has agreed to what
+     * that takes: the tab closes, and with the last tab the view. UI thread, and never from
+     * inside a call the Browser is still executing.
+     */
+    private void openSessionInTerminal(String tabId, String sessionId, boolean lastTab) {
+        try {
+            if (browser == null || browser.isDisposed() || !SESSION_ID.matcher(sessionId).matches()) return;
+            String message = "This will close the tab and open its session in the Claude Terminal.";
+            if (lastTab) {
+                // The words _confirmCloseView asks with when the last session tab is closed.
+                message += "\n\nYou are about to close the last session tab, this action will "
+                        + "close the Claude Code view. Do you wish to proceed?";
+            }
+            MessageDialog dlg = new MessageDialog(browser.getShell(), "Open session in Claude Terminal?", null,
+                    message, MessageDialog.CONFIRM, new String[] { "Open in Terminal", "Cancel" }, 1);
+            // The user's own decision: eclipseDialog lists it and never answers it.
+            dlg.create();
+            com.anthropic.claudecode.eclipse.tools.EclipseDialogTool.forUserOnly(dlg.getShell());
+            if (dlg.open() != 0 || browser.isDisposed()) return;
+
+            org.eclipse.ui.IWorkbenchPartSite site = getSite();
+            org.eclipse.ui.IWorkbenchPage page = site != null ? site.getPage() : null;
+            if (page == null) return;
+            // The Terminal first: with no Terminal to go to, the tab keeps its conversation.
+            Activator activator = Activator.getDefault();
+            if (!activator.isServerRunning()) activator.initialize();
+            ClaudeCliView terminal = (ClaudeCliView) page.showView(ClaudeCliView.VIEW_ID);
+            if (terminal == null) return;
+            // Then the tab lets go of it (its process ends), and only then is it started there.
+            Object released = browser.evaluate("return window.releaseTabForTerminal ? window.releaseTabForTerminal("
+                    + new com.google.gson.JsonPrimitive(tabId) + ", " + new com.google.gson.JsonPrimitive(sessionId) + ") : '';");
+            if (!(released instanceof String how) || how.isEmpty()) return;   // the tab moved on meanwhile
+            if (!terminal.openSession(sessionId)) {
+                Activator.logError("The Claude Terminal did not open session " + sessionId, null);
+            }
+            if ("last".equals(how)) page.hideView(ClaudeGuiView.this);
+        } catch (Exception e) {
+            Activator.logError("Failed to open the session in the Claude Terminal", e);
+        }
+    }
+
     /**
      * Hands the page an answer to something it asked for: now, or — when it has not
      * finished loading — the moment it has. Until this, such an answer was dropped: a tab
@@ -3216,51 +3461,6 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             }
         }
         return out.size() == 0 ? "" : out.toString();
-    }
-
-    /** A session id as the CLI writes them: nothing that could be read as another argument. */
-    private static final java.util.regex.Pattern SESSION_ID = java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9-]{7,63}");
-
-    /**
-     * Moves a tab's conversation to the Claude Terminal, once the user has agreed to what
-     * that takes: the tab closes, and with the last tab the view. UI thread, and never from
-     * inside a call the Browser is still executing.
-     */
-    private void openSessionInTerminal(String tabId, String sessionId, boolean lastTab) {
-        try {
-            if (browser == null || browser.isDisposed() || !SESSION_ID.matcher(sessionId).matches()) return;
-            String message = "This will close the tab and open its session in the Claude Terminal.";
-            if (lastTab) {
-                // The words _confirmCloseView asks with when the last session tab is closed.
-                message += "\n\nYou are about to close the last session tab, this action will "
-                        + "close the Claude Code view. Do you wish to proceed?";
-            }
-            MessageDialog dlg = new MessageDialog(browser.getShell(), "Open session in Claude Terminal?", null,
-                    message, MessageDialog.CONFIRM, new String[] { "Open in Terminal", "Cancel" }, 1);
-            // The user's own decision: eclipseDialog lists it and never answers it.
-            dlg.create();
-            com.anthropic.claudecode.eclipse.tools.EclipseDialogTool.forUserOnly(dlg.getShell());
-            if (dlg.open() != 0 || browser.isDisposed()) return;
-
-            org.eclipse.ui.IWorkbenchPartSite site = getSite();
-            org.eclipse.ui.IWorkbenchPage page = site != null ? site.getPage() : null;
-            if (page == null) return;
-            // The Terminal first: with no Terminal to go to, the tab keeps its conversation.
-            Activator activator = Activator.getDefault();
-            if (!activator.isServerRunning()) activator.initialize();
-            ClaudeCliView terminal = (ClaudeCliView) page.showView(ClaudeCliView.VIEW_ID);
-            if (terminal == null) return;
-            // Then the tab lets go of it (its process ends), and only then is it started there.
-            Object released = browser.evaluate("return window.releaseTabForTerminal ? window.releaseTabForTerminal("
-                    + new com.google.gson.JsonPrimitive(tabId) + ", " + new com.google.gson.JsonPrimitive(sessionId) + ") : '';");
-            if (!(released instanceof String how) || how.isEmpty()) return;   // the tab moved on meanwhile
-            if (!terminal.openSession(sessionId)) {
-                Activator.logError("The Claude Terminal did not open session " + sessionId, null);
-            }
-            if ("last".equals(how)) page.hideView(ClaudeGuiView.this);
-        } catch (Exception e) {
-            Activator.logError("Failed to open the session in the Claude Terminal", e);
-        }
     }
 
     /**
@@ -3764,6 +3964,74 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         debugMcpReply(json);
         Display.getDefault().asyncExec(() -> executeJS(
                 "window.onMcp && window.onMcp('" + esc(tabId) + "','" + esc(json) + "')"));
+    }
+
+    /** The Eclipse Marketplace client's "open the Marketplace" command. The client is
+     *  optional in an Eclipse, so the command is looked up by id, never linked against. */
+    private static final String MARKETPLACE_COMMAND = "org.eclipse.epp.mpc.ui.command.showMarketplaceWizard";
+
+    /** One of the page's errands for the IDE (see {@code _ide}). Runs on the UI thread.
+     *  A file is read or written only when it is Markdown: the errands are for the
+     *  memory and instruction files, and are of no use for anything else. */
+    private String ideErrand(String what, String arg, String text) throws Exception {
+        org.eclipse.ui.IWorkbench wb = org.eclipse.ui.PlatformUI.getWorkbench();
+        switch (what) {
+            case "prefs":
+                org.eclipse.ui.dialogs.PreferencesUtil.createPreferenceDialogOn(browser.getShell(),
+                        "com.anthropic.claudecode.eclipse.preferences", null, null).open();
+                return "ok";
+            case "hasMarketplace": {
+                org.eclipse.ui.commands.ICommandService cs = wb.getService(org.eclipse.ui.commands.ICommandService.class);
+                return String.valueOf(cs != null && cs.getCommand(MARKETPLACE_COMMAND).isDefined());
+            }
+            case "marketplace": {
+                org.eclipse.ui.handlers.IHandlerService hs = wb.getService(org.eclipse.ui.handlers.IHandlerService.class);
+                if (hs == null) return "";
+                hs.executeCommand(MARKETPLACE_COMMAND, null);
+                return "ok";
+            }
+            case "home":
+                return System.getProperty("user.home", "");
+            case "openFolder": {
+                Path dir = Paths.get(arg);
+                if (!Files.isDirectory(dir)) return "";
+                return org.eclipse.swt.program.Program.launch(dir.toString()) ? "ok" : "";
+            }
+            case "read": {
+                Path file = Paths.get(arg);
+                if (!isMarkdown(file) || !Files.isRegularFile(file)) return "";
+                return "ok:" + Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
+            }
+            case "write": {
+                Path file = Paths.get(arg);
+                if (!isMarkdown(file)) return "";
+                if (file.getParent() != null) Files.createDirectories(file.getParent());
+                Files.writeString(file, text, java.nio.charset.StandardCharsets.UTF_8);
+                return "ok";
+            }
+            case "delete": {
+                Path file = Paths.get(arg);
+                if (!isMarkdown(file) || !Files.isRegularFile(file)) return "";
+                Files.delete(file);
+                return "ok";
+            }
+            default:
+                return "";
+        }
+    }
+
+    private static boolean isMarkdown(Path file) {
+        Path name = file.getFileName();
+        return name != null && name.toString().toLowerCase(java.util.Locale.ROOT).endsWith(".md");
+    }
+
+    /** A reply to one of the page's dialog requests, from whichever thread has it. Only
+     *  the token and the outcome are logged: a reply body can carry the user's own
+     *  notes, or who is signed in. */
+    private void pushCliReply(String tabId, String json) {
+        ClaudeCodeView.debug("[cli] ← " + (json.contains("\"ok\":true") ? "ok" : "failed"));
+        Display.getDefault().asyncExec(() -> executeJS(
+                "window.onCliReply && window.onCliReply('" + esc(tabId) + "','" + esc(json) + "')"));
     }
 
     private static String mcpError(String token, String error) {

@@ -1033,6 +1033,21 @@ impl ChatManager {
         p.write_line(&line).is_ok()
     }
 
+    /// Asks this manager's live process for what one of the CLI's dialogs shows
+    /// (`get_memory_dialog`, `get_status`, …), under the page's `token`. The reply
+    /// reaches Java as `onCliReply`. False when there is no live process, or the
+    /// request is not one the page may send ([`crate::cli_ask::request_line`]).
+    pub fn cli_request(&self, token: &str, request: &str) -> bool {
+        let Ok(request) = serde_json::from_str::<serde_json::Value>(request) else { return false };
+        let Some(line) = crate::cli_ask::request_line(token, &request) else { return false };
+        let proc = self.state.lock().unwrap().proc.clone();
+        let Some(p) = proc else { return false };
+        if p.is_dead() {
+            return false;
+        }
+        p.write_line(&line).is_ok()
+    }
+
     fn emit_browser_state(&self, json: &str) {
         let guard = self.callbacks.lock().unwrap();
         if let Some(cb) = guard.as_ref() {
@@ -1811,6 +1826,12 @@ fn reader_loop(
             Err(_) => continue,
         };
 
+        // Whether fast mode is on rides on the init event and on each turn's result,
+        // both of which are also handled below.
+        if let Some(json) = crate::cli_ask::fast_mode_json(&event) {
+            fire_string(&java_vm, &callbacks, "onFastMode", &json);
+        }
+
         match event["type"].as_str().unwrap_or("") {
             "control_request" => {
                 handle_control_request(&event, &proc, &state, &java_vm, &callbacks);
@@ -1899,6 +1920,10 @@ fn reader_loop(
                 } else if rid.starts_with(crate::mcp_servers::REQUEST_PREFIX) {
                     if let Some(json) = crate::mcp_servers::reply_json(inner) {
                         fire_string(&java_vm, &callbacks, "onMcp", &json);
+                    }
+                } else if rid.starts_with(crate::cli_ask::REQUEST_PREFIX) {
+                    if let Some(json) = crate::cli_ask::reply_json(inner) {
+                        fire_string(&java_vm, &callbacks, "onCliReply", &json);
                     }
                 }
                 continue;

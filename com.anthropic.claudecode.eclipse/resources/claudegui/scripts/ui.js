@@ -3,7 +3,9 @@
 
 /* ---- front-end-only interactions ---- */
 let openMenuEl = null, openAnchor = null;   // openAnchor = the trigger element the menu is glued to
+let menusClosed = 0;   // times closeMenus() has run — how the click listener below tells a menu opened mid-gesture
 function closeMenus() {
+  menusClosed++;
   // history-panel is the one .menu that also needs the Java-side cancel-key context
   // (see registerOverlayCancel in history.js) — every OTHER close path for it funnels
   // through here (click-outside, opening a different menu, …), so this is the one
@@ -24,6 +26,9 @@ function closeMenus() {
   // per-message badges are pinned visible while their menu is up — unpin them
   document.querySelectorAll('.msg-actions.open').forEach(w => w.classList.remove('open'));
   openMenuEl = null; openAnchor = null;
+  // The command menu opened by typing / is not tracked by openMenuEl; it goes with the rest.
+  if (typeof slashState !== 'undefined' && slashState.open) { slashState.open = false; cmdMenu.typed = false; }
+  document.getElementById('actions-menu').classList.remove('typed');
   if (histWasOpen) unregisterOverlayCancel(closeHistoryPanel);
 }
 
@@ -161,8 +166,8 @@ document.addEventListener('auxclick', (e) => { if (e.button === 1) openLinkExter
    field's edge before releasing.
    Capture phase, so it is recorded before anything can stopPropagation() it — the history
    rename input does exactly that on mousedown (see startHistoryRename). */
-let gestureStartTarget = null;
-document.addEventListener('mousedown', (e) => { gestureStartTarget = e.target; }, true);
+let gestureStartTarget = null, gestureStartClosed = 0;
+document.addEventListener('mousedown', (e) => { gestureStartTarget = e.target; gestureStartClosed = menusClosed; }, true);
 
 document.addEventListener('click', (e) => {
   // Consumed here, so a later click carrying no mousedown of its own (a keyboard-activated
@@ -173,14 +178,23 @@ document.addEventListener('click', (e) => {
   // pointer travelled before release. A press that starts outside still closes as always,
   // so genuine click-outside-to-dismiss is untouched.
   const startedInsideMenu = openMenuEl && startedAt && openMenuEl.contains(startedAt);
+  // Nor is it a click outside a menu this same gesture OPENED. A command picked from a
+  // list can open one part-way through the gesture (/model the chooser, /resume the history
+  // panel): on mousedown from the inline "/" menu, in the row's own click from the actions
+  // menu. The click that ends the gesture is outside the new menu by construction, and shut
+  // it the moment it appeared. Every opener runs closeMenus() first, so a menu that is open
+  // now, with closeMenus() having run since the press, is one this gesture put there.
+  // e.detail is 0 for a click with no press of its own, which has no gesture to speak of
+  // and must not borrow the last one's count.
+  const openedByThisGesture = openMenuEl && e.detail > 0 && menusClosed !== gestureStartClosed;
   // #history-btn is gone (moved to the native toolbar, see openHistoryFromToolbar in
   // history.js) — its trigger is now outside the page entirely, so there's no in-page
   // button click for this listener to exempt; nothing else changes here.
-  if (openMenuEl && !startedInsideMenu && !openMenuEl.contains(e.target) &&
+  if (openMenuEl && !startedInsideMenu && !openedByThisGesture && !openMenuEl.contains(e.target) &&
       !e.target.closest('#plus-btn,#slash-btn,#modes-btn')) closeMenus();
   // The slash menu isn't tracked by openMenuEl — close it on any click outside it,
   // the input, or the slash button.
-  if (slashState.open && !e.target.closest('#slash-menu,#input,#slash-btn')) closeSlash();
+  if (slashState.open && !e.target.closest('#actions-menu,#input,#slash-btn')) closeSlash();
 });
 
 // Escape closes whichever .menu is open (history panel, modes/actions/plus menus, …) —

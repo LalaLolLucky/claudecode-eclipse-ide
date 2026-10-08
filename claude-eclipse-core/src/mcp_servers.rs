@@ -39,7 +39,7 @@ const CONFIG_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A token the page chose to match a reply to its request. Kept to characters that
 /// cannot change the meaning of the request id they end up in.
-fn valid_token(token: &str) -> bool {
+pub(crate) fn valid_token(token: &str) -> bool {
     !token.is_empty()
         && token.len() <= 64
         && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')

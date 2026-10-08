@@ -45,6 +45,8 @@ public class ChatProcessManager {
     private Consumer<String> onAgentActivity;
     private Consumer<String> onNotice;
     private Consumer<String> onMcp;
+    private Consumer<String> onCliReply;
+    private Consumer<String> onFastMode;
 
     /** (requestId, toolName, inputJson, rememberLabel) → decision string. See {@link NativeCore.ChatCallbacks#onPermissionRequest}. */
     public interface PermissionHandler {
@@ -93,6 +95,8 @@ public class ChatProcessManager {
             @Override public void onAgentActivity(String json) { emit(ChatProcessManager.this.onAgentActivity, json); }
             @Override public void onNotice(String text) { emit(ChatProcessManager.this.onNotice, text); }
             @Override public void onMcp(String json) { emit(ChatProcessManager.this.onMcp, json); }
+            @Override public void onCliReply(String json) { emit(ChatProcessManager.this.onCliReply, json); }
+            @Override public void onFastMode(String json) { emit(ChatProcessManager.this.onFastMode, json); }
         });
     }
 
@@ -130,6 +134,10 @@ public class ChatProcessManager {
     public void setOnNotice(Consumer<String> cb) { this.onNotice = cb; }
     /** The reply to an MCP servers window request. See {@link NativeCore.ChatCallbacks#onMcp}. */
     public void setOnMcp(Consumer<String> cb) { this.onMcp = cb; }
+    /** The reply to a {@link #cliRequest}. See {@link NativeCore.ChatCallbacks#onCliReply}. */
+    public void setOnCliReply(Consumer<String> cb) { this.onCliReply = cb; }
+    /** Whether fast mode is on. See {@link NativeCore.ChatCallbacks#onFastMode}. */
+    public void setOnFastMode(Consumer<String> cb) { this.onFastMode = cb; }
 
     /** Turns Remote Control on or off, starting this tab's process first if it
      *  has none.
@@ -312,6 +320,45 @@ public class ChatProcessManager {
      *  keyed on it. <b>Blocking</b>, up to 30s. See {@link NativeCore#mcpEditConfig}. */
     public String mcpEditConfig(String token, String opJson) {
         return NativeCore.mcpEditConfig(claudeCmd(), workspaceRoot(), token, opJson);
+    }
+
+    /** Asks this tab's process for what one of the CLI's dialogs shows, starting the
+     *  process first if the tab has none, as {@link #mcpRequest} does. The reply
+     *  arrives on the onCliReply callback under the same token.
+     *
+     *  @return false if no process could be started or the request was refused. */
+    public boolean cliRequest(String token, String requestJson, String resumeId, String permMode,
+                              String effort, String model, String thinking) {
+        if (!ensureProcess(resumeId, permMode, effort, model, thinking)) return false;
+        return NativeCore.chatCliRequest(handle, token, requestJson);
+    }
+
+    /** What this tab's folder offers (slash commands, models, output styles), asked of
+     *  a short-lived CLI rather than the tab's own process, so it is there before the
+     *  tab has one. <b>Blocking</b>, up to 20s. See {@link NativeCore#cliFetchCommands}. */
+    public String fetchCommands() {
+        return NativeCore.cliFetchCommands(claudeCmd(), workspaceRoot());
+    }
+
+    /** Saves one change a dialog made with the CLI's own edit subcommand, run in this
+     *  tab's folder. <b>Blocking</b>, up to 30s. See {@link NativeCore#cliEdit}. */
+    public String cliEdit(String subcommand, String inputJson) {
+        return NativeCore.cliEdit(claudeCmd(), workspaceRoot(), subcommand, inputJson);
+    }
+
+    /** One step of the Claude Design sign-in, run in this tab's folder. <b>Blocking</b>,
+     *  up to six minutes for {@code wait}. See {@link NativeCore#cliDesignLogin}. */
+    public String designLogin(String op, String arg) {
+        return NativeCore.cliDesignLogin(claudeCmd(), workspaceRoot(), op, arg);
+    }
+
+    /** Sends this tab's process one of the dialogs' requests if it has a process, and
+     *  starts none if it has not: for telling a running session of a setting that a
+     *  session started later reads for itself.
+     *
+     *  @return false if there is no live process or the request was refused. */
+    public boolean cliRequestIfRunning(String token, String requestJson) {
+        return NativeCore.chatCliRequest(handle, token, requestJson);
     }
 
     /** Pushes the tab's launch settings to its live process now — see

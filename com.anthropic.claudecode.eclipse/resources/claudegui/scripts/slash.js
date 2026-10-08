@@ -8,74 +8,38 @@ const SLASH_COMMANDS = [
   { cmd: '/compact', desc: 'Clear conversation history but keep a summary in context' },
   { cmd: '/mcp',     desc: 'Manage MCP servers' },
   { cmd: '/model',   desc: 'Switch model' },
-  { cmd: '/resume',  desc: 'Open session history' },
+  { cmd: '/resume',  desc: 'Open session history', aliases: ['continue'] },
   { cmd: '/context', desc: 'Show context window usage for this conversation' },
-  { cmd: '/remote-control', desc: 'Continue this conversation on the web or your phone' },
-  { cmd: '/rewind',  desc: 'Restore code and fork from an earlier message' },
+  { cmd: '/remote-control', desc: 'Continue this conversation on the web or your phone', aliases: ['rc'] },
+  { cmd: '/rewind',  desc: 'Restore code and fork from an earlier message', aliases: ['checkpoint', 'undo'] },
   // No local handling — just menu discoverability. Falls through to sendSlashToCli()
   // like any other unrecognized command, same as it would with no entry here at all;
   // this only makes it show up while typing "/wo…" instead of being invisible.
   { cmd: '/workflows', desc: 'Watch live progress of a running workflow' },
   { cmd: '/help',    desc: 'Show available commands' },
+  // The dialogs the command menu opens (clidialogs.js), by the names the CLI gives them.
+  // Typed bare they open the dialog; with arguments they go to the CLI, as in the extension.
+  { cmd: '/status',  desc: 'Show version, model, account and connectivity', dialog: true },
+  { cmd: '/memory',  desc: 'Edit Claude memory files', dialog: true },
+  { cmd: '/permissions', desc: 'Manage allow & deny tool permission rules', aliases: ['allowed-tools'], dialog: true },
+  { cmd: '/hooks',   desc: 'View hook configurations for tool events', dialog: true },
+  { cmd: '/export',  desc: 'Export the current conversation to a file or clipboard', dialog: true },
+  { cmd: '/skills',  desc: 'List available skills', dialog: true },
+  { cmd: '/config',  desc: 'Open settings', aliases: ['settings'], dialog: true },
+  { cmd: '/sandbox', desc: 'Sandbox settings', dialog: true },
+  { cmd: '/chrome',  desc: 'Claude in Chrome settings', dialog: true },
+  { cmd: '/design-login', desc: 'Authorize design-system access with your claude.ai account', dialog: true },
+  { cmd: '/feedback', desc: 'Send feedback to Anthropic or report a bug', hint: '[report]', aliases: ['bug'], dialog: true },
+  { cmd: '/login',   desc: 'Log in with a different account', dialog: true },
+  { cmd: '/logout',  desc: 'Sign out of Claude on this computer', dialog: true },
 ];
-const slashState = { open: false, sel: 0, items: [] };
-const slashEl = document.getElementById('slash-menu');
+/* The menu these are listed in, and the keys that drive it, are cmdmenu.js: one menu for
+   the / button and for a / typed in the composer. */
 
-function updateSlashMenu() {
-  const v = input.value;
-  const m = /^\/(\S*)$/.exec(v); // only a leading "/word" with no space yet
-  if (!m) { closeSlash(); return; }
-  const q = m[1].toLowerCase();
-  slashState.items = SLASH_COMMANDS.filter(c => c.cmd.slice(1).startsWith(q));
-  if (!slashState.items.length) { closeSlash(); return; }
-  slashState.sel = 0;
-  renderSlash();
-  positionSlash();
-  slashState.open = true;
-  slashEl.classList.add('open');
-}
-function renderSlash() {
-  slashEl.innerHTML = '<div class="head"><span class="h">Commands</span></div>';
-  slashState.items.forEach((c, i) => {
-    const it = document.createElement('div');
-    it.className = 'item' + (i === slashState.sel ? ' sel' : '');
-    it.innerHTML = '<span class="cmd"></span><span class="d"></span>';
-    it.querySelector('.cmd').textContent = c.cmd;
-    it.querySelector('.d').textContent = c.desc;
-    it.onmousedown = (e) => { e.preventDefault(); applySlash(c.cmd); };
-    slashEl.appendChild(it);
-  });
-}
-function positionSlash() {
-  // #input-wrap (the actual bordered box), NOT #composer — #composer is a wider outer
-  // container (its own 14px padding, no max-width) that #input-wrap sits inset within;
-  // see ui.js's positionMenu for the same fix and full explanation.
-  const r = document.getElementById('input-wrap').getBoundingClientRect();
-  // Inset 10px each side (matching #input-wrap/#composer-bar's own horizontal padding,
-  // same as ui.js's #actions-menu treatment) — not an exact flush match, otherwise this
-  // menu's own border sits right on top of the composer's with no visible gap.
-  slashEl.style.width = (r.width - 20) + 'px';
-  // max-height from the actual space above the composer, not a fixed 260px guess (panels.css)
-  // — read BEFORE offsetHeight below so a menu taller than that space is already capped
-  // (and scrollable) by the time its height is measured for the top offset.
-  slashEl.style.maxHeight = (r.top - 16) + 'px';
-  slashEl.classList.add('open');
-  // Clamped like ui.js's positionMenu: the menu's own min-width wins once the composer is
-  // narrower than it. After `open`, since a hidden menu measures 0 wide.
-  slashEl.style.left = Math.max(8, Math.min(r.left + 10, window.innerWidth - slashEl.offsetWidth - 8)) + 'px';
-  slashEl.style.top = (r.top - slashEl.offsetHeight - 4) + 'px';
-}
-function handleSlashKey(e) {
-  if (e.key === 'ArrowDown') { slashState.sel = (slashState.sel + 1) % slashState.items.length; renderSlash(); positionSlash(); return true; }
-  if (e.key === 'ArrowUp')   { slashState.sel = (slashState.sel - 1 + slashState.items.length) % slashState.items.length; renderSlash(); positionSlash(); return true; }
-  if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); applySlash(slashState.items[slashState.sel].cmd); return true; }
-  if (e.key === 'Escape') { closeSlash(); return true; }
-  return false;
-}
 /* Runs a command picked from a menu. The composer draft is PRESERVED — picking
    "/clear" while half-way through a message must not throw that message away.
-   The one exception is the inline "/" menu, where the draft IS the command being
-   typed ("/rew…"), so it's consumed. */
+   The one exception is a command being typed ("/rew…"), where the draft IS the
+   command, so it is consumed. */
 function applySlash(cmd) {
   const typingCommand = /^\/\S*$/.test(input.value.trim());
   closeSlash();
@@ -88,13 +52,6 @@ function applySlash(cmd) {
   // in the composer — the whole point is to leave that untouched.
   if (!handleSlashCommand(cmd)) sendSlashToCli(cmd);
 }
-function closeSlash() { slashState.open = false; slashEl.classList.remove('open'); }
-function openSlashFromButton() {
-  closeMenus();
-  input.focus();
-  if (!input.value.startsWith('/')) input.value = '/';
-  updateSlashMenu();
-}
 /**
  * Every slash command echoes itself into the transcript, like VSCode. Commands
  * that open a follow-up choice defer that echo until the choice is actually made,
@@ -103,7 +60,24 @@ function openSlashFromButton() {
  * @returns {boolean} true = handled locally, false = pass through to the CLI
  */
 function handleSlashCommand(text) {
-  const cmd = text.split(/\s+/)[0].toLowerCase();
+  let cmd = text.split(/\s+/)[0].toLowerCase();
+  // An alias is the command it stands for.
+  const aliased = SLASH_COMMANDS.find(c => (c.aliases || []).includes(cmd.slice(1)));
+  if (aliased) cmd = aliased.cmd;
+  // A command of the user's own (a skill, a plug-in's, a file of theirs) by one of these
+  // names runs in place of ours, as in the extension.
+  if (typeof cliOwnsCommand === 'function' && cliOwnsCommand(cmd.slice(1))) return false;
+  // What is typed after /feedback is the report's first words.
+  if (cmd === '/feedback') { openFeedbackDialog(text.trim().replace(/^\S+\s*/, '')); return true; }
+  // A dialog opens for the bare command only; with arguments the command is the CLI's.
+  if (text.trim().split(/\s+/).length === 1) {
+    const dialogs = { '/status': openStatusDialog, '/memory': () => openMemoryDialog('memory'),
+      '/permissions': openPermissionsDialog, '/hooks': openHooksDialog, '/export': openExportDialog,
+      '/skills': openSlashCommandsDialog, '/sandbox': openSandboxDialog, '/chrome': openChromeDialog,
+      '/config': () => { if (window._ide) _ide('prefs', '', ''); },
+      '/design-login': openDesignDialog, '/login': () => openSignInDialog(true), '/logout': openSignOutDialog };
+    if (dialogs[cmd]) { dialogs[cmd](); return true; }
+  }
   // Clears the conversation IN THE CURRENT TAB, then echoes the command so it's
   // the only message left in the fresh session (joebiden7). Deliberately not
   // newSession() — VSCode stays on the tab /clear was invoked from.
@@ -144,7 +118,9 @@ function handleSlashCommand(text) {
    it answers "/model isn't available in this environment". So we reproduce its
    replies locally (joebiden6). Doing it locally is also what keeps the tab's own
    selection correct — a CLI-side switch would live inside that one process only,
-   and the tab would silently disagree with it. */
+   and the tab would silently disagree with it.
+   A bare /model then opens the chooser as well, the one "Switch model" opens, so the
+   model can be picked there instead of typed. With a name there is nothing left to pick. */
 function handleModelCommand(text) {
   // addSystem() follows the RENDER tab (streamPane), which isn't necessarily the
   // one you typed in — a reply to a command you just ran belongs in the tab you
@@ -156,6 +132,8 @@ function handleModelCommand(text) {
     addSystemTo(t, 'Current model: ' + modelLabelFor(curModel) + ' (effort: ' + effort + ')\n'
       + 'Usage: /model <name>. Available: ' + availableModelNames().join(', ')
       + ', or a full model ID.');
+    // After the reply, so the command and its answer are already in the conversation.
+    if (composerShowing()) openModelChooser();
     return;
   }
   const id = resolveModelArg(arg);

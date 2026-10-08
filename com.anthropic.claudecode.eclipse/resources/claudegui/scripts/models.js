@@ -99,15 +99,20 @@ function openModelChooser(e) {
   positionMenu(menu, anchor);
   openMenuEl = menu; openAnchor = anchor;
 }
+/** Whether the composer is on screen. The chooser hangs off it, so there is nowhere to put
+ *  one while a card stands in for the composer, and the card is waiting on an answer of
+ *  its own. */
+function composerShowing() {
+  const composer = document.getElementById('composer');
+  return !!composer && composer.offsetParent !== null;
+}
 /** The status bar's model and effort text (ClaudeStatusBar, an SWT canvas under the page)
  *  was clicked: the same chooser "Switch model" and /model open, shut again by a second
- *  click. Nothing while a card stands in for the composer — the chooser hangs off the
- *  composer, and the card is waiting on an answer of its own. */
+ *  click. Nothing while a card stands in for the composer. */
 window.toggleModelChooser = function() {
   const menu = document.getElementById('model-menu');
   if (menu && menu.classList.contains('open')) { closeMenus(); return; }
-  const composer = document.getElementById('composer');
-  if (!composer || composer.offsetParent === null) return;
+  if (!composerShowing()) return;
   openModelChooser();
 };
 function renderModelList() {
@@ -510,7 +515,7 @@ function enforceThinkingGate(opts) {
 
 function updateThinkingCheck() {
   const chk = document.getElementById('think-check');
-  if (chk) chk.style.visibility = thinkingOn ? '' : 'hidden';
+  if (chk) chk.classList.toggle('on', thinkingOn);   // a switch now (cmdmenu.js), where it was a check mark
   const row = chk ? chk.closest('.item') : null;
   if (!row) return;
   const locked = thinkingRequired();
@@ -597,45 +602,34 @@ function closeAccount() {
   unregisterOverlayCancel();
 }
 
-/* ---- slash commands inside the actions menu ----
-   This list has grown (9 commands and counting) inside a menu that ALSO carries Rewind/
-   Model/Effort/Thinking/Account/Appearance — unlike the dedicated #slash-menu (which
-   filters as you type in the composer), this flat list had no way to narrow it down.
-   filterActionsSlash below re-runs this against a query; the filter box itself
-   (#actions-slash-filter) is cleared each time the menu opens, in toggleMenu (ui.js). */
-function buildActionsSlash(query) {
-  const c = document.getElementById('actions-slash');
-  if (!c) return;
-  c.innerHTML = '';
-  const q = (query || '').trim().toLowerCase();
-  const items = q ? SLASH_COMMANDS.filter(cmd =>
-      cmd.cmd.toLowerCase().includes(q) || cmd.desc.toLowerCase().includes(q)) : SLASH_COMMANDS;
-  if (!items.length) {
-    const empty = document.createElement('div'); empty.className = 'head';
-    empty.innerHTML = '<span class="h">No matching commands</span>';
-    c.appendChild(empty);
-    return;
-  }
-  items.forEach(cmd => {
-    const it = document.createElement('div'); it.className = 'item';
-    it.innerHTML = '<span class="cmd"></span><span class="d"></span>';
-    it.querySelector('.cmd').textContent = cmd.cmd;
-    it.querySelector('.d').textContent = cmd.desc;
-    it.onclick = () => { closeMenus(); applySlash(cmd.cmd); };
-    c.appendChild(it);
-  });
-}
-/* A non-empty query hides the Context/Model/Effort/Thinking/Account/Customize/Appearance
-   sections — without this, they stayed rendered in full and pushed the actual filtered
-   matches down below everything else, defeating the point of filtering at all. */
-function filterActionsSlash(query) {
-  buildActionsSlash(query);
-  const hide = !!query.trim();
-  const extra1 = document.getElementById('actions-menu-extra');
-  const extra2 = document.getElementById('actions-menu-extra2');
-  if (extra1) extra1.hidden = hide;
-  if (extra2) extra2.hidden = hide;
-}
 
 /* Initialise: model config FIRST (so the first tab's default model is the user's
    configured one), then the first tab + context chip + slash list. */
+
+/* ---- the model chooser by keyboard ----
+   Up and Down move over the models, Enter picks the one the keys are on; Escape is ui.js's,
+   which closes whichever menu is open. Listened for on the document, before the composer
+   sees the key: after "/model" the caret is still in the composer, and its own Enter sends. */
+function modelMenuOpen() {
+  const m = document.getElementById('model-menu');
+  return !!m && m.classList.contains('open');
+}
+document.addEventListener('keydown', (e) => {
+  if (!modelMenuOpen() || activeCardCancel) return;
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Enter') return;
+  const items = [...document.querySelectorAll('#model-list .item:not(.disabled)')];
+  if (!items.length) return;
+  let at = items.findIndex(i => i.classList.contains('sel'));
+  if (e.key === 'Enter') {
+    if (at < 0) return;
+    e.preventDefault(); e.stopPropagation();
+    items[at].click();
+    return;
+  }
+  e.preventDefault(); e.stopPropagation();
+  // The first press starts from the model in use.
+  if (at < 0) at = items.findIndex(i => i.querySelector('.check'));
+  at = at < 0 ? 0 : (at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+  items.forEach((i, n) => i.classList.toggle('sel', n === at));
+  if (items[at].scrollIntoView) items[at].scrollIntoView({ block: 'nearest' });
+}, true);

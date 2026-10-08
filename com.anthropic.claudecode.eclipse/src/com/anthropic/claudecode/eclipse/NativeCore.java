@@ -408,6 +408,72 @@ public final class NativeCore {
     public static native String mcpEditConfig(String claudeCmd, String cwd, String token, String opJson);
 
     /**
+     * Asks this tab's live process for what one of the CLI's dialogs shows
+     * ({@code get_memory_dialog}, {@code get_skills_dialog}, {@code get_status},
+     * {@code get_chrome_dialog}, {@code get_chrome_browsers}, {@code get_hooks_listing},
+     * {@code list_permission_rules}, {@code get_sandbox_dialog}, {@code get_plan},
+     * {@code export_conversation}), under the page's {@code token}. Any other subtype
+     * is refused.
+     *
+     * <p>Fire-and-forget — the reply arrives as {@link ChatCallbacks#onCliReply}
+     * carrying the same token.
+     *
+     * @return false when the tab has no live process, or the request was refused.
+     */
+    public static native boolean chatCliRequest(long handle, String token, String requestJson);
+
+    /**
+     * What the folder {@code cwd} offers, asked of a short-lived CLI that is sent
+     * {@code initialize} and nothing else (no message, so no turn, and its hooks are
+     * off): its slash commands, each with a description, an argument hint and
+     * aliases, its models and its output styles.
+     *
+     * <p><b>Blocking</b> — starts the CLI and waits for its answer, up to 20s. Off the
+     * UI thread.
+     *
+     * @return {@code {"ok":true,"commands":[…],"models":[…],…}} or
+     *         {@code {"ok":false,"error"}}.
+     */
+    public static native String cliFetchCommands(String claudeCmd, String cwd);
+
+    /**
+     * Saves one change a dialog made, by running the CLI's own edit subcommand
+     * ({@code edit-memory-settings}, {@code edit-skill-overrides}, {@code edit-chrome-settings},
+     * {@code edit-permission-rules}, {@code edit-hook}, {@code edit-sandbox-settings}) in
+     * {@code cwd} with the change as JSON on its stdin. Any other subcommand is refused.
+     *
+     * <p><b>Blocking</b> — runs the CLI, up to 30s. Off the UI thread.
+     *
+     * @return {@code {"ok":true,"output"}} or {@code {"ok":false,"error"}}.
+     */
+    public static native String cliEdit(String claudeCmd, String cwd, String subcommand, String inputJson);
+
+    /**
+     * One step of the Claude Design sign-in, which is the CLI's {@code design-login --json}
+     * run in {@code cwd}: {@code start} (answers once the CLI has named the pages to sign in
+     * on), {@code wait} (answers when the sign-in has ended), {@code code} (hands over an
+     * authorization code pasted from the page, in {@code arg}) and {@code cancel}. One
+     * sign-in at a time.
+     *
+     * <p><b>Blocking</b> — {@code start} for a few seconds, {@code wait} for up to six
+     * minutes. Off the UI thread.
+     *
+     * @return {@code {"ok":true,…}} or {@code {"ok":false,"message"}}.
+     */
+    public static native String cliDesignLogin(String claudeCmd, String cwd, String op, String arg);
+
+    /**
+     * Saves one of the command menu's settings in the user's own settings file
+     * ({@code ~/.claude/settings.json}, or under {@code CLAUDE_CONFIG_DIR}), changing that
+     * setting's text and nothing else in the file. Only {@code switchModelsOnFlag}, a
+     * boolean, is saved here; anything else is refused.
+     *
+     * @param valueJson the value as JSON ({@code true} or {@code false})
+     * @return {@code {"ok":true}} or {@code {"ok":false,"error"}}.
+     */
+    public static native String userSettingSet(String key, String valueJson);
+
+    /**
      * Whether switching this tab back to the default model would restart its
      * process. Every other launch setting is applied to the running process; this
      * one can be too, but only when the CLI has no model setting of its own — its
@@ -587,6 +653,18 @@ public final class NativeCore {
          * Non-blocking.
          */
         default void onMcp(String json) {}
+        /**
+         * The reply to a {@link NativeCore#chatCliRequest} request:
+         * {@code {"token","ok":true,"response":…}} or {@code {"token","ok":false,"error":…}}.
+         * Non-blocking.
+         */
+        default void onCliReply(String json) {}
+        /**
+         * Whether fast mode is on for this conversation, as its process reports it when
+         * it starts and after every turn: {@code {"state":"on"|"off",…,"disabledReason":…}}.
+         * Non-blocking.
+         */
+        default void onFastMode(String json) {}
     }
 
     // ── Embedded console (replaces PTY + xterm.js for the CLI view) ─────────
