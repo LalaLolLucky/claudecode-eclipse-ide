@@ -66,6 +66,7 @@ window.onCompact = (tabId, json) => withTab(tabId, (t) => {
     } else ensureWorking();   // showWorking pins itself via t.compacting
   } else if (info.phase === 'failed') {
     t.compacting = false;
+    compactionOver(t);
   } else if (info.phase === 'boundary') {
     const freed = Math.max(0, (info.preTokens || 0) - (info.postTokens || 0));
     // An automatic compaction comes in the middle of a turn. What Claude writes after it
@@ -80,11 +81,29 @@ window.onCompact = (tabId, json) => withTab(tabId, (t) => {
     t._compEl = addCompacted(t.pane, info.trigger, freed, '');
     waiting.forEach(turn => t.pane.appendChild(turn));
     scrollBottom();
+    // The boundary is the compaction's end: the summary that follows only fills the line in,
+    // and need not come for the word to be let go of.
+    t.compacting = false;
+    compactionOver(t);
   } else if (info.phase === 'summary') {
     t.compacting = false;
     if (t._compEl) t._compEl.querySelector('.comp-body').innerHTML = renderMarkdown(info.text || '');
+    compactionOver(t);
   }
 });
+/* The working indicator lets go of "Compacting" once compaction is over. A moment later,
+   not at once: a manual /compact ends its turn right behind this, and the indicator with
+   it, so there is nothing to let go of and no other word should flash by on the way out.
+   An automatic one is in the middle of a turn that goes on, and so does the indicator. */
+const COMPACTION_OVER_MS = 400;
+function compactionOver(t) {
+  clearTimeout(t._compOverTimer);   // the boundary and its summary ask one after the other
+  t._compOverTimer = setTimeout(() => {
+    if (t.cancelled || !t.streaming || t.compacting) return;
+    loadRender(t);
+    unpinCompactingGerund(t);
+  }, COMPACTION_OVER_MS);
+}
 
 /* The "Compacted chat · manual · 25k tokens freed ⌄" collapsible (joebiden):
    italic muted head, chevron flips when the summary body is expanded. */

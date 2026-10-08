@@ -229,6 +229,28 @@ function showWorking() {
   gerundHold = GERUND_HOLD_START;
   morphGerund('', workingGerund, el, pinned ? null : () => { scheduleGerund(); });
 }
+/* Compaction is over, and the turn it came in the middle of may not be: an automatic one
+   comes mid-turn. The indicator pinned to "Compacting" goes back to the playful verbs.
+   Nothing else would bring them back before the turn ends: pinning stopped the cycle, and
+   ensureWorking leaves an indicator that is already up alone. `t` is the render target. */
+function unpinCompactingGerund(t) {
+  if (!t || !t.pane || !t.streaming || t.compacting || t.rcConnecting) return;
+  const next = shuffledGerunds[Math.floor(Math.random() * shuffledGerunds.length)];
+  if (t !== activeTab()) {
+    // A still one, as resumeWorkingFor gives a tab that is not in front.
+    if (t.pane.querySelector('.working')) appendStaticWorking(t, next);
+    return;
+  }
+  const el = t === rtab && workingEl ? workingEl.querySelector('.gerund') : null;
+  if (!el || workingGerund !== GERUND_COMPACTING) return;
+  if (gerundCycleTimer) { clearTimeout(gerundCycleTimer); gerundCycleTimer = null; }
+  if (gerundTypeTimer) { clearTimeout(gerundTypeTimer); gerundTypeTimer = null; }
+  const prev = workingGerund;
+  gerundIdx = Math.max(0, shuffledGerunds.indexOf(next));
+  workingGerund = next;
+  gerundHold = GERUND_HOLD_START;
+  morphGerund(prev, workingGerund, el, () => { scheduleGerund(); });
+}
 /* The "Establishing connection" indicator, in the tab that is CONNECTING —
    which is very often not the tab whose render state is loaded.
 
