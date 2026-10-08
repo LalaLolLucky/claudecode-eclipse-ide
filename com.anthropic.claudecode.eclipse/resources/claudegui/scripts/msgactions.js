@@ -95,16 +95,27 @@ function msgDelete(box) {
 
    The stored text is raw, the bubble shows the stripped form, so compare through
    stripMeta — which is also what makes an <ide_selection> preamble or a
-   /command wrapper line up with what the bubble renders. */
+   /command wrapper line up with what the bubble renders.
+
+   Only the lines of what the tab has drawn are up for claiming. A conversation reopened
+   from its last compaction on has the messages before it in its transcript and not in
+   its pane (history.js, t.earlier): left in, a new "continue" would claim the line of an
+   old "continue" from up there, and Delete or Rewind on it would act on that one. The
+   same goes for a conversation whose older messages are still being drawn, so that one
+   waits until they are (openingDone).
+
+   @returns {Object[]|null} the transcript's messages as the view lists them, null when
+     they were not read */
 function backfillMessageIds(t) {
-  if (!t || !t.pane || !t.sessionId || !window._messageIds) return;
+  if (!t || !t.pane || !t.sessionId || !window._messageIds) return null;
   let list = [];
   // With the tab's folder: this runs at the end of a turn in whichever tab it ended, and
   // Java would otherwise read the conversation of the folder in front.
-  try { list = JSON.parse(window._messageIds(t.sessionId, rootPathOf(t)) || '[]') || []; } catch (e) { return; }
+  try { list = JSON.parse(window._messageIds(t.sessionId, rootPathOf(t)) || '[]') || []; } catch (e) { return null; }
+  if (t.opening) return list;   // read, for whoever asked; nothing is claimed yet
   const taken = new Set();
   t.pane.querySelectorAll('.user-msg[data-mid]').forEach(b => taken.add(b.dataset.mid));
-  const free = list.filter(m => m && m.id && !taken.has(m.id));
+  const free = list.filter(m => m && m.id && !taken.has(m.id) && !inUnreadPart(t, m));
   t.pane.querySelectorAll('.user-msg:not([data-mid])').forEach(box => {
     const body = box.querySelector('.body');
     const shown = body ? body.textContent : '';
@@ -113,4 +124,5 @@ function backfillMessageIds(t) {
     box.dataset.mid = free[i].id;
     free.splice(i, 1);
   });
+  return list;
 }

@@ -1399,16 +1399,25 @@ fn strip_answer_prefix(s: &str) -> String {
 /// message queued mid-stream is on screen BEFORE its transcript line exists, so
 /// the two sequences differ in length and pairing by index (from either end)
 /// mis-assigns. The caller matches on text instead.
+///
+/// A message written after a compaction also carries `"compactions"`: how many of the
+/// conversation's compactions precede it. A view that opened the conversation from its
+/// then last compaction on ([`open_session`], `cut.nth`) has not drawn what precedes that
+/// one, and must not take such a line for a message it has just drawn that says the same
+/// ("continue").
 pub fn message_ids(workspace_root: &str, session_id: &str) -> String {
     let items: Vec<serde_json::Value> =
         serde_json::from_str(&load_session_history(workspace_root, session_id))
             .unwrap_or_default();
-    let out: Vec<serde_json::Value> = items
-        .iter()
-        .filter(|it| it["t"].as_str() == Some("user"))
-        .filter_map(|it| {
+    let out: Vec<serde_json::Value> = after_compactions(&items)
+        .filter(|(_, it)| it["t"].as_str() == Some("user"))
+        .filter_map(|(compactions, it)| {
             let id = it["id"].as_str()?;
-            Some(serde_json::json!({ "id": id, "text": it["content"].as_str().unwrap_or("") }))
+            let mut entry = serde_json::json!({ "id": id, "text": it["content"].as_str().unwrap_or("") });
+            if compactions > 0 {
+                entry["compactions"] = compactions.into();
+            }
+            Some(entry)
         })
         .collect();
     serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
@@ -1421,20 +1430,36 @@ pub fn message_ids(workspace_root: &str, session_id: &str) -> String {
 ///
 /// The text ships with the id for the reason `message_ids`' does: a reply streamed
 /// this run is on screen before the page knows its line, so the page matches on text.
+/// `"compactions"` is on a reply for the reason it is on a message ([`message_ids`]).
 pub fn reply_ids(workspace_root: &str, session_id: &str) -> String {
-    let out: Vec<serde_json::Value> = history_items(workspace_root, session_id, true)
-        .iter()
-        .filter(|it| it["t"].as_str() == Some("text"))
-        .filter_map(|it| {
+    let items = history_items(workspace_root, session_id, true);
+    let out: Vec<serde_json::Value> = after_compactions(&items)
+        .filter(|(_, it)| it["t"].as_str() == Some("text"))
+        .filter_map(|(compactions, it)| {
             let id = it["id"].as_str()?;
-            Some(serde_json::json!({
+            let mut entry = serde_json::json!({
                 "id": id,
                 "text": it["text"].as_str().unwrap_or(""),
                 "at": it["at"].as_str().unwrap_or(""),
-            }))
+            });
+            if compactions > 0 {
+                entry["compactions"] = compactions.into();
+            }
+            Some(entry)
         })
         .collect();
     serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+}
+
+/// A conversation's render items, each with the number of its compactions that precede it.
+fn after_compactions(items: &[serde_json::Value]) -> impl Iterator<Item = (u64, &serde_json::Value)> {
+    let mut compactions = 0;
+    items.iter().map(move |it| {
+        if it["t"].as_str() == Some("compact") {
+            compactions += 1;
+        }
+        (compactions, it)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1457,13 +1482,18 @@ const NOTHING_OPENED: &str = r#"{"items":[],"note":"","cut":null,"earlier":null}
 /// whether there was thinking (what the conversation is resumed with, when the part
 /// that was drawn says neither). `earlier` is null when nothing was left out.
 ///
-/// `{"items":[…], "note":"…", "cut":{"uuid","at"}|null,
+/// `cut.nth` says which of the conversation's compactions the last one is, counted from 1:
+/// what [`message_ids`] and [`reply_ids`] call `compactions` on the lines that follow it.
+///
+/// `{"items":[…], "note":"…", "cut":{"uuid","at","nth"}|null,
 ///   "earlier":{"replies":[uuid…],"model":"…","thinking":bool}|null}`
 pub fn open_session(workspace_root: &str, session_id: &str, from_last_compaction: bool) -> String {
     let Some((dir, bytes)) = read_transcript(workspace_root, session_id) else {
         return NOTHING_OPENED.into();
     };
-    let cut = compactions(&bytes).pop();
+    let mut found = compactions(&bytes);
+    let nth = found.len();
+    let cut = found.pop();
     let start = match &cut {
         Some(cut) if from_last_compaction => cut.offset,
         _ => 0,
@@ -1472,7 +1502,7 @@ pub fn open_session(workspace_root: &str, session_id: &str, from_last_compaction
     serde_json::json!({
         "items": items_of(&dir, session_id, lines_of(&bytes[start..]), Pass::OPEN),
         "note": crate::promptcache::note_of_lines(lines_of(&bytes)),
-        "cut": cut.map(|cut| serde_json::json!({ "uuid": cut.uuid, "at": cut.at })),
+        "cut": cut.map(|cut| serde_json::json!({ "uuid": cut.uuid, "at": cut.at, "nth": nth })),
         "earlier": earlier.map(|part| serde_json::json!({
             "replies": part.replies, "model": part.model, "thinking": part.thinking,
         })),
@@ -3449,7 +3479,7 @@ mod tests {
                 ("a6".to_string(), "2026-07-30T11:05:04.000Z".to_string()),
             ]
         );
-        assert_eq!(whole["cut"], serde_json::json!({ "uuid": "b1", "at": "2026-07-30T11:00:00.000Z" }));
+        assert_eq!(whole["cut"], serde_json::json!({ "uuid": "b1", "at": "2026-07-30T11:00:00.000Z", "nth": 1 }));
         assert!(whole["earlier"].is_null(), "nothing was left out: {}", whole["earlier"]);
     }
 
@@ -3558,5 +3588,73 @@ mod tests {
             assert_eq!(items_of_answer(&answer), Vec::<serde_json::Value>::new(), "{answer}");
             assert!(answer["cut"].is_null() && answer["earlier"].is_null(), "{answer}");
         }
+    }
+
+    // ---- which lines the view may give a message or a reply it has just drawn ----
+
+    /// The `(id, compactions)` of each entry of an id list.
+    fn marked(list: &str) -> Vec<(String, u64)> {
+        let list: serde_json::Value = serde_json::from_str(list).expect("a list in JSON");
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| (entry["id"].as_str().unwrap().to_string(), entry["compactions"].as_u64().unwrap_or(0)))
+            .collect()
+    }
+
+    fn ids(pairs: &[(&str, u64)]) -> Vec<(String, u64)> {
+        pairs.iter().map(|(id, n)| (id.to_string(), *n)).collect()
+    }
+
+    /// `compacted_lines`, compacted once more (`b2`) with a message sent as it was.
+    fn compacted_twice() -> Vec<&'static str> {
+        let mut lines = compacted_lines();
+        lines.push(r#"{"type":"system","subtype":"compact_boundary","uuid":"b2","parentUuid":null,"compactMetadata":{"trigger":"auto","preTokens":900000,"postTokens":13000},"timestamp":"2026-07-30T12:00:00.000Z"}"#);
+        lines.push(r#"{"type":"user","uuid":"u4","message":{"role":"user","content":"sent as it compacted"},"timestamp":"2026-07-30T12:00:05.000Z"}"#);
+        lines.push(r#"{"type":"assistant","uuid":"a7","message":{"id":"m6","model":"claude-sonnet-5","content":[{"type":"text","text":"third answer"}]},"timestamp":"2026-07-30T12:00:09.000Z"}"#);
+        lines
+    }
+
+    #[test]
+    fn message_ids_say_how_many_compactions_precede_each_message() {
+        let (once, twice) = (
+            with_transcript("ids-once", &compacted_lines(), || super::message_ids(OPEN_ROOT, "sess1")),
+            with_transcript("ids-twice", &compacted_twice(), || super::message_ids(OPEN_ROOT, "sess1")),
+        );
+
+        // The /compact a compaction answers is written after its boundary, as is all that
+        // was said since: a view showing the conversation from there on has drawn those.
+        assert_eq!(marked(&once), ids(&[("u1", 0), ("u2", 1), ("u3", 1)]), "{once}");
+        assert_eq!(marked(&twice), ids(&[("u1", 0), ("u2", 1), ("u3", 1), ("u4", 2)]), "{twice}");
+    }
+
+    #[test]
+    fn reply_ids_say_how_many_compactions_precede_each_reply() {
+        let twice = with_transcript("replies-twice", &compacted_twice(), || super::reply_ids(OPEN_ROOT, "sess1"));
+
+        assert_eq!(marked(&twice), ids(&[("a2", 0), ("a4", 0), ("a6", 1), ("a7", 2)]), "{twice}");
+    }
+
+    #[test]
+    fn a_conversation_opened_at_its_last_compaction_says_which_one_that_is() {
+        let (once, twice) = (
+            with_transcript("nth-once", &compacted_lines(), || opened(true)),
+            with_transcript("nth-twice", &compacted_twice(), || opened(true)),
+        );
+
+        // The count the id lists put on the lines that follow that compaction.
+        assert_eq!((once["cut"]["uuid"].as_str(), once["cut"]["nth"].as_u64()), (Some("b1"), Some(1)));
+        assert_eq!((twice["cut"]["uuid"].as_str(), twice["cut"]["nth"].as_u64()), (Some("b2"), Some(2)));
+    }
+
+    #[test]
+    fn the_id_lists_of_a_conversation_never_compacted_are_as_they_were() {
+        let plain: Vec<&str> = compacted_lines().into_iter().take(6).collect();
+        let (messages, replies) = with_transcript("ids-plain", &plain, || {
+            (super::message_ids(OPEN_ROOT, "sess1"), super::reply_ids(OPEN_ROOT, "sess1"))
+        });
+
+        assert_eq!(marked(&messages), ids(&[("u1", 0)]));
+        assert!(!messages.contains("compactions") && !replies.contains("compactions"), "{messages} {replies}");
     }
 }

@@ -163,6 +163,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      *  under its request's number for the page to fetch it. */
     private final java.util.concurrent.ConcurrentHashMap<Long, String> openedSessions =
             new java.util.concurrent.ConcurrentHashMap<>();
+    /** What the page asked for while it was still loading and was answered before it had
+     *  finished: handed over the moment it has (see {@link #whenPageLoaded}). UI thread only. */
+    private final List<Runnable> answersForLoadedPage = new java.util.ArrayList<>();
     @SuppressWarnings("unused") private BrowserFunction currentContextFn;
     @SuppressWarnings("unused") private BrowserFunction decideFn;
     @SuppressWarnings("unused") private BrowserFunction answerQuestionFn;
@@ -501,10 +504,12 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             new Thread(() -> {
                 SessionArchive.Listing list = SessionArchive.apply(root, safeSessionList(root), openIds, sweep);
                 Display.getDefault().asyncExec(() -> {
-                    if (b != null && !b.isDisposed() && pageLoaded) {
-                        b.execute("window.onHistoryLoaded && window.onHistoryLoaded('"
-                                + esc(list.sessionsJson()) + "', " + list.available() + ", " + asked + ")");
-                    }
+                    whenPageLoaded(() -> {
+                        if (b != null && !b.isDisposed()) {
+                            b.execute("window.onHistoryLoaded && window.onHistoryLoaded('"
+                                    + esc(list.sessionsJson()) + "', " + list.available() + ", " + asked + ")");
+                        }
+                    });
                     showArchiveNotice(list.archivedNow());
                 });
             }, "claude-history-load").start();
@@ -692,8 +697,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 } catch (Throwable t) { /* no such native: answered as false below */ }
                 final boolean read = json != null;
                 if (read) openedSessions.put(request, json);
-                Display.getDefault().asyncExec(() -> {
-                    if (b != null && !b.isDisposed() && pageLoaded) {
+                // A tab restored from the last Eclipse session asks while the page is
+                // still loading: its answer is kept for the page, not dropped.
+                Display.getDefault().asyncExec(() -> whenPageLoaded(() -> {
+                    if (b != null && !b.isDisposed()) {
                         b.execute("window.onSessionOpened && window.onSessionOpened(" + request + ", " + read + ")");
                     } else {
                         openedSessions.remove(request);
@@ -1382,7 +1389,6 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
 
         browser.addProgressListener(org.eclipse.swt.browser.ProgressListener.completedAdapter(e -> {
             pageLoaded = true;
-            openedSessions.clear();   // whatever a page before this one asked for and never fetched
             // WebView2 init is async — retry here where the webview provably exists.
             disableDevTools();
             disableZoom();
@@ -1410,6 +1416,15 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 // be resolved at the instant `completed` fires, so settle it a few times.
                 Display.getCurrent().timerExec(ms, this::pushTheme);
                 Display.getCurrent().timerExec(ms, this::verifyEditOps);
+            }
+            // What the page asked for as it loaded, answered before it had finished. After
+            // the pushes above: the page takes these as it would have a moment later. Last,
+            // and each on its own: one that fails loses only itself.
+            List<Runnable> answers = new java.util.ArrayList<>(answersForLoadedPage);
+            answersForLoadedPage.clear();
+            for (Runnable answer : answers) {
+                try { answer.run(); }
+                catch (RuntimeException ex) { Activator.logError("Failed to hand the page an answer it asked for while loading", ex); }
             }
         }));
 
@@ -3007,7 +3022,23 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         t.start();
     }
 
+    /**
+     * Hands the page an answer to something it asked for: now, or — when it has not
+     * finished loading — the moment it has. Until this, such an answer was dropped: a tab
+     * restored from the last Eclipse session waited on its title, or its conversation, for
+     * an answer that had come and gone. UI thread.
+     */
+    private void whenPageLoaded(Runnable answer) {
+        if (pageLoaded) answer.run();
+        else answersForLoadedPage.add(answer);
+    }
+
     private void loadPage() {
+        // Whatever a page before this one asked for and never fetched. Here, before the
+        // page starts, and not once it has loaded: a tab restored from the last Eclipse
+        // session asks for its conversation while the page is still loading.
+        openedSessions.clear();
+        answersForLoadedPage.clear();
         try {
             // Resolve the whole claudegui/ DIRECTORY, not just the html: the page now
             // references sibling styles/*.css and scripts/*.js, and toFileURL on a

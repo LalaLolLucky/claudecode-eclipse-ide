@@ -1051,15 +1051,19 @@ window.onSessionOpened = function(request, read) {
   const got = () => { try { return JSON.parse(json || 'null'); } catch (e) { return null; } };
   if (asked.earlier) { if (tabs.indexOf(t) >= 0 && t.earlier === asked.earlier) drawEarlierPart(t, asked.earlier, got()); return; }
   if (!stillOpening(t, asked.opening)) return;
-  if (!read) {
-    // This view opens conversations as it always did, from here on without asking first.
-    openInBackground = false;
+  // Read, and not there to be fetched (or not to be made out): that is an answer gone
+  // missing, not a conversation with nothing in it. This one is read directly.
+  const opened = read ? got() : null;
+  if (!opened) {
+    // A view that cannot read in the background opens conversations as it always did,
+    // from here on without asking first.
+    if (!read) openInBackground = false;
     let items = [];
     try { items = JSON.parse(window._loadSession(asked.opening.id, rootPathOf(t)) || '[]'); } catch (e) {}
     drawOpened(t, asked.opening, { items: items }, true);
     return;
   }
-  drawOpened(t, asked.opening, got() || { items: [] }, false);
+  drawOpened(t, asked.opening, opened, false);
 };
 /**
  * Draws a conversation that has been read into its tab, where "Loading…" stands (or
@@ -1076,9 +1080,11 @@ function drawOpened(t, opening, got, inOneGo) {
   // holds, and what names it for fetching (fetchEarlierPart).
   const left = (got.earlier && got.cut && got.cut.uuid) ? got.earlier : null;
   if (left) {
-    t.earlier = { id: id, uuid: got.cut.uuid, ids: new Set(left.replies || []), state: 'out',
+    t.earlier = { id: id, uuid: got.cut.uuid, nth: got.cut.nth, ids: new Set(left.replies || []), state: 'out',
       waiting: [], line: null, joinTo: null, resume: null };
   }
+  // How many times the conversation has been compacted, for the next time it is (stream.js).
+  t.compactions = (got.cut && got.cut.nth) || items.filter(it => it.t === 'compact').length;
   const said = historySaid(items);
   if (left) { said.thinking = said.thinking || !!left.thinking; said.model = said.model || left.model || ''; }
   restoreSettings(t, id, said);
@@ -1159,6 +1165,9 @@ function openingDone(t, opening) {
   if (opening.unwatch) opening.unwatch();
   if (opening.line) keepingPlace(t, opening.line.nextElementSibling, () => opening.line.remove());
   t.opening = null;
+  // A message sent while the conversation was coming in learns its transcript line now
+  // that all of it is drawn (a turn that ended meanwhile left it for this).
+  if (!t.streaming && typeof backfillMessageIds === 'function') backfillMessageIds(t);
   // Each reply that did not come with its transcript line learns it, and shows its
   // bookmark if it has one.
   if (typeof refreshReplies === 'function') refreshReplies(t);
@@ -1181,6 +1190,18 @@ function resumeDrawing(t) {
    replies it holds (`ids`, for the bookmarks of them), and where it stands: 'out' (not
    fetched), 'asked', or 'in' (drawn, under "Messages before compaction"). */
 
+/* Whether a transcript line — an entry of the view's list of the conversation's messages
+   or replies (_messageIds, _replyIds) — is in a part of the tab's conversation that has
+   not been drawn, and so cannot be the line of anything in its pane. A reply of that
+   part is known by name; a message by how many compactions precede it, which the list
+   says of each line and the conversation said of its last when it was opened (`nth`). A
+   view whose native library says neither leaves the messages as they were. */
+function inUnreadPart(t, entry) {
+  const e = t && t.earlier;
+  if (!e || e.state === 'in' || !entry) return false;
+  if (e.ids.has(entry.id)) return true;
+  return typeof e.nth === 'number' && (Number(entry.compactions) || 0) < e.nth;
+}
 /* Whether a reply is in a part of the tab's conversation that has not been fetched. */
 function earlierHolds(t, uuid) {
   const e = t && t.earlier;

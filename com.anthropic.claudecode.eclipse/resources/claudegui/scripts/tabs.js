@@ -636,7 +636,7 @@ function clearTab(t) {
   // rebuilt into the emptied pane the first time the tab is shown (see switchTab).
   t._restore = null;
   // And one still being read or drawn is no longer waited on (history.js).
-  t.opening = null; t.earlier = null;
+  t.opening = null; t.earlier = null; t.compactions = 0;
   // Drop the process so the next send starts a genuinely new conversation
   // (spawns without --resume) instead of continuing the one just cleared.
   if (window._disposeTab) window._disposeTab(t.id);

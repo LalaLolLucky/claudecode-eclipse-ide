@@ -72,7 +72,9 @@ function paintReplyMark(el, t) {
    runs — so, as backfillMessageIds does for the bubbles, each reply still without one is
    matched to the transcript's replies by its text, each line claimed at most once. */
 function backfillReplyIds(t) {
-  if (!t || !t.pane || !t.sessionId || !window._replyIds || !bookmarksAvailable()) return;
+  // Not while the conversation is still being drawn, and never a line of the part that
+  // was not read: see backfillMessageIds.
+  if (!t || !t.pane || !t.sessionId || !window._replyIds || !bookmarksAvailable() || t.opening) return;
   const blank = [].slice.call(t.pane.querySelectorAll('.a-item.reply:not([data-rid])'));
   if (!blank.length) return;
   let list = [];
@@ -80,7 +82,7 @@ function backfillReplyIds(t) {
   try { list = JSON.parse(window._replyIds(t.sessionId, rootPathOf(t)) || '[]') || []; } catch (e) { return; }
   const taken = new Set();
   t.pane.querySelectorAll('.a-item.reply[data-rid]').forEach(el => taken.add(el.dataset.rid));
-  const free = list.filter(r => r && r.id && !taken.has(r.id));
+  const free = list.filter(r => r && r.id && !taken.has(r.id) && !inUnreadPart(t, r));
   blank.forEach(el => {
     // Exactly as written first; a reply differing only by the space around it is the same one.
     let i = free.findIndex(r => r.text === el._replyText);

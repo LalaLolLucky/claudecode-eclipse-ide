@@ -72,8 +72,13 @@ window.onCompact = (tabId, json) => withTab(tabId, (t) => {
     // belongs under its line, as a reload shows it — not in the turn above, which is
     // about to be folded away with everything else up there.
     endAssistant();
-    foldBeforeCompaction(t.pane, info.trigger === 'manual' ? compactBubbleTurn(t.pane) : null);
+    const answered = info.trigger === 'manual' ? compactBubbleTurn(t.pane) : null;
+    // What the user has sent and Claude has not been given yet is not from before the
+    // compaction: it is answered after it. It stays in view, under the compaction's line.
+    const waiting = sentForAfterCompaction(t, answered);
+    foldBeforeCompaction(t.pane, answered, waiting);
     t._compEl = addCompacted(t.pane, info.trigger, freed, '');
+    waiting.forEach(turn => t.pane.appendChild(turn));
     scrollBottom();
   } else if (info.phase === 'summary') {
     t.compacting = false;
@@ -134,12 +139,15 @@ const PRE_COMPACT_LABEL = 'Messages before compaction';
  * its /compact bubble) are drawn.
  * @param {HTMLElement} pane
  * @param {Element|null} before  the first child that is NOT part of it
+ * @param {Element[]} [except]   children above `before` that are not part of it either
+ *   (sentForAfterCompaction)
  */
-function foldBeforeCompaction(pane, before) {
+function foldBeforeCompaction(pane, before, except) {
   if (!pane) return;
   const head = pane.querySelector(':scope > .pre-compact-head');
   for (let el = pane.firstElementChild; el && el !== before; el = el.nextElementSibling) {
     if (el === head || el.classList.contains('working-turn')) continue;
+    if (except && except.indexOf(el) >= 0) continue;
     el.classList.add('pre-compact');
   }
   if (!ensurePreCompactHead(pane, false)) return;   // nothing above the compaction: nothing to put a line over
@@ -183,6 +191,36 @@ function setPreCompactOpen(pane, open) {
   if (open && typeof fetchEarlierPart === 'function') fetchEarlierPart(tabs.find(t => t.pane === pane));
   if (open) measureRevealed(pane);   // what was drawn under it while it was closed is cut to size now
   updatePinnedPrompt();   // the prompts that just came or went are candidates for it
+}
+/* The turns of the messages the user has sent that a compaction now finishing does NOT
+   take with it: the ones Claude is given after it. A prompt that set an automatic
+   compaction off is one (the CLI compacts first and answers it then), and so is anything
+   sent while a turn was running that is still waiting its turn. The transcript tells them
+   apart, and a reload draws them under the compaction's line, where they are put here.
+
+   A message is one of them when the transcript does not hold its line yet, or holds it
+   after this compaction's own — the list of the conversation's messages says how many
+   compactions precede each (session.rs, message_ids), and the tab counts its own
+   (`t.compactions`). A bubble still without a line that stands above one that has its
+   line is not waiting to be written: it is one the transcript never took, and stays
+   where it is. `answered` is the /compact this compaction answers, which keeps its place.
+   None when the transcript cannot be read, or lists no message at all. */
+function sentForAfterCompaction(t, answered) {
+  t.compactions = (t.compactions || 0) + 1;
+  const list = typeof backfillMessageIds === 'function' ? backfillMessageIds(t) : null;
+  if (!list || !list.length) return [];   // nothing to tell them apart by
+  const precede = {};
+  list.forEach(m => { if (m && m.id) precede[m.id] = Number(m.compactions) || 0; });
+  const turns = [];
+  let lineBelow = false;   // a bubble further down has its line
+  const boxes = [].slice.call(t.pane.querySelectorAll(':scope > .turn > .user-msg'));
+  for (let i = boxes.length - 1; i >= 0; i--) {
+    const turn = boxes[i].parentNode, mid = boxes[i].dataset.mid;
+    if (turn === answered || turn.classList.contains('pre-compact')) continue;
+    if (mid) { lineBelow = true; if ((precede[mid] || 0) >= t.compactions) turns.unshift(turn); }
+    else if (!lineBelow) turns.unshift(turn);
+  }
+  return turns;
 }
 /* The turn of the /compact the user sent and the compaction now finishing answers, so
    it stays out of the fold with the line that follows it. Looked for from the end, and
