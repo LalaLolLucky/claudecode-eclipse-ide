@@ -196,6 +196,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private BrowserFunction advisorSetFn;
     @SuppressWarnings("unused") private BrowserFunction openExternalFn;
     @SuppressWarnings("unused") private BrowserFunction openTerminalViewFn;
+    @SuppressWarnings("unused") private BrowserFunction openSessionInTerminalFn;
     @SuppressWarnings("unused") private BrowserFunction openFileInEditorFn;
     @SuppressWarnings("unused") private BrowserFunction openTextInEditorFn;
     @SuppressWarnings("unused") private BrowserFunction getContextStatusFn;
@@ -1162,6 +1163,16 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 org.eclipse.ui.PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage()
                         .showView("com.anthropic.claudecode.eclipse.ui.ClaudeCliView");
             } catch (Exception ignored) {}
+            return null;
+        });
+        // "Open Claude in Terminal" on a tab that holds a conversation: (tab, session id,
+        // whether it is the view's last tab). The tab's conversation moves to the Claude
+        // Terminal, and the tab does not stay — the same conversation is not to run in two
+        // places — so it is asked first. asyncExec for the reasons _confirmCloseView gives.
+        openSessionInTerminalFn = new SimpleFunction(browser, "_openSessionInTerminal", a -> {
+            if (!(a.length > 1 && a[0] instanceof String tabId && a[1] instanceof String sessionId)) return null;
+            final boolean lastTab = a.length > 2 && Boolean.TRUE.equals(a[2]);
+            Display.getDefault().asyncExec(() -> openSessionInTerminal(tabId, sessionId, lastTab));
             return null;
         });
         // A tool line's file path (Read/Edit/Write/…) — root is the OWNING tab's working
@@ -3205,6 +3216,51 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             }
         }
         return out.size() == 0 ? "" : out.toString();
+    }
+
+    /** A session id as the CLI writes them: nothing that could be read as another argument. */
+    private static final java.util.regex.Pattern SESSION_ID = java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9-]{7,63}");
+
+    /**
+     * Moves a tab's conversation to the Claude Terminal, once the user has agreed to what
+     * that takes: the tab closes, and with the last tab the view. UI thread, and never from
+     * inside a call the Browser is still executing.
+     */
+    private void openSessionInTerminal(String tabId, String sessionId, boolean lastTab) {
+        try {
+            if (browser == null || browser.isDisposed() || !SESSION_ID.matcher(sessionId).matches()) return;
+            String message = "This will close the tab and open its session in the Claude Terminal.";
+            if (lastTab) {
+                // The words _confirmCloseView asks with when the last session tab is closed.
+                message += "\n\nYou are about to close the last session tab, this action will "
+                        + "close the Claude Code view. Do you wish to proceed?";
+            }
+            MessageDialog dlg = new MessageDialog(browser.getShell(), "Open session in Claude Terminal?", null,
+                    message, MessageDialog.CONFIRM, new String[] { "Open in Terminal", "Cancel" }, 1);
+            // The user's own decision: eclipseDialog lists it and never answers it.
+            dlg.create();
+            com.anthropic.claudecode.eclipse.tools.EclipseDialogTool.forUserOnly(dlg.getShell());
+            if (dlg.open() != 0 || browser.isDisposed()) return;
+
+            org.eclipse.ui.IWorkbenchPartSite site = getSite();
+            org.eclipse.ui.IWorkbenchPage page = site != null ? site.getPage() : null;
+            if (page == null) return;
+            // The Terminal first: with no Terminal to go to, the tab keeps its conversation.
+            Activator activator = Activator.getDefault();
+            if (!activator.isServerRunning()) activator.initialize();
+            ClaudeCliView terminal = (ClaudeCliView) page.showView(ClaudeCliView.VIEW_ID);
+            if (terminal == null) return;
+            // Then the tab lets go of it (its process ends), and only then is it started there.
+            Object released = browser.evaluate("return window.releaseTabForTerminal ? window.releaseTabForTerminal("
+                    + new com.google.gson.JsonPrimitive(tabId) + ", " + new com.google.gson.JsonPrimitive(sessionId) + ") : '';");
+            if (!(released instanceof String how) || how.isEmpty()) return;   // the tab moved on meanwhile
+            if (!terminal.openSession(sessionId)) {
+                Activator.logError("The Claude Terminal did not open session " + sessionId, null);
+            }
+            if ("last".equals(how)) page.hideView(ClaudeGuiView.this);
+        } catch (Exception e) {
+            Activator.logError("Failed to open the session in the Claude Terminal", e);
+        }
     }
 
     /**

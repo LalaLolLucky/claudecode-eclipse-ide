@@ -373,6 +373,48 @@ function closeTab(id, opts) {
     switchTab((oidx >= 0 ? own[oidx] : own[own.length - 1]).id);
   } else renderTabs();
 }
+/* ---- "Open Claude in Terminal": a tab's conversation moves to the Claude Terminal ----
+   The same conversation is not to run in two places, so the tab does not stay: the view
+   asks first (a real dialog, as for closing the last tab), and on yes has the page let
+   the tab go, starts the session in the Terminal, and closes itself when that was its
+   last tab. A tab with no conversation yet has nothing to move, and only shows the
+   Terminal. */
+
+/* Whether a tab runs in the workspace folder, the only one the Terminal runs in. */
+function tabInWorkspaceFolder(t) {
+  const r = t && rootById(t.rootId);
+  return !!r && r === roots[0];
+}
+/* Whether a tab is the last one of the view: closing it closes the view. */
+function isLastTabOfView(t) {
+  return roots.length === 1 && tabs.filter(x => x.rootId === t.rootId).length === 1;
+}
+function openTabInTerminal(t) {
+  if (!t || t.setupGuide) return;
+  if (!t.sessionId || !window._openSessionInTerminal) {
+    if (window._openTerminalView) window._openTerminalView();
+    return;
+  }
+  window._openSessionInTerminal(t.id, t.sessionId, isLastTabOfView(t));
+}
+/**
+ * The user said yes: the tab lets go of its conversation, which is about to be started in
+ * the Terminal. Asked by the view, which acts on the answer.
+ * @returns {string} 'closed' when the tab was closed; 'last' when it was the view's last,
+ *   which the view now closes (the tab is emptied, so that the next start does not bring
+ *   the conversation back beside the Terminal's); '' when the tab is gone or holds
+ *   another conversation by now, and nothing was done
+ */
+window.releaseTabForTerminal = function(tabId, sessionId) {
+  const t = tabById(tabId);
+  if (!t || !t.sessionId || t.sessionId !== sessionId) return '';
+  if (!isLastTabOfView(t)) { closeTab(tabId); return 'closed'; }
+  if (t.streaming && window._cancelRequest) window._cancelRequest(tabId);
+  if (window._disposeTab) window._disposeTab(tabId);
+  t.sessionId = ''; t._restore = null; t.opening = null; t.earlier = null;
+  if (typeof saveViewStateIfChanged === 'function') saveViewStateIfChanged();
+  return 'last';
+};
 let dragTabId = null;
 function clearDropMarks() {
   document.querySelectorAll('#tabs .tab.drop-before, #tabs .tab.drop-after')

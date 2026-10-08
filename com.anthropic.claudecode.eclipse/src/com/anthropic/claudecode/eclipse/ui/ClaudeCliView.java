@@ -672,6 +672,21 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         openNewSession(null, null, extraArgs);
     }
 
+    /**
+     * Opens a tab that resumes a saved session, in the workspace folder.
+     *
+     * @return whether the tab was opened
+     */
+    public boolean openSession(String sessionId) {
+        if (tabFolder == null || tabFolder.isDisposed()) return false;
+        // openNewSession lets a call inside half a second of the last one fall through
+        // unopened; this one is not a second click, and must not be lost to that.
+        launching = false;
+        int before = tabFolder.getItemCount();
+        openNewSession(null, null, "--resume", sessionId);
+        return tabFolder.getItemCount() > before;
+    }
+
     public void launchProcessInDirectory(String cwd, String scopeLabel, String... extraArgs) {
         openNewSession(cwd, scopeLabel, extraArgs);
     }
