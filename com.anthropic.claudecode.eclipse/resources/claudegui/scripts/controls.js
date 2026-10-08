@@ -244,8 +244,10 @@ function fitComposerBar() {
   const floor = row.classList.contains('send-up') && inp ? parseFloat(getComputedStyle(inp).minHeight) : 0;
   row.classList.toggle('send-up', up);
   if (floor && !up && parseFloat(inp.style.height) === floor) {
-    inp.style.height = 'auto';
-    inp.style.height = Math.min(inp.scrollHeight, 160) + 'px';
+    measuringTextarea(inp, () => {
+      inp.style.height = 'auto';
+      inp.style.height = Math.min(inp.scrollHeight, 160) + 'px';
+    });
   }
   // icon-only mode button still tells you the mode on hover; so does the pill, its count
   modes.title = modes.classList.contains('icon-only') ? (modesLbl.textContent || '') : '';

@@ -257,10 +257,22 @@ const send = document.getElementById('send');
 
 input.addEventListener('focus', () => wrap.classList.remove('blur'));
 input.addEventListener('blur',  () => wrap.classList.add('blur'));
+/* Runs `fn`, which measures a textarea by letting it collapse to its natural height, with the
+   box around it held at its current height. The collapse would otherwise reach the transcript
+   above: its view grows for that moment, the browser pulls the scroll position up to fit, and
+   when the box is back at the height it had (a draft already past its cap) nothing tells the
+   view to follow, which leaves it short of the bottom. */
+function measuringTextarea(el, fn) {
+  const box = el.parentElement;
+  box.style.minHeight = box.offsetHeight + 'px';
+  try { fn(); } finally { box.style.minHeight = ''; }
+}
 input.addEventListener('input', () => {
   if (!recallingPrompt) { const t = activeTab(); if (t) t.histIdx = -1; }   // typing leaves the Up/Down cycle
-  input.style.height = 'auto';
-  input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+  measuringTextarea(input, () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+  });
   const hasImgs = typeof hasPendingImages === 'function' && hasPendingImages();
   send.classList.toggle('disabled', input.value.trim() === '' && !hasImgs && !activeStreaming());
   updateSlashMenu();

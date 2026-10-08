@@ -114,6 +114,11 @@ const paneResizeObserver = new ResizeObserver(entries => {
   });
 });
 function observePane(pane) { paneResizeObserver.observe(pane); }
+/* The transcript's own box shrinks when something appears below it — the usage card, the browser
+   banner, the composer growing as a multi-line message is typed — and with nothing arriving the
+   view would stay where it was, its last lines cut off until the next one streams in. Following
+   the bottom means following that too. */
+new ResizeObserver(() => { if (followTail) pinToBottom(); }).observe(messagesEl);
 /** Exactly ONE user turn is ever pinned at a time — the most recent one that has already
  *  scrolled up to (or past) #messages' own top edge. Plain CSS `position: sticky` on every
  *  user turn independently can't express this: two turns sharing the same `top: 0` each

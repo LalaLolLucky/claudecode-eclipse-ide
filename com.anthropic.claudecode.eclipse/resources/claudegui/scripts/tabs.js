@@ -225,8 +225,10 @@ function switchTab(id) {
   if (t) {
     applyTabSettings(t);   // restore this conversation's model/effort/thinking
     input.value = t.draft || '';                                    // restore this tab's draft
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 160) + 'px';  // resize to the draft
+    measuringTextarea(input, () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 160) + 'px';  // resize to the draft
+    });
   }
   if (typeof renderBottomCard === 'function') renderBottomCard();   // card only in its own tab
   if (typeof renderPendingImages === 'function') renderPendingImages();  // this tab's pasted-image chips
