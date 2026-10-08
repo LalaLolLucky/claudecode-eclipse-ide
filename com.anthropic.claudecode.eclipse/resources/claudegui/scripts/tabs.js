@@ -267,7 +267,8 @@ function switchTab(id) {
   // Explicit, not left to the 'scroll' event this write may fire: a write landing on a
   // position the container already holds (e.g. switching back to a tab left at the exact
   // same spot) is a no-op that fires nothing — same reasoning as the followTail line above.
-  if (typeof updatePinnedPrompt === 'function') updatePinnedPrompt();
+  // A tab left at the tail comes back at it: pinning its prompt moves the bottom, so scroll again.
+  if (typeof updatePinnedPrompt === 'function' && updatePinnedPrompt() && followTail) messagesEl.scrollTop = messagesEl.scrollHeight;
   // What was drawn into this tab while it was not showing has had no size to be measured
   // by, and a conversation that was coming in when it was left goes on from there.
   if (t && typeof measureRevealed === 'function') measureRevealed(t.pane);

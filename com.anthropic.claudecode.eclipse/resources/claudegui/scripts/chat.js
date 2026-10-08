@@ -110,8 +110,7 @@ const paneResizeObserver = new ResizeObserver(entries => {
     const h = e.contentRect.height, prev = paneHeights.get(e.target) || 0;
     paneHeights.set(e.target, h);
     if (!t || e.target !== t.pane || !prev || h <= prev || !followTail) return;
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    updatePinnedPrompt();
+    pinToBottom();
   });
 });
 function observePane(pane) { paneResizeObserver.observe(pane); }
@@ -125,7 +124,7 @@ function observePane(pane) { paneResizeObserver.observe(pane); }
  *  hand (a `.pinned-prompt` class chat.css keys `position: sticky` off, in place of a blanket
  *  selector matching every user turn) sidesteps that rather than fighting sticky's own math. */
 function updatePinnedPrompt() {
-  const t = activeTab(); if (!t || !t.pane) return;
+  const t = activeTab(); if (!t || !t.pane) return false;
   const turns = t.pane.querySelectorAll(':scope > .turn');
   const containerTop = messagesEl.getBoundingClientRect().top;
   let active = null;
@@ -138,19 +137,32 @@ function updatePinnedPrompt() {
     // later turn has since crossed the same threshold.
     if (turns[i].getBoundingClientRect().top <= containerTop + 1) { active = turns[i]; break; }
   }
-  turns.forEach(turn => turn.classList.toggle('pinned-prompt', turn === active));
+  let changed = false;
+  turns.forEach(turn => {
+    const on = turn === active;
+    if (turn.classList.contains('pinned-prompt') !== on) { turn.classList.toggle('pinned-prompt', on); changed = true; }
+  });
+  return changed;
+}
+/** Scrolls to the very bottom, then brings the pinned prompt up to date. Pinning a prompt
+ *  changes that turn's box (the padding in .turn.pinned-prompt), which moves the bottom: when
+ *  it did, scroll again so the view still ends exactly at the bottom. Left 10px short of it
+ *  the 'scroll' listener reads the view as scrolled away from the tail, and with Scroll Lock
+ *  armed the transcript stops following. */
+function pinToBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (updatePinnedPrompt()) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 /* The one place the transcript decides whether to move. Shared with showWorking, which
    appends outside of scrollBottom. */
 function autoScroll() {
   if (scrollLocked && !followTail) { updateJumpToLatest(); return; }
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  pinToBottom();
   // Set directly rather than left to the 'scroll' event this write may fire: when the view
   // already sits at the bottom the write is a no-op and no event arrives, which would
   // strand followTail at false and leave the button unable to retire itself.
   followTail = true;
   updateJumpToLatest();
-  updatePinnedPrompt();
 }
 /**
  * @param {boolean} [force] Jump to the bottom even when the lock is armed and the user
@@ -167,10 +179,9 @@ function scrollBottom(force) {
   // and would otherwise silently defeat every one of those actions.
   if (!force && rtab && rtab !== activeTab()) return;
   if (force) {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    pinToBottom();
     followTail = true;   // same no-op-write reasoning as autoScroll
     updateJumpToLatest();
-    updatePinnedPrompt();
     return;
   }
   autoScroll();
