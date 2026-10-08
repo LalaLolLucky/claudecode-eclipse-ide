@@ -27,7 +27,7 @@ buildActionsSlash();
    over the state it was restored FROM. */
 startViewStatePersistence();
 
-/* With "Enable remote control on startup" set, every conversation the view opened
+/* With "Enable Remote Control for all sessions" set, every conversation the view opened
    with becomes reachable from a phone too — not just the ones created afterwards
    (createTab handles those). Last, so it runs over the fully restored set rather
    than racing the restore. A no-op when the preference is off, which is default. */

@@ -256,7 +256,7 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         // Terminal session are each started with them (see TerminalLaunchArgs).
         addField(new BooleanFieldEditor(
                 Constants.PREF_REMOTE_CONTROL_STARTUP,
-                "Enable remote control on startup",
+                "Enable Remote Control for all sessions",
                 getFieldEditorParent()));
 
         addField(new BooleanFieldEditor(

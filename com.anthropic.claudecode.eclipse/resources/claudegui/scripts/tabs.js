@@ -191,7 +191,7 @@ function createTab(opts) {
     permMode: setting('permMode', defaultPermMode()) });
   switchTab(id);
   const created = tabs[tabs.length - 1];
-  // With "Enable remote control on startup" set, a new conversation comes up
+  // With "Enable Remote Control for all sessions" set, a new conversation comes up
   // already reachable from a phone — so this starts on "Establishing
   // connection…" rather than waiting to be asked. A no-op when the preference
   // is off, which is the default.

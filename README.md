@@ -176,7 +176,7 @@ Go to **Window → Preferences → Claude Code** to configure:
 | Claude command | `claude` | Path to the Claude CLI executable, or to a `.bat`/`.cmd`/`.sh` wrapper around it |
 | Arguments | *(empty)* | Additional CLI arguments (e.g., `--model claude-opus-4-7-20260418`) |
 | Port range (min/max) | 10000–65535 | Port range for the internal HTTP+SSE server |
-| Enable remote control on startup | Off | Turns on Remote Control for each conversation as it starts |
+| Enable Remote Control for all sessions | Off | Turns on Remote Control for each conversation as it starts |
 | Enable Thinking by default | On | New conversations start with extended thinking on |
 | Allow bypass permissions mode | Off | Makes Bypass permissions available as a permission mode. Recommended only for sandboxes with no internet access |
 | Exclusively use terminal | Off | Launches Claude in the Claude Terminal instead of the Claude Code view, which is closed and hidden along with its commands |
