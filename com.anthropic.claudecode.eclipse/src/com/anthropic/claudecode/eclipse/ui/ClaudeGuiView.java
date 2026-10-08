@@ -257,6 +257,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private org.eclipse.jface.util.IPropertyChangeListener hideBeforeCompactionPrefListener;
     // Live-applies PREF_SMART_SCROLL_LOCK changes without a restart or page reload.
     private org.eclipse.jface.util.IPropertyChangeListener smartScrollLockPrefListener;
+    // Live-applies PREF_TOOL_CARD_MODE changes (how new input/output/diff cards start) without a restart.
+    private org.eclipse.jface.util.IPropertyChangeListener toolCardModePrefListener;
     private org.eclipse.jface.util.IPropertyChangeListener dictationPrefListener;
     /** The dictation key context's activation, held so a Preferences change can undo it. */
     private org.eclipse.ui.contexts.IContextActivation dictationKeyActivation;
@@ -370,6 +372,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         registerHideRootRowPrefListener();
         registerHideBeforeCompactionPrefListener();
         registerSmartScrollLockPrefListener();
+        registerToolCardModePrefListener();
         registerDictationPrefListener();
         registerThemeListener();
         registerBindingListener();
@@ -1619,6 +1622,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             if (queuedRoot != null) { pendingRootPath = null; openRootDirectory(queuedRoot); }
             pushScrollLock();        // the toolbar toggle outlives the page — re-apply it
             pushSmartScrollLock();   // ditto for the Smart Scroll Lock preference
+            pushToolCardMode();      // and how new input/output/diff cards start out
             for (int ms : new int[]{50, 200, 500, 1000, 1500}) {
                 Display.getCurrent().timerExec(ms, this::activateInput);
                 // Re-push the theme too: the root composite's CSS-themed background may not
@@ -1802,6 +1806,24 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         boolean smart = Activator.getDefault().getPreferenceStore()
                 .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_SMART_SCROLL_LOCK);
         browser.execute("window.onSmartScrollLock && window.onSmartScrollLock(" + smart + ")");
+    }
+
+    /** Pushes how new input/output/diff cards start out (hidden / collapsed / preview /
+     *  expanded) into the webview — the default and the setting of each kind of tool that has
+     *  one — on page load and on every live Preferences change (see
+     *  {@link #registerToolCardModePrefListener()}). Only cards created afterwards take it up. */
+    private void pushToolCardMode() {
+        if (browser == null || browser.isDisposed() || !pageLoaded) return;
+        org.eclipse.jface.preference.IPreferenceStore store = Activator.getDefault().getPreferenceStore();
+        Map<String, String> types = new java.util.LinkedHashMap<>();
+        for (String[] type : com.anthropic.claudecode.eclipse.Constants.TOOL_CARD_TYPES) {
+            String mode = store.getString(com.anthropic.claudecode.eclipse.Constants.PREF_TOOL_CARD_MODE_PREFIX + type[0]);
+            if (!mode.isEmpty()) types.put(type[0], mode);
+        }
+        Map<String, Object> modes = new java.util.LinkedHashMap<>();
+        modes.put("default", store.getString(com.anthropic.claudecode.eclipse.Constants.PREF_TOOL_CARD_MODE));
+        modes.put("types", types);
+        browser.execute("window.onToolCardModes && window.onToolCardModes('" + esc(new Gson().toJson(modes)) + "')");
     }
 
     /** Resolves installed-vs-latest CLI versions and pushes the result to the webview. */
@@ -2317,6 +2339,18 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             Display.getDefault().asyncExec(this::pushSmartScrollLock);
         };
         Activator.getDefault().getPreferenceStore().addPropertyChangeListener(smartScrollLockPrefListener);
+    }
+
+    /** Live-applies a Preferences change to how new tool cards start — mirrors
+     *  {@link #registerSmartScrollLockPrefListener()}. */
+    private void registerToolCardModePrefListener() {
+        toolCardModePrefListener = event -> {
+            String key = event.getProperty();
+            if (key == null || !(com.anthropic.claudecode.eclipse.Constants.PREF_TOOL_CARD_MODE.equals(key)
+                    || key.startsWith(com.anthropic.claudecode.eclipse.Constants.PREF_TOOL_CARD_MODE_PREFIX))) return;
+            Display.getDefault().asyncExec(this::pushToolCardMode);
+        };
+        Activator.getDefault().getPreferenceStore().addPropertyChangeListener(toolCardModePrefListener);
     }
 
     /** Live-applies the dictation preferences — dictation itself, the debug-only macOS
@@ -4804,6 +4838,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(hideBeforeCompactionPrefListener); }
             catch (Throwable ignored) {}
             hideBeforeCompactionPrefListener = null;
+        }
+        if (toolCardModePrefListener != null) {
+            try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(toolCardModePrefListener); }
+            catch (Throwable ignored) {}
+            toolCardModePrefListener = null;
         }
         if (smartScrollLockPrefListener != null) {
             try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(smartScrollLockPrefListener); }
