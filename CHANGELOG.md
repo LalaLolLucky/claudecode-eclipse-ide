@@ -4,7 +4,49 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.14] — 2026-10-07 *(current)*
+## [3.2.15] — 2026-10-09 *(current)*
+
+### Added
+- The command menu is rebuilt in sections (Context, Model, Customize, Settings, Support, Appearance), with switches for Thinking and Focus view (#90).
+- Typing `/` in the message box opens the same command menu, filtered as you type (#90).
+- Slash commands window: every command and skill the folder offers, with each skill's source and an On/Off switch (#90).
+- Memory and Instructions windows: read, edit and delete Claude's memory files and the CLAUDE.md files.
+- Permissions window: the folder's permission rules, with Add rule and Remove.
+- Hooks window: the hooks in force, with add, edit and remove.
+- Output styles window: pick a style, or build a custom one in four steps.
+- Status, Sandbox and Export conversation windows.
+- Claude in Chrome and Claude Design windows.
+- Switch account, Sign out (asks first) and Report a problem, from the command menu; `/login`, `/logout`, `/design-login` and `/feedback` open the same windows (#90).
+- Focus view: each run of tool calls folds into one "N tool calls" line that opens on a click.
+- Toggle fast mode, with a bolt on the message box while it is on.
+- "Switch models when a message is flagged" switch.
+- "Open Claude in Terminal" moves the tab's own session into the Claude Terminal.
+- A tool's input, output, diff and search results can each be hidden, collapsed to one line, shown as a few lines or shown in full, with buttons on each card ([@jmoraleda](https://github.com/jmoraleda), PR #179).
+- An arrow after each tool line hides or brings back that tool's cards ([@jmoraleda](https://github.com/jmoraleda), PR #179).
+- New preference "Start a tool's input, output and diff cards", with its own choice for Bash commands, file edits, search results, agents and web tools ([@jmoraleda](https://github.com/jmoraleda), PR #179).
+- "Show all (N)" on a search result shows every row, each one clickable.
+
+### Changed
+- The preference "Enable remote control on startup" is now "Enable Remote Control for all sessions".
+- `/model` typed on its own opens the model chooser.
+- FreeBSD: updating Claude Code goes through `claude-freebsd` and checks that the version changed.
+
+### Fixed
+- A conversation left in front no longer comes back as "This conversation is empty or could not be loaded." when Eclipse is restarted.
+- In a reopened conversation that was compacted, Delete, Fork and Rewind on a new message no longer act on an identical message from before the compaction.
+- In a reopened conversation that was compacted, a bookmark no longer lands on an identical reply from before the compaction.
+- A message sent just before an automatic compaction no longer disappears: it stays in view under the "Compacted chat" line.
+- A restored tab still named "Claude Code" gets its title at startup.
+- Archiving a conversation open in the view's last tab, then cancelling the "close the view" question, no longer leaves it open but archived.
+- "Show less" on an expanded long prompt no longer covers its last words: it shows only while the pointer is over the message.
+- The working indicator no longer stays on "Compacting" after an automatic compaction.
+- The Claude Code view no longer loads blank on Linux and FreeBSD.
+- The conversation keeps following the bottom when a card or an image grows after it is drawn ([@jmoraleda](https://github.com/jmoraleda), PR #176).
+- Typing stays responsive in long conversations ([@jmoraleda](https://github.com/jmoraleda), PR #177).
+
+---
+
+## [3.2.14] — 2026-10-07
 
 ### Added
 - Bookmarks: a bookmark button under each of Claude's replies, and a Bookmarks panel beside the conversation that lists that conversation's bookmarks.
