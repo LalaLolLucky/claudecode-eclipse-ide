@@ -525,6 +525,8 @@ function applyFocusView() {
               if (n.classList.contains('tool-line')) n.classList.toggle('fold-open', open);
               n = n.nextElementSibling;
             }
+            // Cards drawn under the closed fold had no size to be cut to (chat.js).
+            if (open) measureRevealed(turn);
           };
           turn.insertBefore(fold, first);
         }
@@ -548,6 +550,9 @@ function applyFocusView() {
       });
       if (focusView) close();
     });
+    // Lines that show now and did not before: Focus view switched off, or a line that
+    // joined a run whose fold is open. In here, so the observer does not see it.
+    measureRevealed(document.getElementById('messages'));
   } finally {
     const host = document.getElementById('messages');
     if (host) focusObserver.observe(host, { childList: true, subtree: true });

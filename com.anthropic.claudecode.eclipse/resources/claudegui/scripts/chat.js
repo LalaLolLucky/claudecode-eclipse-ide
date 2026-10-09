@@ -492,7 +492,8 @@ function measureWhenShown(el, measurement) {
   });
 }
 /* Measures what was drawn out of sight under `root` and shows now: when a tab comes to
-   the front, and when "Messages before compaction" is opened. All marked, then all read,
+   the front, and when "Messages before compaction", a Focus view fold or an "Agent
+   activity" is opened (or Focus view switched off). All marked, then all read,
    then all settled — one at a time, each would have the browser lay the conversation out
    again. */
 function measureRevealed(root) {
@@ -506,8 +507,8 @@ function measureRevealed(root) {
 /* ── Tool card modes ──────────────────────────────────────────────────────────────────
    Every card — an IN row, an OUT row, a result list, a diff — has its own mode, kept on the
    card as data-mode and acted on by chat.css:
-     hidden    — not shown at all: the tool line is just its header, and the arrow in front
-                 of the tool name brings the cards back
+     hidden    — not shown at all: the tool line is just its header, and the arrow after
+                 its text brings the cards back
      collapsed — one line (an IN row, an OUT row, a diff's summary), with its "View full …"
                  button on that same line
      preview   — a handful of lines, with the buttons in the card's corner: how cards looked
@@ -515,7 +516,7 @@ function measureRevealed(root) {
      expanded  — everything
    A card gets its start mode from the Preferences, per kind of tool (Java pushes them with
    onToolCardModes); a tool without a setting of its own takes the default. Its own buttons
-   change that card alone; the chevron in front of the tool name hides or shows all of the
+   change that card alone; the chevron after the tool line's text hides or shows all of the
    line's cards together. */
 const CARD_MODES = ['hidden', 'collapsed', 'preview', 'expanded'];
 let cardStartDefault = 'preview';
@@ -551,6 +552,7 @@ function syncBlock(block) {
   block.classList.toggle('all-hidden', Array.from(block.querySelectorAll(':scope > .io-item')).every(c => c.dataset.mode === 'hidden'));
 }
 function applyCardMode(card, mode) {
+  if (mode === 'expanded' && card._buildRest) card._buildRest();
   card.dataset.mode = mode;
   if (mode !== 'hidden') card._shownMode = mode;
   if (mode === 'preview' || mode === 'expanded') card._openMode = mode;
@@ -571,30 +573,45 @@ function syncLineChevron(line) {
   const chev = line.querySelector(':scope > .card-chev');
   if (chev) chev.title = open ? 'Hide input and output' : 'Show input and output';
 }
-/** A change the USER asked for, not content arriving: whether the view is still following
- *  the bottom is re-read from where it actually sits afterwards, so growing a card at the
- *  bottom isn't mistaken for new content that paneResizeObserver should follow. */
-function userChangedLayout() {
+/** A change of size the READER asked for, not content arriving: `anchor` is kept where it
+ *  stood in the view. Said outright rather than left to the browser, which holds on to
+ *  whatever it picked (Edge kept the clicked button in place as a card opened, and sent the
+ *  card's start off the top) or to nothing at all (WebKit). And whether the view still
+ *  follows the bottom is read again from where it now sits, in the same tick — or
+ *  paneResizeObserver would take a card opened at the bottom for new content and go
+ *  after it. */
+function readerResized(anchor, change) {
+  const was = anchor.getBoundingClientRect().top;
+  change();
+  const moved = anchor.getBoundingClientRect().top - was;
+  if (moved) messagesEl.scrollTop += moved;
   followTail = isNearBottom();
   updateJumpToLatest();
 }
+/** Opening, or with its start in view, the card's top stays where it is. Closing one
+ *  whose start is off the top, the button that was clicked does: it comes up with the
+ *  card's end. */
 function userSetCardMode(card, mode) {
-  applyCardMode(card, mode);
-  userChangedLayout();
+  const grows = CARD_MODES.indexOf(mode) > CARD_MODES.indexOf(card.dataset.mode);
+  const topShows = card.getBoundingClientRect().top >= messagesEl.getBoundingClientRect().top;
+  const bar = card.querySelector(':scope > .card-bar');
+  readerResized(grows || topShows || !bar ? card : bar, () => applyCardMode(card, mode));
 }
-/** The chevron in front of the tool name — present only once the line has a card to hide.
- *  It acts on every card of the line: hides them all, or brings each back to the view it
- *  was last shown in. */
+/** The chevron after the tool line's own text, where the view's other folds have theirs —
+ *  present only once the line has a card to hide. It acts on every card of the line:
+ *  hides them all, or brings each back to the view it was last shown in. */
 function ensureCardChevron(line) {
   if (line.querySelector(':scope > .card-chev') || !line.querySelector(CARD_SELECTOR)) return;
   const chev = document.createElement('span');
   chev.className = 'card-chev'; chev.innerHTML = ICONS.CHEVRON;
   chev.onclick = () => {
     const hide = line.dataset.cards !== 'closed';
-    line.querySelectorAll(CARD_SELECTOR).forEach(c => applyCardMode(c, hide ? 'hidden' : (c._shownMode || 'preview')));
-    userChangedLayout();
+    readerResized(chev, () => {
+      line.querySelectorAll(CARD_SELECTOR).forEach(c => applyCardMode(c, hide ? 'hidden' : (c._shownMode || 'preview')));
+    });
   };
-  line.insertBefore(chev, line.querySelector(':scope > .tname'));
+  // The line's own text is its spans; what follows them is laid out below.
+  line.insertBefore(chev, [].find.call(line.children, c => c.tagName === 'DIV') || null);
   syncLineChevron(line);
 }
 /** A card's buttons. Which of them show follows from the card's own mode alone (chat.css): the
@@ -617,44 +634,74 @@ function makeCardBar(card, label, getFullText, total, over) {
   add('cb-view', label, () => { if (window._openTextInEditor) window._openTextInEditor(getFullText()); });
   return bar;
 }
-/** Measures each of the line's cards ONCE, against the preview height whatever mode is
- *  showing, and gives every card its buttons (a hidden one waits until it is first shown).
- *  Synchronous once the line is in the page, so a card has its final height before anything
- *  scrolls to it; a line still being built off-page (history rebuilds whole turns first)
- *  waits one frame instead, and one in a turn that is out of sight waits until it shows
- *  (measureRevealed). */
-function settleCards(line) {
-  if (!line.isConnected) { requestAnimationFrame(() => { if (line.isConnected) settleCards(line); }); return; }
-  if (!line.getClientRects().length) {
-    const turn = line.closest('.pane > *');
-    if (turn && !turn.getClientRects().length) {
-      line._measure = { mark() {}, overflows() {}, settle() { settleCards(line); } };
-      line.classList.add('unmeasured');
-      return;
+/** One card's measurement, in measureWhenShown's three steps: against the preview height,
+ *  whatever mode is showing. */
+function cardMeasurement(card) {
+  const blk = card.parentElement.classList.contains('io-block') ? card.parentElement : null;
+  let mode;
+  return {
+    mark() {
+      mode = card.dataset.mode;
+      card.dataset.mode = 'preview';
+      if (blk) blk.classList.remove('all-hidden');   // a hidden box has no layout to measure
+      card.classList.add('capped');
+    },
+    overflows() { const pre = card.querySelector('pre'); return pre.scrollHeight > pre.clientHeight + 2; },
+    settle(over) {
+      if (!over) card.classList.remove('capped');
+      card.dataset.mode = mode;
+      if (blk) syncBlock(blk);
+      card.appendChild(makeCardBar(card, 'View full ' + card.dataset.kind, card._fullText, null, over));
     }
+  };
+}
+/** Measures each of the line's cards ONCE and gives every card its buttons (a hidden one
+ *  waits until it is first shown). Synchronous once the line is in the page, so a card has
+ *  its final height before anything scrolls to it; lines still being built off-page
+ *  (history rebuilds whole turns first) wait one frame and are then done together. */
+let linesToSettle = null;
+function settleCards(line) {
+  if (line.isConnected) { settleLines([line]); return; }
+  if (!linesToSettle) {
+    linesToSettle = [];
+    requestAnimationFrame(() => {
+      const lines = linesToSettle; linesToSettle = null;
+      settleLines(lines.filter(l => l.isConnected));
+    });
   }
-  line.querySelectorAll(':scope > .io-block > .io-item, :scope > .code-block.edit').forEach(card => {
-    if (card._settled || card.dataset.mode === 'hidden') return;
-    card._settled = true;
-    const pre = card.querySelector('pre'), mode = card.dataset.mode;
-    const blk = card.parentElement.classList.contains('io-block') ? card.parentElement : null;
-    card.dataset.mode = 'preview';
-    if (blk) blk.classList.remove('all-hidden');   // a hidden box has no layout to measure
-    card.classList.add('capped');
-    const over = pre.scrollHeight > pre.clientHeight + 2;
-    if (!over) card.classList.remove('capped');
-    card.dataset.mode = mode;
-    if (blk) syncBlock(blk);
-    card.appendChild(makeCardBar(card, 'View full ' + card.dataset.kind, card._fullText, null, over));
+  if (linesToSettle.indexOf(line) < 0) linesToSettle.push(line);
+}
+/** What needs no size first — a result list's buttons (it is capped by row count, and
+ *  overflows when rows are held back) and the line's chevron, so that a line whose cards
+ *  start hidden can always be opened. Then the cards: all marked, all read, all settled,
+ *  one layout for the lot. A card whose line has no size — its tab is not in front, or it
+ *  sits under "Messages before compaction", a closed Focus view fold or a closed "Agent
+ *  activity" — would be taken for short and never cut: it waits, as measureWhenShown's
+ *  blocks do, and is measured when it shows (measureRevealed). */
+function settleLines(lines) {
+  const ready = [];
+  lines.forEach(line => {
+    line.querySelectorAll(':scope > .result-list').forEach(list => {
+      if (list._settled) return;
+      list._settled = true;
+      const more = Number(list.dataset.total) > list.querySelectorAll(':scope > .result-item:not(.extra)').length;
+      list.classList.toggle('capped', more);
+      list.appendChild(makeCardBar(list, 'View full output', list._fullText, list.dataset.total, more));
+    });
+    ensureCardChevron(line);
+    syncLineChevron(line);
+    const shows = line.getClientRects().length > 0;
+    line.querySelectorAll(':scope > .io-block > .io-item, :scope > .code-block.edit').forEach(card => {
+      if (card._settled || card.dataset.mode === 'hidden') return;
+      card._settled = true;
+      const measurement = cardMeasurement(card);
+      if (shows) ready.push(measurement);
+      else { card._measure = measurement; card.classList.add('unmeasured'); }
+    });
   });
-  // A result list is capped by row count, not height: it overflows when rows are held back.
-  line.querySelectorAll(':scope > .result-list').forEach(list => {
-    if (list._settled) return;
-    list._settled = true;
-    list.appendChild(makeCardBar(list, 'View full output', list._fullText, list.dataset.total, !!list.querySelector('.result-item.extra')));
-  });
-  ensureCardChevron(line);
-  syncLineChevron(line);
+  ready.forEach(m => m.mark());
+  const over = ready.map(m => m.overflows());
+  ready.forEach((m, i) => m.settle(over[i]));
 }
 /** Parses one line of tool-result text for a leading "path:line[:col]" prefix (grep -n /
  *  ripgrep / JDT reference style). Returns null when the line doesn't look like a hit,
@@ -722,18 +769,18 @@ function contentRowParser(lines, targetFile) {
 }
 /** Builds the clickable result-list for search/reference/diagnostic-shaped output
  *  (RESULT_LIST_TOOLS). Same principle as settleCards but for discrete rows rather than a
- *  <pre>: the rows past a handful are built but held back (.extra, chat.css) until the line
- *  is expanded, and settleCards gives the list its buttons when there are any. */
+ *  <pre>: a handful of rows, the rest brought in (.extra) when the list is expanded, and
+ *  settleCards gives the list its buttons when there are any. */
 function buildResultList(text, root, targetFile, contentRows, startMode) {
   const lines = text.split('\n').filter(l => l.trim());
   if (!lines.length) return null;
-  const MAX_ROWS = 5, HARD_MAX = 200;
+  const MAX_ROWS = 5;
   const list = newCard(document.createElement('div'), startMode); list.className = 'result-list';
   // Built from ALL the lines, not just the rows shown: a context line can come before its match.
   const parse = contentRows ? contentRowParser(lines, targetFile) : parseResultLine;
-  lines.slice(0, HARD_MAX).forEach((l, i) => {
+  const makeRow = l => {
     const parsed = parse(l);
-    const row = document.createElement('div'); row.className = 'result-item' + (i >= MAX_ROWS ? ' extra' : '');
+    const row = document.createElement('div'); row.className = 'result-item';
     if (parsed && window._openFileInEditor) {
       row.classList.add('clickable');
       row.textContent = parsed.file;
@@ -744,11 +791,22 @@ function buildResultList(text, root, targetFile, contentRows, startMode) {
     } else {
       row.textContent = l;
     }
-    list.appendChild(row);
-  });
+    return row;
+  };
+  lines.slice(0, MAX_ROWS).forEach(l => list.appendChild(makeRow(l)));
   list._fullText = () => text;
   list.dataset.total = String(lines.length);
-  list.appendChild(makeCopyBtn(() => text));   // full result text, not just the rows shown
+  const copy = makeCopyBtn(() => text);   // full result text, not just the rows shown
+  list.appendChild(copy);
+  // Every row past the handful, built the first time the list is shown in full
+  // (applyCardMode): "Show all (N)" then shows N, and a list nobody opens costs five rows.
+  if (lines.length > MAX_ROWS) {
+    list._buildRest = () => {
+      list._buildRest = null;
+      lines.slice(MAX_ROWS).forEach(l => { const row = makeRow(l); row.classList.add('extra'); list.insertBefore(row, copy); });
+    };
+    if (startMode === 'expanded') list._buildRest();
+  }
   return list;
 }
 /** Structured checklist for TodoWrite — its meaningful payload is the INPUT
@@ -912,7 +970,10 @@ function makeAgentLogSection() {
   const wrap = document.createElement('div'); wrap.className = 'agent-log';
   wrap.innerHTML = '<div class="agent-log-head"><span class="chev">' + ICONS.CHEVRON + '</span>'
       + '<span class="agent-log-label">Agent activity</span></div><div class="agent-log-body"></div>';
-  wrap.querySelector('.agent-log-head').onclick = () => wrap.classList.toggle('open');
+  wrap.querySelector('.agent-log-head').onclick = () => {
+    // Cards drawn under it while it was closed had no size to be cut to.
+    if (wrap.classList.toggle('open')) measureRevealed(wrap);
+  };
   return wrap;
 }
 // Tools whose input is fully represented some other way (a diff block, the description
@@ -1180,7 +1241,7 @@ function renderToolOutput(line, key, text) {
   if (stale) stale.remove();
   if (RESULT_LIST_TOOLS.has(key)) {
     const resultList = buildResultList(text, rootPathOf(activeTab()), line.dataset.tpath || '', line.dataset.tcontent === '1', startModeFor(key));
-    if (resultList) { resultList.classList.add('out'); line.appendChild(resultList); }
+    if (resultList) { resultList.classList.add('out'); line.appendChild(resultList); joinHiddenLine(line, resultList); }
     return;
   }
   // Joins into the SAME box as an existing IN row (matches VSCode's single bordered
@@ -1193,7 +1254,16 @@ function renderToolOutput(line, key, text) {
     line.appendChild(block);
     line._ioBlock = block;
   }
-  appendIoRow(block, 'OUT', text, startModeFor(key)).classList.add('out');
+  const out = appendIoRow(block, 'OUT', text, startModeFor(key));
+  out.classList.add('out');
+  joinHiddenLine(line, out);
+}
+/** A card that lands on a line whose cards the reader has hidden with its chevron is
+ *  hidden with them; the chevron brings it back in the view it would have started in. */
+function joinHiddenLine(line, card) {
+  // By the cards themselves, not data-cards: a line with no card yet reads as closed too.
+  const others = [].filter.call(line.querySelectorAll(CARD_SELECTOR), c => c !== card);
+  if (others.length && others.every(c => c.dataset.mode === 'hidden') && card.dataset.mode !== 'hidden') applyCardMode(card, 'hidden');
 }
 /* Minimal LCS line diff (guarded against pathological sizes). */
 function lineDiff(oldStr, newStr) {
@@ -1262,8 +1332,15 @@ function buildToolDiff(name, input, startMode) {
   const fullText = () => rows.map(r => (r[0] === 'add' ? '+ ' : r[0] === 'del' ? '- ' : '  ') + r[1]).join('\n');
   block.appendChild(pre);
   block.appendChild(makeCopyBtn(fullText));
-  // Measured against the preview cap by settleCards — which also covers a diff past
-  // HARD_MAX, whose rows beyond it are only in fullText.
+  if (rows.length > HARD_MAX) {
+    // Rows past HARD_MAX were never put in the DOM at all: shown in full, the diff ends
+    // in a line that says how many are missing and opens them (chat.css .diff-rest).
+    const rest = document.createElement('div'); rest.className = 'diff-rest';
+    rest.textContent = '⋯ ' + (rows.length - HARD_MAX) + ' more line' + (rows.length - HARD_MAX > 1 ? 's' : '') + ' — view full diff';
+    rest.onclick = () => { if (window._openTextInEditor) window._openTextInEditor(fullText()); };
+    block.appendChild(rest);
+  }
+  // Measured against the preview cap by settleCards.
   block.dataset.kind = 'diff';
   block._fullText = fullText;
   const parts = [];

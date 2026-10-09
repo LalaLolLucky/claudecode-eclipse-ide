@@ -364,7 +364,7 @@
 .io-block pre { flex: 1; min-width: 0; margin: 0; padding: 7px 30px 7px 0; white-space: pre-wrap;
   word-break: break-word; font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px;
   color: var(--fg-soft); line-height: 1.5; }
-/* Capped by JS (capIfOverflowing in chat.js) via this max-height — NOT by hand-picking
+/* Capped by JS (settleCards in chat.js) via this max-height — NOT by hand-picking
    which tools are "short"; a row whose real scrollHeight fits under this never gets a
    footer. Scoped to .io-item (one row), not the outer .io-block — joined IN+OUT rows cap
    independently, so a short IN alongside a long OUT doesn't force both to the same height. */
@@ -397,7 +397,8 @@
    applied once a card is measured to overflow); "expanded" lifts those caps; "collapsed"
    takes the card down to one line; "hidden" removes it, leaving the tool line's header. The
    chevron's own state (data-cards on the tool line) is only open or closed (every card hidden). */
-.card-chev { display: inline-flex; vertical-align: middle; margin: 0 4px 0 -4px; padding: 2px;
+/* After the line's own text, where the view's other folds have theirs (.tool-fold .tf-chev). */
+.card-chev { display: inline-flex; vertical-align: middle; margin: 0 0 0 4px; padding: 2px;
   cursor: pointer; color: var(--fg-dim); opacity: .8; transition: transform .15s; }
 .card-chev:hover { opacity: 1; color: var(--fg); }
 .tool-line:not([data-cards="closed"]) > .card-chev { transform: rotate(90deg); }
@@ -439,6 +440,16 @@
   background: linear-gradient(transparent, var(--bg-code)); pointer-events: none; }
 
 .result-list:not([data-mode="expanded"]) .result-item.extra { display: none; }
+/* Where nothing fades under the buttons they would sit on the text itself — the last line
+   of a card shown in full, the last row of a result list — so those leave them a strip. */
+.io-item[data-mode="expanded"].capped pre, .code-block[data-mode="expanded"].capped pre { padding-bottom: 30px; }
+.result-list.capped[data-mode="preview"], .result-list.capped[data-mode="expanded"] { padding-bottom: 30px; }
+/* A diff too long to be drawn whole (chat.js buildToolDiff): shown in full, it ends in the
+   line that says how many rows are missing and opens them. */
+.diff-rest { display: none; text-align: center; padding: 4px; font-size: 11px; color: var(--fg-faint);
+  cursor: pointer; border-top: 1px solid var(--border-soft); }
+.diff-rest:hover { color: var(--fg-soft); }
+.code-block.edit[data-mode="expanded"] > .diff-rest { display: block; margin-bottom: 30px; }
 .io-item[data-mode="expanded"].capped pre,
 .code-block[data-mode="expanded"].capped pre { max-height: none; overflow-y: visible; }
 
@@ -515,7 +526,7 @@ code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; 
 .code-block .cb-head .copy { color: var(--fg-dim); cursor: pointer; padding: 3px; border-radius: 4px; }
 .code-block .cb-head .copy:hover { background: var(--bg-hover); color: var(--fg); }
 .code-block pre { padding: 2px 0 10px; overflow-x: auto; font-size: 12px; line-height: 1.5; }
-/* Visual cap (~7 lines) applied by capIfOverflowing (chat.js) once the diff is actually
+/* Visual cap (~7 lines) applied by settleCards (chat.js) once the diff is actually
    measured to overflow it — a 100-line Write/Edit must not grow the card to 100 lines just
    because it's short of buildToolDiff's separate hard MAX row-count safety limit.
    overflow-y specifically, NOT the overflow shorthand: the rule above already needs
