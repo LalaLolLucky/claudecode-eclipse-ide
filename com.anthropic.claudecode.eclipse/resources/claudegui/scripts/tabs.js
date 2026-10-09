@@ -310,9 +310,10 @@ function placeRestoredTab(t, rs, readerMoved) {
     if (settleWatchStop) settleWatchStop();
     messagesEl.scrollTop = rs.scrollTop;
     t.scrollTop = messagesEl.scrollTop;
-    // Only meaningful while the lock is armed; with it off the transcript follows
-    // unconditionally and followTail is forced true on every switch anyway.
-    if (scrollLocked) { followTail = false; t.followTail = false; }
+    // Set here, lock armed or not, rather than left to the 'scroll' event this write fires:
+    // that event comes a frame on, and a block sizing itself in THIS frame would have
+    // paneResizeObserver (chat.js) read the view as still following and pin it to the bottom.
+    followTail = false; t.followTail = false;
     if (typeof updatePinnedPrompt === 'function') updatePinnedPrompt();
     updateJumpToLatest();
   });
