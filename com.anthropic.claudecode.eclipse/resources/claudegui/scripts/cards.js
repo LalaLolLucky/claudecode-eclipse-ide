@@ -426,13 +426,13 @@ window.onAskQuestion = function(tabId, reqId, questionsJson) {
       // from scrollHeight leaves the box short by exactly the border, so it overflows by 2px
       // at every size and shows a scrollbar that never goes away. offsetHeight - clientHeight
       // is that border. The composer doesn't need this: #input has no padding or border.
-      const grow = () => {
+      const grow = () => measuringTextarea(inp, () => {
         inp.style.height = 'auto';
         const natural = inp.scrollHeight + (inp.offsetHeight - inp.clientHeight);
         inp.style.height = Math.min(natural, 160) + 'px';
         // Only scroll once the answer is genuinely taller than the cap.
         inp.style.overflowY = natural > 160 ? 'auto' : 'hidden';
-      };
+      });
       inp.oninput = () => { state[activeQ].other = inp.value; submit.classList.toggle('ready', allAnswered()); grow(); };
       inp.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finish(); } };
       oin.appendChild(inp); card.appendChild(oin);

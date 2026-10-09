@@ -175,6 +175,7 @@ function createTab(opts) {
   const pane = document.createElement('div'); pane.className = 'pane'; pane.dataset.id = id;
   pane.innerHTML = WELCOME_HTML();
   messagesEl.appendChild(pane);
+  observePane(pane);
   // Per-conversation model/effort/thinking (VSCode-style). A NEW tab starts at the
   // DEFAULTS (not whatever the last-viewed convo used); each tab then remembers its
   // own. Defaults: high effort, thinking off, the user's configured default model.
@@ -224,8 +225,10 @@ function switchTab(id) {
   if (t) {
     applyTabSettings(t);   // restore this conversation's model/effort/thinking
     input.value = t.draft || '';                                    // restore this tab's draft
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 160) + 'px';  // resize to the draft
+    measuringTextarea(input, () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 160) + 'px';  // resize to the draft
+    });
   }
   if (typeof renderBottomCard === 'function') renderBottomCard();   // card only in its own tab
   if (typeof renderPendingImages === 'function') renderPendingImages();  // this tab's pasted-image chips
@@ -266,7 +269,8 @@ function switchTab(id) {
   // Explicit, not left to the 'scroll' event this write may fire: a write landing on a
   // position the container already holds (e.g. switching back to a tab left at the exact
   // same spot) is a no-op that fires nothing — same reasoning as the followTail line above.
-  if (typeof updatePinnedPrompt === 'function') updatePinnedPrompt();
+  // A tab left at the tail comes back at it: pinning its prompt moves the bottom, so scroll again.
+  if (typeof updatePinnedPrompt === 'function' && updatePinnedPrompt() && followTail) messagesEl.scrollTop = messagesEl.scrollHeight;
   // What was drawn into this tab while it was not showing has had no size to be measured
   // by, and a conversation that was coming in when it was left goes on from there.
   if (t && typeof measureRevealed === 'function') measureRevealed(t.pane);

@@ -1116,10 +1116,9 @@ function drawOpened(t, opening, got, inOneGo) {
     // a restore rendering a background tab must not yank the view.
     if (t === activeTab()) {
       const pinBottom = () => {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        pinToBottom();
         followTail = true;   // set directly: a write to the position already held fires no scroll event
         updateJumpToLatest();
-        updatePinnedPrompt();
       };
       pinBottom();
       holdBottomWhileSettling(t, pinBottom);

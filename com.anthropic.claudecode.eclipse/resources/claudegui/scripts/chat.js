@@ -93,6 +93,32 @@ messagesEl.addEventListener('scroll', () => {
   followTail = isNearBottom(); updateJumpToLatest();
   updatePinnedPrompt();
 });
+/* Content that grows AFTER the view was already scrolled to the bottom — a card capped by
+   capIfOverflowing a frame after it was inserted (its "View full…" hint adds a row), an image
+   finishing its load — leaves the view short of the bottom by exactly that growth. The
+   'scroll' listener above then reads the gap as the user scrolling up and clears followTail,
+   and with Scroll Lock armed the transcript stops following for good. Observing each pane's
+   size re-pins in the SAME frame as the growth (a ResizeObserver runs after layout and before
+   the next scroll event is dispatched), so the gap is closed before anything can read it. Acts
+   only while followTail says the view was following, and only on growth of the pane on screen:
+   a pane first reporting a height when its tab is shown again is the tab appearing, and
+   switchTab restores that pane's own scroll position. */
+const paneHeights = new WeakMap();
+const paneResizeObserver = new ResizeObserver(entries => {
+  const t = activeTab();
+  entries.forEach(e => {
+    const h = e.contentRect.height, prev = paneHeights.get(e.target) || 0;
+    paneHeights.set(e.target, h);
+    if (!t || e.target !== t.pane || !prev || h <= prev || !followTail) return;
+    pinToBottom();
+  });
+});
+function observePane(pane) { paneResizeObserver.observe(pane); }
+/* The transcript's own box shrinks when something appears below it — the usage card, the browser
+   banner, the composer growing as a multi-line message is typed — and with nothing arriving the
+   view would stay where it was, its last lines cut off until the next one streams in. Following
+   the bottom means following that too. */
+new ResizeObserver(() => { if (followTail) pinToBottom(); }).observe(messagesEl);
 /** Exactly ONE user turn is ever pinned at a time — the most recent one that has already
  *  scrolled up to (or past) #messages' own top edge. Plain CSS `position: sticky` on every
  *  user turn independently can't express this: two turns sharing the same `top: 0` each
@@ -103,7 +129,7 @@ messagesEl.addEventListener('scroll', () => {
  *  hand (a `.pinned-prompt` class chat.css keys `position: sticky` off, in place of a blanket
  *  selector matching every user turn) sidesteps that rather than fighting sticky's own math. */
 function updatePinnedPrompt() {
-  const t = activeTab(); if (!t || !t.pane) return;
+  const t = activeTab(); if (!t || !t.pane) return false;
   const turns = t.pane.querySelectorAll(':scope > .turn');
   const containerTop = messagesEl.getBoundingClientRect().top;
   let active = null;
@@ -116,19 +142,32 @@ function updatePinnedPrompt() {
     // later turn has since crossed the same threshold.
     if (turns[i].getBoundingClientRect().top <= containerTop + 1) { active = turns[i]; break; }
   }
-  turns.forEach(turn => turn.classList.toggle('pinned-prompt', turn === active));
+  let changed = false;
+  turns.forEach(turn => {
+    const on = turn === active;
+    if (turn.classList.contains('pinned-prompt') !== on) { turn.classList.toggle('pinned-prompt', on); changed = true; }
+  });
+  return changed;
+}
+/** Scrolls to the very bottom, then brings the pinned prompt up to date. Pinning a prompt
+ *  changes that turn's box (the padding in .turn.pinned-prompt), which moves the bottom: when
+ *  it did, scroll again so the view still ends exactly at the bottom. Left 10px short of it
+ *  the 'scroll' listener reads the view as scrolled away from the tail, and with Scroll Lock
+ *  armed the transcript stops following. */
+function pinToBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (updatePinnedPrompt()) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 /* The one place the transcript decides whether to move. Shared with showWorking, which
    appends outside of scrollBottom. */
 function autoScroll() {
   if (scrollLocked && !followTail) { updateJumpToLatest(); return; }
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  pinToBottom();
   // Set directly rather than left to the 'scroll' event this write may fire: when the view
   // already sits at the bottom the write is a no-op and no event arrives, which would
   // strand followTail at false and leave the button unable to retire itself.
   followTail = true;
   updateJumpToLatest();
-  updatePinnedPrompt();
 }
 /**
  * @param {boolean} [force] Jump to the bottom even when the lock is armed and the user
@@ -145,10 +184,9 @@ function scrollBottom(force) {
   // and would otherwise silently defeat every one of those actions.
   if (!force && rtab && rtab !== activeTab()) return;
   if (force) {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    pinToBottom();
     followTail = true;   // same no-op-write reasoning as autoScroll
     updateJumpToLatest();
-    updatePinnedPrompt();
     return;
   }
   autoScroll();
@@ -990,13 +1028,11 @@ function applyToolResult(payload) {
   if (info.isError) setToolError(line, info.text);
   else renderToolOutput(line, line.dataset.tname || '', info.text);
   // The result lands on a line addToolLine already scrolled to, so without this the view
-  // stopped at the tool line and only caught up when the NEXT tool started. Twice: once
-  // for the box itself, and again a frame later, after appendIoRow's deferred
-  // capIfOverflowing has capped it and added its "View full output" hint below.
-  // Pane-guarded like addSystemToPane — a background tab's result must not yank the view.
-  const followResult = () => { if (pane === (activeTab() && activeTab().pane)) scrollBottom(); };
-  followResult();
-  requestAnimationFrame(followResult);
+  // stopped at the tool line and only caught up when the NEXT tool started. Growth after
+  // this point (appendIoRow's deferred cap and its "View full output" hint) is followed by
+  // paneResizeObserver. Pane-guarded like addSystemToPane — a background tab's result must
+  // not yank the view.
+  if (pane === (activeTab() && activeTab().pane)) scrollBottom();
 }
 // Tools whose successful result is already fully represented some other way (a diff,
 // the plan-outcome tool-sub, the question card) — showing the CLI's boilerplate ack text
