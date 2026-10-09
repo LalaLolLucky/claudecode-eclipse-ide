@@ -445,7 +445,21 @@ function filterActionsSlash(query) {
 }
 function buildActionsSlash(query) { filterActionsSlash(query); }
 
-function updateSlashMenu() { closeSlash(); }
+/** The composer's text changed: a lone "/word" opens the menu filtered by the word. */
+function updateSlashMenu() {
+  const m = /^\/(\S*)$/.exec(input.value);
+  if (!m || (typeof composerShowing === 'function' && !composerShowing())) { closeSlash(); return; }
+  const menu = cmdMenuEl();
+  if (!slashState.open) {
+    closeMenus();
+    menu.classList.add('typed', 'open');
+    positionMenu(menu, document.getElementById('slash-btn'));
+    slashState.open = true;
+    requestOffers(activeTab());
+  }
+  cmdMenu.typed = true; cmdMenu.slash = true; cmdMenu.query = m[1];
+  cmdMenuRender(false);
+}
 function handleSlashKey(e) { return cmdMenuKey(e); }
 /** Closes the menu when it was opened by typing; the button's opening is closeMenus's. */
 function closeSlash() {
