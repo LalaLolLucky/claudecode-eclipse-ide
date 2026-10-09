@@ -97,6 +97,31 @@ public final class Constants {
      *  freeze, with no "user sent input" seam to hook a bypass onto. */
     public static final String PREF_SMART_SCROLL_LOCK = "smartScrollLock";
 
+    /** How the Claude Code view starts a tool's input, output and diff cards: not shown at
+     *  all ({@link #TOOL_CARDS_HIDDEN}, only the tool line, whose arrow brings them back),
+     *  down to one line each ({@link #TOOL_CARDS_COLLAPSED}), a handful of lines
+     *  ({@link #TOOL_CARDS_PREVIEW}, how they looked before this setting existed), or in
+     *  full ({@link #TOOL_CARDS_EXPANDED}). This is the default for every tool; a kind of tool
+     *  listed in {@link #TOOL_CARD_TYPES} can have its own, kept under
+     *  {@link #PREF_TOOL_CARD_MODE_PREFIX} + its id (empty meaning "the default"). Applies to
+     *  cards created afterwards; each card can still be changed from its own controls. GUI
+     *  view only — the Terminal has no cards. */
+    public static final String PREF_TOOL_CARD_MODE = "toolCardMode";
+    public static final String PREF_TOOL_CARD_MODE_PREFIX = "toolCardMode.";
+    /** The kinds of tool with a start mode of their own: {id, label}. The ids are what
+     *  claudegui's chat.js (toolCardType) sorts tools into. */
+    public static final String[][] TOOL_CARD_TYPES = {
+        { "bash", "Bash commands" },
+        { "edits", "File edits (Edit, Write, …)" },
+        { "search", "Search results (Grep, Glob, …)" },
+        { "agent", "Agents (Agent, Task)" },
+        { "web", "Web (WebFetch, WebSearch)" },
+    };
+    public static final String TOOL_CARDS_HIDDEN = "hidden";
+    public static final String TOOL_CARDS_COLLAPSED = "collapsed";
+    public static final String TOOL_CARDS_PREVIEW = "preview";
+    public static final String TOOL_CARDS_EXPANDED = "expanded";
+
     /** Give the Claude Terminal a persistent vertical scrollbar instead of the theme's overlay
      *  (auto-hiding) one. An overlay scrollbar is painted ON TOP of the terminal canvas and
      *  fades out after scrolling; GTK then damages exactly the strip it occupied, and SWT

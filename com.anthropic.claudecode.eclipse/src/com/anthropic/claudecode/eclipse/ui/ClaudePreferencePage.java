@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.eclipse.jface.dialogs.MessageDialog;
 import org.eclipse.jface.preference.BooleanFieldEditor;
+import org.eclipse.jface.preference.ComboFieldEditor;
 import org.eclipse.jface.preference.FieldEditor;
 import org.eclipse.jface.preference.FieldEditorPreferencePage;
 import org.eclipse.jface.preference.IPreferenceStore;
@@ -344,6 +345,35 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
                 "Smart Scroll Lock: still jump to the bottom for your own actions (sending a "
                         + "message, answering a card) even while Scroll Lock is on",
                 getFieldEditorParent()));
+
+        addCodeViewOption(new RadioGroupFieldEditor(
+                Constants.PREF_TOOL_CARD_MODE,
+                "Start a tool's input, output and diff cards:",
+                1,
+                new String[][] {
+                        { "Hidden (only the tool line; click its arrow to show them)", Constants.TOOL_CARDS_HIDDEN },
+                        { "Collapsed to one line", Constants.TOOL_CARDS_COLLAPSED },
+                        { "Showing a few lines", Constants.TOOL_CARDS_PREVIEW },
+                        { "Showing everything", Constants.TOOL_CARDS_EXPANDED },
+                },
+                getFieldEditorParent(),
+                true));
+
+        // One choice per kind of tool, over the one above; "Same as above" leaves a tool on it.
+        String[][] perTool = {
+                { "Same as above", "" },
+                { "Hidden", Constants.TOOL_CARDS_HIDDEN },
+                { "Collapsed to one line", Constants.TOOL_CARDS_COLLAPSED },
+                { "A few lines", Constants.TOOL_CARDS_PREVIEW },
+                { "Everything", Constants.TOOL_CARDS_EXPANDED },
+        };
+        for (String[] type : Constants.TOOL_CARD_TYPES) {
+            addCodeViewOption(new ComboFieldEditor(
+                    Constants.PREF_TOOL_CARD_MODE_PREFIX + type[0],
+                    "    " + type[1] + ":",
+                    perTool,
+                    getFieldEditorParent()));
+        }
 
         addCodeViewOption(new BooleanFieldEditor(
                 Constants.PREF_HISTORY_SHOW_TIMESTAMPS,

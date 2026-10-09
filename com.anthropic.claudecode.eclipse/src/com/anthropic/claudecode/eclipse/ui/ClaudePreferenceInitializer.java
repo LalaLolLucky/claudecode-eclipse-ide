@@ -33,6 +33,10 @@ public class ClaudePreferenceInitializer extends AbstractPreferenceInitializer {
         store.setDefault(Constants.PREF_DICTATION_MACOS, false);
         store.setDefault(Constants.PREF_SCROLL_LOCK_DEFAULT, false);
         store.setDefault(Constants.PREF_SMART_SCROLL_LOCK, false);
+        store.setDefault(Constants.PREF_TOOL_CARD_MODE, Constants.TOOL_CARDS_PREVIEW);
+        for (String[] type : Constants.TOOL_CARD_TYPES) {
+            store.setDefault(Constants.PREF_TOOL_CARD_MODE_PREFIX + type[0], "");
+        }
         store.setDefault(Constants.PREF_CLI_PERSISTENT_SCROLLBAR, true);
         store.setDefault(Constants.PREF_CLI_CTRLCLICK_HINT_DISMISSED, false);
         store.setDefault(Constants.PREF_CLI_RENAME_HINT_SHOWN, false);

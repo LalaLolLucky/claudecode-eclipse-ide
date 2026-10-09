@@ -391,17 +391,84 @@
 .result-item.clickable:hover { background: var(--bg-hover); }
 .result-item .rloc { color: var(--fg-faint); font-family: 'Cascadia Code','Consolas',monospace; font-size: 11px; margin-left: 6px; }
 
-/* "view full / +N more" footer — shared by capped IN/OUT blocks, capped diffs, and capped
-   result lists, so they can't visually drift apart from each other. No border-radius here:
-   a hardcoded "round the bottom corners" broke the moment IN/OUT joined into one box (the
-   IN item's hint is no longer the true bottom once an OUT item + divider follow it) — each
-   container (.io-block, .code-block, .result-list) clips its own true edges via its own
-   overflow:hidden + border-radius instead, so rounding only ever happens where the box
-   actually ends, not wherever a hint happens to render. */
-.more-hint { display: block; text-align: center; padding: 4px; font-size: 11px; color: var(--fg-faint);
-  cursor: pointer; border-top: 1px solid var(--border-soft); background: var(--bg-box);
-  transition: color .1s, background .1s; }
-.more-hint:hover { color: var(--fg-soft); background: var(--bg-hover); }
+/* ── Tool card modes ─────────────────────────────────────────────────────────────────
+   chat.js keeps one mode per CARD (an IN row, an OUT row, a diff, a result list) in
+   data-mode. "preview" is the capped look the cards always had (the .capped rules above,
+   applied once a card is measured to overflow); "expanded" lifts those caps; "collapsed"
+   takes the card down to one line; "hidden" removes it, leaving the tool line's header. The
+   chevron's own state (data-cards on the tool line) is only open or closed (every card hidden). */
+.card-chev { display: inline-flex; vertical-align: middle; margin: 0 4px 0 -4px; padding: 2px;
+  cursor: pointer; color: var(--fg-dim); opacity: .8; transition: transform .15s; }
+.card-chev:hover { opacity: 1; color: var(--fg); }
+.tool-line:not([data-cards="closed"]) > .card-chev { transform: rotate(90deg); }
+
+/* A card's buttons (chat.js makeCardBar): in the card's corner when it is open and overflows
+   its preview, on the card's own line when collapsed. Each button shows only in the modes it
+   leads out of — the two views a card is not in — so no JS has to relabel them. */
+.card-bar { display: none; justify-content: center; gap: 12px; padding: 4px; font-size: 11px;
+  border-top: 1px solid var(--border-soft); background: var(--bg-box); }
+.card-bar[data-over], [data-mode="collapsed"] > .card-bar { display: flex; }
+.cb-btn { display: none; color: var(--fg-faint); cursor: pointer; transition: color .1s; white-space: nowrap; }
+.cb-btn:hover { color: var(--fg-soft); text-decoration: underline; }
+[data-mode="preview"] > .card-bar .cb-collapse,
+[data-mode="preview"] > .card-bar .cb-all,
+[data-mode="expanded"] > .card-bar .cb-collapse,
+[data-mode="expanded"] > .card-bar .cb-less,
+[data-mode="collapsed"] > .card-bar[data-over] .cb-more,
+[data-mode="collapsed"] > .card-bar[data-over] .cb-all,
+[data-mode="collapsed"] > .card-bar:not([data-over]) .cb-open,
+.card-bar[data-over] .cb-view { display: inline; }
+/* A narrow view has no room on a one-line card for every button, and the text is what the
+   line is for: Show more drops off it (Show all, then Show less, still gets there). */
+@media (max-width: 520px) {
+  [data-mode="collapsed"] > .card-bar[data-over] .cb-more { display: none; }
+}
+
+/* Open (preview or expanded), the buttons ride in the card's bottom-right corner like a long
+   prompt's Show more / Show less (.clamp-toggle), instead of taking a row of their own, always
+   shown. The fade under a previewed card's cut-off text keeps them legible over it. */
+.io-item { position: relative; }
+[data-mode="preview"] > .card-bar[data-over], [data-mode="expanded"] > .card-bar[data-over] {
+  position: absolute; right: 8px; bottom: 6px; z-index: 2; gap: 6px; padding: 0; border-top: 0; background: none; }
+[data-mode="preview"] > .card-bar[data-over] .cb-btn, [data-mode="expanded"] > .card-bar[data-over] .cb-btn {
+  background: var(--bg-chip); border: 1px solid var(--border); color: var(--fg-dim); border-radius: 4px; padding: 2px 8px; }
+[data-mode="preview"] > .card-bar[data-over] .cb-btn:hover, [data-mode="expanded"] > .card-bar[data-over] .cb-btn:hover {
+  background: var(--bg-hover); color: var(--fg); text-decoration: none; }
+.io-item[data-mode="preview"].capped::after, .code-block[data-mode="preview"].capped::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1.6em;
+  background: linear-gradient(transparent, var(--bg-code)); pointer-events: none; }
+
+.result-list:not([data-mode="expanded"]) .result-item.extra { display: none; }
+.io-item[data-mode="expanded"].capped pre,
+.code-block[data-mode="expanded"].capped pre { max-height: none; overflow-y: visible; }
+
+/* collapsed: IN, OUT and a result list each take one line, a diff takes its summary line.
+   line-clamp rather than nowrap so the one line still ends in an ellipsis when it is cut. */
+.io-item[data-mode="collapsed"] { display: flex; align-items: flex-start; }
+.io-item[data-mode="collapsed"] > .io-row { flex: 1; min-width: 0; }
+.io-item[data-mode="collapsed"] .io-label { padding-top: 3px; padding-bottom: 3px; }
+.io-item[data-mode="collapsed"] pre { display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1; overflow: hidden; max-height: none; padding-top: 3px; padding-bottom: 3px; }
+[data-mode="collapsed"] > .card-bar { flex: none; border-top: 0; background: none;
+  padding: 3px 10px 3px 0; align-items: baseline; }
+
+.tool-sub.diff-sub[data-mode="collapsed"], .tool-sub.diff-sub[data-mode="hidden"] { display: inline-block; margin: 0 8px; }
+
+/* hidden: the card is gone, and so is a box that has nothing left in it. A diff's summary
+   ("Added N lines…") stays beside the tool name, as it does when the card is one line. */
+.io-item[data-mode="hidden"], .code-block.edit[data-mode="hidden"], .result-list[data-mode="hidden"],
+.io-block.all-hidden { display: none; }
+.code-block.edit[data-mode="collapsed"] { display: inline-block; margin: 0; border: 0;
+  border-radius: 0; background: none; overflow: visible; vertical-align: baseline; }
+.code-block.edit[data-mode="collapsed"] pre,
+.code-block.edit[data-mode="collapsed"] .copy-btn { display: none; }
+.code-block.edit[data-mode="collapsed"] > .card-bar { display: inline-flex; padding: 0; }
+
+.result-list[data-mode="collapsed"] { display: flex; align-items: center; padding: 0; }
+.result-list[data-mode="collapsed"] .result-item { flex: 1; min-width: 0; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.result-list[data-mode="collapsed"] .result-item:nth-child(n+2),
+.result-list[data-mode="collapsed"] .copy-btn { display: none; }
 
 /* hover-revealed copy button — shared by .io-row and the compact .tpath-wrap one-liner.
    Icon-only (ICONS.COPY, swapped for ICONS.CHECK briefly on click by copyToClipboard). */

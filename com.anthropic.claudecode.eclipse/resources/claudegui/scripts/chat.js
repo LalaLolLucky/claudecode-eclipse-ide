@@ -93,9 +93,9 @@ messagesEl.addEventListener('scroll', () => {
   followTail = isNearBottom(); updateJumpToLatest();
   updatePinnedPrompt();
 });
-/* Content that grows AFTER the view was already scrolled to the bottom — a card capped by
-   capIfOverflowing a frame after it was inserted (its "View full…" hint adds a row), an image
-   finishing its load — leaves the view short of the bottom by exactly that growth. The
+/* Content that grows AFTER the view was already scrolled to the bottom — a card whose size
+   settles a frame after it was inserted, an image finishing its load — leaves the view short
+   of the bottom by exactly that growth. The
    'scroll' listener above then reads the gap as the user scrolling up and clears followTail,
    and with Scroll Lock armed the transcript stops following for good. Observing each pane's
    size re-pins in the SAME frame as the growth (a ResizeObserver runs after layout and before
@@ -270,7 +270,7 @@ function addUserMessage(text, ctx, images, id, ts, pane, ctxTarget) {
     box.appendChild(body);
     // 2-line clamp + Show more/less (chat.css .user-msg .body.clampable) — added only once
     // attached to the DOM shows the body actually overflows two lines, same measure-then-
-    // decide reasoning as makeIoBlock's capIfOverflowing, so a short prompt never gets a
+    // decide reasoning as settleCards, so a short prompt never gets a
     // toggle with nothing behind it to expand. The class has to go on BEFORE measuring:
     // clientHeight only differs from scrollHeight once something is actually capping it —
     // measuring first (the original bug here) always saw them equal, since nothing had
@@ -467,17 +467,6 @@ function makeCopyBtn(getText) {
   btn.onclick = (e) => { e.stopPropagation(); copyToClipboard(btn, getText()); };
   return btn;
 }
-/** "View full output/diff" footer for a block whose content really overflows its CSS
- *  cap — appended lazily by capIfOverflowing() below, never up front, so short content
- *  never gets a link with nothing behind it to expand. Opens a real read-only-in-spirit
- *  editor tab (a throwaway temp file — see ClaudeGuiView#openTextInEditor), not a dialog,
- *  matching the same target VSCode uses for "view full output". */
-function makeMoreHint(label, getFullText) {
-  const hint = document.createElement('div');
-  hint.className = 'more-hint'; hint.textContent = label;
-  hint.onclick = () => { if (window._openTextInEditor) window._openTextInEditor(getFullText()); };
-  return hint;
-}
 /* Blocks that are cut short only when their content overflows — a tool's input or output,
    a diff, a long prompt — are measured a frame after they are drawn, once they are laid
    out. One drawn out of sight has no size to measure: in a tab that is not in front, or
@@ -514,22 +503,158 @@ function measureRevealed(root) {
   const cut = due.map(el => el._measure.overflows());
   due.forEach((el, i) => { const measurement = el._measure; el._measure = null; measurement.settle(cut[i]); });
 }
-/** Measures `contentEl` against `block`'s CSS-capped height AFTER layout and only then
- *  appends a more-hint — the cap itself is pure CSS (.io-block.capped), this just decides
- *  whether there's anything to expand. Called once per block, when it is made; the
- *  measuring waits for the block to be laid out (measureWhenShown). */
-function capIfOverflowing(block, contentEl, label, getFullText) {
-  measureWhenShown(block, {
-    mark: () => block.classList.add('capped'),
-    // Reading scrollHeight forces layout — fine here since this runs once per new block,
-    // not per streamed chunk (chat.js's autoScroll doc comment explains why THAT path
-    // avoids it).
-    overflows: () => contentEl.scrollHeight > contentEl.clientHeight + 2,
-    settle: cut => {
-      if (cut) block.appendChild(makeMoreHint(label, getFullText));
-      else block.classList.remove('capped');
+/* ── Tool card modes ──────────────────────────────────────────────────────────────────
+   Every card — an IN row, an OUT row, a result list, a diff — has its own mode, kept on the
+   card as data-mode and acted on by chat.css:
+     hidden    — not shown at all: the tool line is just its header, and the arrow in front
+                 of the tool name brings the cards back
+     collapsed — one line (an IN row, an OUT row, a diff's summary), with its "View full …"
+                 button on that same line
+     preview   — a handful of lines, with the buttons in the card's corner: how cards looked
+                 before modes existed
+     expanded  — everything
+   A card gets its start mode from the Preferences, per kind of tool (Java pushes them with
+   onToolCardModes); a tool without a setting of its own takes the default. Its own buttons
+   change that card alone; the chevron in front of the tool name hides or shows all of the
+   line's cards together. */
+const CARD_MODES = ['hidden', 'collapsed', 'preview', 'expanded'];
+let cardStartDefault = 'preview';
+let cardStartByType = {};
+window.onToolCardModes = function(json) {
+  let o; try { o = JSON.parse(json); } catch (e) { return; }
+  if (CARD_MODES.includes(o.default)) cardStartDefault = o.default;
+  cardStartByType = {};
+  Object.keys(o.types || {}).forEach(k => { if (CARD_MODES.includes(o.types[k])) cardStartByType[k] = o.types[k]; });
+};
+/** The kind of tool a preference is kept for ('' = none of the listed kinds: the default). */
+function toolCardType(key) {
+  if (AGENT_KEYS.has(key)) return 'agent';
+  if (key === 'bash') return 'bash';
+  if (key === 'write' || key === 'edit' || key === 'multiedit' || key === 'notebookedit') return 'edits';
+  if (RESULT_LIST_TOOLS.has(key)) return 'search';
+  if (key === 'webfetch' || key === 'websearch') return 'web';
+  return '';
+}
+function startModeFor(key) { return cardStartByType[toolCardType(key)] || cardStartDefault; }
+/** Selects the line's cards that have something to collapse. */
+const CARD_SELECTOR = ':scope > .io-block > .io-item, :scope > .result-list, :scope > .code-block.edit';
+/** Gives a freshly built card its start mode. _shownMode is the view the arrow brings it back
+ *  to after hiding it; _openMode the one "Show" opens a one-line card to. */
+function newCard(card, startMode) {
+  card.dataset.mode = startMode;
+  card._shownMode = startMode === 'hidden' ? 'preview' : startMode;
+  card._openMode = startMode === 'expanded' ? 'expanded' : 'preview';
+  return card;
+}
+/** An IN/OUT box with nothing in it showing would be an empty bordered rectangle. */
+function syncBlock(block) {
+  block.classList.toggle('all-hidden', Array.from(block.querySelectorAll(':scope > .io-item')).every(c => c.dataset.mode === 'hidden'));
+}
+function applyCardMode(card, mode) {
+  card.dataset.mode = mode;
+  if (mode !== 'hidden') card._shownMode = mode;
+  if (mode === 'preview' || mode === 'expanded') card._openMode = mode;
+  if (card.parentElement && card.parentElement.classList.contains('io-block')) syncBlock(card.parentElement);
+  // A card that started hidden was never measured (nothing to size, nothing to see); it is the
+  // first time it is shown that it gets its cap and its buttons.
+  if (mode !== 'hidden' && !card._settled) { const l = card.closest('.tool-line'); if (l) settleCards(l); }
+  // A diff's "Added N lines" line sits beside its card, so it follows the card's mode.
+  const sub = card.previousElementSibling;
+  if (sub && sub.classList.contains('diff-sub')) sub.dataset.mode = mode;
+  const line = card.closest('.tool-line');
+  if (line) syncLineChevron(line);
+}
+/** The chevron shows the line as open while any of its cards is shown. */
+function syncLineChevron(line) {
+  const open = Array.from(line.querySelectorAll(CARD_SELECTOR)).some(c => c.dataset.mode !== 'hidden');
+  line.dataset.cards = open ? 'open' : 'closed';
+  const chev = line.querySelector(':scope > .card-chev');
+  if (chev) chev.title = open ? 'Hide input and output' : 'Show input and output';
+}
+/** A change the USER asked for, not content arriving: whether the view is still following
+ *  the bottom is re-read from where it actually sits afterwards, so growing a card at the
+ *  bottom isn't mistaken for new content that paneResizeObserver should follow. */
+function userChangedLayout() {
+  followTail = isNearBottom();
+  updateJumpToLatest();
+}
+function userSetCardMode(card, mode) {
+  applyCardMode(card, mode);
+  userChangedLayout();
+}
+/** The chevron in front of the tool name — present only once the line has a card to hide.
+ *  It acts on every card of the line: hides them all, or brings each back to the view it
+ *  was last shown in. */
+function ensureCardChevron(line) {
+  if (line.querySelector(':scope > .card-chev') || !line.querySelector(CARD_SELECTOR)) return;
+  const chev = document.createElement('span');
+  chev.className = 'card-chev'; chev.innerHTML = ICONS.CHEVRON;
+  chev.onclick = () => {
+    const hide = line.dataset.cards !== 'closed';
+    line.querySelectorAll(CARD_SELECTOR).forEach(c => applyCardMode(c, hide ? 'hidden' : (c._shownMode || 'preview')));
+    userChangedLayout();
+  };
+  line.insertBefore(chev, line.querySelector(':scope > .tname'));
+  syncLineChevron(line);
+}
+/** A card's buttons. Which of them show follows from the card's own mode alone (chat.css): the
+ *  two views it is not in — Collapse, Show more / Show less (the preview, from below / from
+ *  above) and Show all — and "View full …", which opens an editor tab. A card that fits its
+ *  preview whole (`over` false) has no less/all to choose between, so its bar offers just
+ *  "Show", and only while collapsed: open, it takes no row at all. */
+function makeCardBar(card, label, getFullText, total, over) {
+  const bar = document.createElement('div'); bar.className = 'card-bar';
+  if (over) bar.dataset.over = '1';
+  const add = (cls, text, onclick) => {
+    const b = document.createElement('span'); b.className = 'cb-btn ' + cls; b.textContent = text; b.onclick = onclick;
+    bar.appendChild(b);
+  };
+  add('cb-collapse', 'Collapse', () => userSetCardMode(card, 'collapsed'));
+  add('cb-more', 'Show more', () => userSetCardMode(card, 'preview'));   // collapsed → the preview
+  add('cb-less', 'Show less', () => userSetCardMode(card, 'preview'));   // full → the preview
+  add('cb-all', 'Show all' + (total ? ' (' + total + ')' : ''), () => userSetCardMode(card, 'expanded'));
+  add('cb-open', 'Show', () => userSetCardMode(card, card._openMode || 'preview'));
+  add('cb-view', label, () => { if (window._openTextInEditor) window._openTextInEditor(getFullText()); });
+  return bar;
+}
+/** Measures each of the line's cards ONCE, against the preview height whatever mode is
+ *  showing, and gives every card its buttons (a hidden one waits until it is first shown).
+ *  Synchronous once the line is in the page, so a card has its final height before anything
+ *  scrolls to it; a line still being built off-page (history rebuilds whole turns first)
+ *  waits one frame instead, and one in a turn that is out of sight waits until it shows
+ *  (measureRevealed). */
+function settleCards(line) {
+  if (!line.isConnected) { requestAnimationFrame(() => { if (line.isConnected) settleCards(line); }); return; }
+  if (!line.getClientRects().length) {
+    const turn = line.closest('.pane > *');
+    if (turn && !turn.getClientRects().length) {
+      line._measure = { mark() {}, overflows() {}, settle() { settleCards(line); } };
+      line.classList.add('unmeasured');
+      return;
     }
+  }
+  line.querySelectorAll(':scope > .io-block > .io-item, :scope > .code-block.edit').forEach(card => {
+    if (card._settled || card.dataset.mode === 'hidden') return;
+    card._settled = true;
+    const pre = card.querySelector('pre'), mode = card.dataset.mode;
+    const blk = card.parentElement.classList.contains('io-block') ? card.parentElement : null;
+    card.dataset.mode = 'preview';
+    if (blk) blk.classList.remove('all-hidden');   // a hidden box has no layout to measure
+    card.classList.add('capped');
+    const over = pre.scrollHeight > pre.clientHeight + 2;
+    if (!over) card.classList.remove('capped');
+    card.dataset.mode = mode;
+    if (blk) syncBlock(blk);
+    card.appendChild(makeCardBar(card, 'View full ' + card.dataset.kind, card._fullText, null, over));
   });
+  // A result list is capped by row count, not height: it overflows when rows are held back.
+  line.querySelectorAll(':scope > .result-list').forEach(list => {
+    if (list._settled) return;
+    list._settled = true;
+    list.appendChild(makeCardBar(list, 'View full output', list._fullText, list.dataset.total, !!list.querySelector('.result-item.extra')));
+  });
+  ensureCardChevron(line);
+  syncLineChevron(line);
 }
 /** Parses one line of tool-result text for a leading "path:line[:col]" prefix (grep -n /
  *  ripgrep / JDT reference style). Returns null when the line doesn't look like a hit,
@@ -596,18 +721,19 @@ function contentRowParser(lines, targetFile) {
   };
 }
 /** Builds the clickable result-list for search/reference/diagnostic-shaped output
- *  (RESULT_LIST_TOOLS). Capped to a handful of rows + "+N more" into the full text,
- *  same principle as capIfOverflowing but for discrete rows rather than a <pre>. */
-function buildResultList(text, root, targetFile, contentRows) {
+ *  (RESULT_LIST_TOOLS). Same principle as settleCards but for discrete rows rather than a
+ *  <pre>: the rows past a handful are built but held back (.extra, chat.css) until the line
+ *  is expanded, and settleCards gives the list its buttons when there are any. */
+function buildResultList(text, root, targetFile, contentRows, startMode) {
   const lines = text.split('\n').filter(l => l.trim());
   if (!lines.length) return null;
-  const MAX_ROWS = 5;
-  const list = document.createElement('div'); list.className = 'result-list';
+  const MAX_ROWS = 5, HARD_MAX = 200;
+  const list = newCard(document.createElement('div'), startMode); list.className = 'result-list';
   // Built from ALL the lines, not just the rows shown: a context line can come before its match.
   const parse = contentRows ? contentRowParser(lines, targetFile) : parseResultLine;
-  lines.slice(0, MAX_ROWS).forEach(l => {
+  lines.slice(0, HARD_MAX).forEach((l, i) => {
     const parsed = parse(l);
-    const row = document.createElement('div'); row.className = 'result-item';
+    const row = document.createElement('div'); row.className = 'result-item' + (i >= MAX_ROWS ? ' extra' : '');
     if (parsed && window._openFileInEditor) {
       row.classList.add('clickable');
       row.textContent = parsed.file;
@@ -620,10 +746,9 @@ function buildResultList(text, root, targetFile, contentRows) {
     }
     list.appendChild(row);
   });
-  if (lines.length > MAX_ROWS) {
-    list.appendChild(makeMoreHint('+' + (lines.length - MAX_ROWS) + ' more — view all', () => text));
-  }
-  list.appendChild(makeCopyBtn(() => text));   // full result text, not just the capped rows shown
+  list._fullText = () => text;
+  list.dataset.total = String(lines.length);
+  list.appendChild(makeCopyBtn(() => text));   // full result text, not just the rows shown
   return list;
 }
 /** Structured checklist for TodoWrite — its meaningful payload is the INPUT
@@ -650,26 +775,25 @@ function buildTodoChecklist(input) {
  *  later OUT — render as a single bordered card with a divider between them (matching
  *  VSCode), not two separate boxes with a gap; see makeToolLine/renderToolOutput, which
  *  join into the same block via line._ioBlock instead of each creating their own. */
-function appendIoRow(block, label, text) {
-  const item = document.createElement('div'); item.className = 'io-item';
+function appendIoRow(block, label, text, startMode) {
+  const item = newCard(document.createElement('div'), startMode); item.className = 'io-item';
   const row = document.createElement('div'); row.className = 'io-row';
   const labelEl = document.createElement('span'); labelEl.className = 'io-label'; labelEl.textContent = label;
   const pre = document.createElement('pre'); pre.textContent = text;
   row.appendChild(labelEl); row.appendChild(pre); row.appendChild(makeCopyBtn(() => text));
   item.appendChild(row);
   block.appendChild(item);
-  // Deferred to the next frame: appended to a detached-from-layout line at call time in
-  // some paths (history reconstruction builds the whole turn before it's in the DOM), so
-  // measuring scrollHeight/clientHeight immediately would see 0/0 and never cap anything.
-  const fullWord = label === 'IN' ? 'input' : label === 'OUT' ? 'output' : label.toLowerCase();
-  capIfOverflowing(item, pre, 'View full ' + fullWord, () => text);
+  syncBlock(block);
+  // What settleCards labels the button with and opens when it is clicked.
+  item.dataset.kind = label === 'IN' ? 'input' : label === 'OUT' ? 'output' : label.toLowerCase();
+  item._fullText = () => text;
   return item;
 }
 /** A fresh `.io-block` holding a single row — the common case (a tool with only an IN, or
  *  only an OUT, and nothing to join it with). */
-function makeIoBlock(label, text) {
+function makeIoBlock(label, text, startMode) {
   const block = document.createElement('div'); block.className = 'io-block';
-  appendIoRow(block, label, text);
+  appendIoRow(block, label, text, startMode);
   return block;
 }
 /** Per-subagent nested transcript — keyed by the Agent tool_use's own id (the same value a
@@ -803,6 +927,7 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
       ? String(name).split('__').pop().toLowerCase() : String(name || '').toLowerCase();
   const path = input.file_path || input.path || input.notebook_path || '';
   const isAgent = AGENT_KEYS.has(key);
+  const startMode = startModeFor(key);   // how this kind of tool's cards start out (Preferences)
   // A shell command or a Workflow script is always boxed below regardless of length —
   // unlike a short Grep pattern or file path, VSCode renders these as code in their own
   // IN box even on one line.
@@ -848,12 +973,12 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
     line.querySelector('.tdesc').textContent = input.description || '';
     // Stashed on the line so a later OUT (the agent's own eventual result) joins into
     // this SAME box instead of opening a second, separately-bordered one right under it.
-    if (input.prompt) line.appendChild(line._ioBlock = makeIoBlock('IN', input.prompt));
+    if (input.prompt) line.appendChild(line._ioBlock = makeIoBlock('IN', input.prompt, startMode));
     // Live (status undefined) always gets the toggle — it starts empty and fills in as
     // the agent actually runs, so there's nothing to check upfront. Reload only gets one
     // when session.rs's reconstructed agentLog actually has something in it (hasAgentLog,
     // set by the caller — never hardcode "no toggle with nothing behind it" the other way
-    // around, matching capIfOverflowing's own rule elsewhere in this file).
+    // around, matching settleCards's own rule elsewhere in this file).
     if (status === undefined || hasAgentLog) line.appendChild(makeAgentLogSection());
   } else {
     // A tool's own description (e.g. Bash's "what this command does") sits inline next to
@@ -921,18 +1046,19 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
     // Stashed on the line (same as the Agent branch above) so a later OUT joins into
     // this SAME bordered box instead of opening a second one right under it.
     if (boxDetail) {
-      line.appendChild(line._ioBlock = makeIoBlock('IN', detail));
+      line.appendChild(line._ioBlock = makeIoBlock('IN', detail, startMode));
     } else if (!isAgent && !detail && Object.keys(input).length) {
-      line.appendChild(line._ioBlock = makeIoBlock('IN', JSON.stringify(input, null, 2)));
+      line.appendChild(line._ioBlock = makeIoBlock('IN', JSON.stringify(input, null, 2), startMode));
     }
   }
   const todoBlock = key === 'todowrite' ? buildTodoChecklist(input) : null;
   if (todoBlock) line.appendChild(todoBlock);
-  const diff = buildToolDiff(name, input);
+  const diff = buildToolDiff(name, input, startMode);
   if (diff) {
-    const sub = document.createElement('div'); sub.className = 'tool-sub'; sub.textContent = diff.summary;
+    const sub = document.createElement('div'); sub.className = 'tool-sub diff-sub'; sub.textContent = diff.summary;
     line.appendChild(sub);
     line.appendChild(diff.block);
+    applyCardMode(diff.block, diff.block.dataset.mode);   // the summary line follows its card
   }
   // Reload path only (status set): re-state the plan outcome that decide() wrote
   // live, so a reloaded conversation isn't left with a bare "Claude's Plan" line.
@@ -951,6 +1077,7 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
   // absent here too for a tool session.rs didn't record success output for (errors, asks,
   // a cut-off turn) — renderToolOutput's own `if (!text...) return` covers both.
   if (resultText) renderToolOutput(line, key, resultText);
+  settleCards(line);
   return line;
 }
 function addToolLine(payload) {
@@ -981,6 +1108,7 @@ function addToolLine(payload) {
     if (window.renderAgentsPanel) window.renderAgentsPanel();
   }
   curTurn.appendChild(line);
+  settleCards(line);
   // End the current text body so any text Claude emits AFTER this tool starts a new
   // body BELOW the tool line (otherwise the closing "Done…" merges in above the edits).
   curBody = null; curText = '';
@@ -1027,6 +1155,7 @@ function applyToolResult(payload) {
   }
   if (info.isError) setToolError(line, info.text);
   else renderToolOutput(line, line.dataset.tname || '', info.text);
+  settleCards(line);
   // The result lands on a line addToolLine already scrolled to, so without this the view
   // stopped at the tool line and only caught up when the NEXT tool started. Growth after
   // this point (appendIoRow's deferred cap and its "View full output" hint) is followed by
@@ -1050,7 +1179,7 @@ function renderToolOutput(line, key, text) {
   const stale = line.querySelector('.io-item.out, .result-list.out');
   if (stale) stale.remove();
   if (RESULT_LIST_TOOLS.has(key)) {
-    const resultList = buildResultList(text, rootPathOf(activeTab()), line.dataset.tpath || '', line.dataset.tcontent === '1');
+    const resultList = buildResultList(text, rootPathOf(activeTab()), line.dataset.tpath || '', line.dataset.tcontent === '1', startModeFor(key));
     if (resultList) { resultList.classList.add('out'); line.appendChild(resultList); }
     return;
   }
@@ -1064,7 +1193,7 @@ function renderToolOutput(line, key, text) {
     line.appendChild(block);
     line._ioBlock = block;
   }
-  appendIoRow(block, 'OUT', text).classList.add('out');
+  appendIoRow(block, 'OUT', text, startModeFor(key)).classList.add('out');
 }
 /* Minimal LCS line diff (guarded against pathological sizes). */
 function lineDiff(oldStr, newStr) {
@@ -1086,7 +1215,7 @@ function lineDiff(oldStr, newStr) {
   while (j < m) out.push(['add', b[j++]]);
   return out;
 }
-function buildToolDiff(name, input) {
+function buildToolDiff(name, input, startMode) {
   const n = (name || '').toLowerCase();
   let rows = null, added = 0, removed = 0;
   if (n === 'write' && typeof input.content === 'string') {
@@ -1113,11 +1242,11 @@ function buildToolDiff(name, input) {
   }
   if (!rows || !rows.length) return null;
   rows.forEach(r => { if (r[0] === 'add') added++; else if (r[0] === 'del') removed++; });
-  const block = document.createElement('div'); block.className = 'code-block edit';
+  const block = newCard(document.createElement('div'), startMode); block.className = 'code-block edit';
   const pre = document.createElement('pre');
   // A hard DOM-size safety ceiling for pathological diffs (thousands of rows) — NOT the
-  // normal "don't show too much" cap, which is now the real CSS/measured one below
-  // (capIfOverflowing). This only bites for diffs far bigger than anything a visual cap
+  // normal "don't show too much" cap, which is now the real CSS/measured one
+  // (settleCards). This only bites for diffs far bigger than anything a visual cap
   // alone would need to guard against; ordinary 30-100 line diffs stay well under it and
   // rely entirely on the height cap instead — that's the bug this replaces: a 29-line
   // diff used to render in full because it was under the old MAX=40, uncapped either way.
@@ -1133,16 +1262,10 @@ function buildToolDiff(name, input) {
   const fullText = () => rows.map(r => (r[0] === 'add' ? '+ ' : r[0] === 'del' ? '- ' : '  ') + r[1]).join('\n');
   block.appendChild(pre);
   block.appendChild(makeCopyBtn(fullText));
-  if (rows.length > HARD_MAX) {
-    // Rows past HARD_MAX were never put in the DOM at all — always show this one
-    // regardless of measured height, since there's genuinely missing content, not just
-    // clipped-but-present content the way the height cap below handles.
-    block.appendChild(makeMoreHint('⋯ ' + (rows.length - HARD_MAX) + ' more line' + (rows.length - HARD_MAX > 1 ? 's' : '') + ' — view full diff', fullText));
-  } else {
-    // Every row IS in the DOM; only add the link if they actually overflow the CSS cap
-    // (.code-block.capped pre, chat.css) — measured, not guessed, same as makeIoBlock.
-    capIfOverflowing(block, pre, 'View full diff', fullText);
-  }
+  // Measured against the preview cap by settleCards — which also covers a diff past
+  // HARD_MAX, whose rows beyond it are only in fullText.
+  block.dataset.kind = 'diff';
+  block._fullText = fullText;
   const parts = [];
   if (added) parts.push('Added ' + added + ' line' + (added > 1 ? 's' : ''));
   if (removed) parts.push('Removed ' + removed + ' line' + (removed > 1 ? 's' : ''));
