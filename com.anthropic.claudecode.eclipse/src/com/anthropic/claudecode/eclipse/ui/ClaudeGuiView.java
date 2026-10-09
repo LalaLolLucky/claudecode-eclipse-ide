@@ -801,6 +801,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         confirmCloseViewFn = new SimpleFunction(browser, "_confirmCloseView", a -> {
             // Which row's × started it, so the wording matches the tab being closed.
             final String kind = a.length > 0 && "session".equals(a[0]) ? "session" : "directory";
+            // The conversation whose archiving is what closes the tab (history panel), if
+            // any. It is archived here, on the user's yes: asked for before the question,
+            // a cancel would leave it open in its tab and already filed as archived.
+            final String archiveId = a.length > 1 && a[1] instanceof String id && !id.isBlank() ? id : null;
             Display.getDefault().asyncExec(() -> {
                 try {
                     if (browser == null || browser.isDisposed()) return;
@@ -817,6 +821,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                     dlg.create();
                     com.anthropic.claudecode.eclipse.tools.EclipseDialogTool.forUserOnly(dlg.getShell());
                     if (dlg.open() != 0) return;
+                    // Not recorded, the tab stays, as it does for any other tab's archiving.
+                    if (archiveId != null && !SessionArchive.set(new Gson().toJson(List.of(archiveId)), true)) return;
                     org.eclipse.ui.IWorkbenchPartSite site = getSite();
                     if (site != null && site.getPage() != null) site.getPage().hideView(ClaudeGuiView.this);
                 } catch (Exception e) {

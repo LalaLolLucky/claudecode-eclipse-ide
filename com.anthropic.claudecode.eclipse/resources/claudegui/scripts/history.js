@@ -423,6 +423,16 @@ function archivedGroupRow(count, collapsed, canToggle) {
 /* Files a conversation under "Archived sessions", or takes it back out. Nothing of the
    conversation is changed; it is only listed elsewhere. */
 function setHistoryArchived(session, archived) {
+  // Open in the view's last tab, archiving it closes the view, and the view asks before it
+  // does. The conversation is archived only on "Close the view" (the view does both then):
+  // a cancel has to leave it open AND listed where it was.
+  if (archived) {
+    const last = tabs.find(t => t.sessionId === session.sessionId);
+    if (last && isLastTabOfView(last) && window._confirmCloseView) {
+      try { window._confirmCloseView('session', session.sessionId); } catch (e) {}
+      return;
+    }
+  }
   let recorded = false;
   try {
     recorded = !!(window._setSessionsArchived
