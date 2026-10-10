@@ -656,7 +656,7 @@ body.teleporting #composer { display: none; }
   overflow: hidden; background: var(--track); margin-bottom: 14px; }
 #context-win .ctx-seg { height: 100%; flex: none; }
 #context-win .ctx-head-row, #context-win .ctx-row { display: grid;
-  grid-template-columns: 14px 1fr auto auto; align-items: center; gap: 8px; }
+  grid-template-columns: 14px 1fr 60px 52px; align-items: center; gap: 8px; }
 #context-win .ctx-head-row { color: var(--fg-faint); font-size: 10.5px; text-transform: uppercase;
   letter-spacing: .04em; padding-bottom: 4px; border-bottom: 1px solid var(--border-soft); margin-bottom: 4px; }
 #context-win .ctx-row { padding: 3px 0; font-size: 12.5px; }
