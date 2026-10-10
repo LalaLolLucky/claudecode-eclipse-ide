@@ -468,14 +468,20 @@ function updateMenuVersionFooter() {
  *  already has its own click/drag-to-position behavior; stepping on top of that would
  *  fight whatever position the click just set. */
 function cycleEffort(e) {
-  if (e.target.closest('.slider')) return;
+  if (pressedOnSlider || e.target.closest('.slider')) return;
   setEffort((effortIdx + 1) % EFFORTS.length);
 }
+/* Whether the press of the gesture in progress landed on a slider. A drag of the knob
+   let go a little off the slider ends in a click on the ROW (a click's target is the
+   common ancestor of its press and its release), and that click must not step the value
+   the drag just set. Capture phase: the sliders stop their own mousedown. */
+let pressedOnSlider = false;
+document.addEventListener('mousedown', (e) => { pressedOnSlider = !!(e.target.closest && e.target.closest('.slider')); }, true);
 
 /** The zoom row itself is clickable like any other .item, same as cycleEffort above —
  *  advances one step per click (wrapping past 150% back to 50%), ignoring clicks that
  *  land on the slider, which already drags/positions itself. */
 function cycleZoom(e) {
-  if (e.target.closest('.slider')) return;
+  if (pressedOnSlider || e.target.closest('.slider')) return;
   setZoom((zoomIdx + 1) % ZOOM_LEVELS.length);
 }
