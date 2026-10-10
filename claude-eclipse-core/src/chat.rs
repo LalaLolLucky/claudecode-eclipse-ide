@@ -1994,7 +1994,11 @@ fn reader_loop(
                         if state == "failed" {
                             *proc.rc_session.lock().unwrap() = None;
                         }
-                        let json = crate::bridge::rc_bridge_state_json(state, event["bridge_epoch"].as_i64());
+                        let json = crate::bridge::rc_bridge_state_json(
+                            state,
+                            event["bridge_epoch"].as_i64(),
+                            event["detail"].as_str(),
+                        );
                         fire_string(&java_vm, &callbacks, "onRemoteControl", &json);
                         continue;
                     }
