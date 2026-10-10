@@ -823,7 +823,7 @@ function drawContextUsage(r, error) {
   win.innerHTML = head +
     '<div class="ctx-model">' + escapeHtml(r.model || '') + '</div>' +
     '<div class="ctx-total">' + fmtCtxTokens(r.totalTokens) + ' / ' + fmtCtxTokens(max) +
-      ' tokens (' + (r.percentage != null ? r.percentage : 0) + '%)</div>' +
+      ' tokens (' + escapeHtml(String(r.percentage != null ? r.percentage : 0)) + '%)</div>' +
     '<div class="ctx-bar">' + bar + '</div>' +
     '<div class="ctx-table"><div class="ctx-head-row"><span></span><span>Category</span>' +
       '<span class="ctx-tokens">Tokens</span><span class="ctx-pct">Usage</span></div>' + rows + '</div>' +

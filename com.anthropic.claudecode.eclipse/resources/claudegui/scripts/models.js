@@ -590,7 +590,7 @@ function toggleUltracode(e) {
    data (clidialogs.js cliAsk): this window opens at once and the figures fill in when the
    answer comes. /usage opens it too. */
 function awRow(k, v) {
-  return (v !== undefined && v !== null && v !== '') ? '<div class="aw-row"><span class="k">' + k + '</span><span class="v">' + escapeHtml(String(v)) + '</span></div>' : '';
+  return (v !== undefined && v !== null && v !== '') ? '<div class="aw-row"><span class="k">' + escapeHtml(String(k)) + '</span><span class="v">' + escapeHtml(String(v)) + '</span></div>' : '';
 }
 /** 672 -> "672ms", 4300 -> "4s", 7969000 -> "2h 12m 49s". */
 function awDuration(ms) {
