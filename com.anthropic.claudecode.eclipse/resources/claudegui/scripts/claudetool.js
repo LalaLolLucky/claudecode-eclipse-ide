@@ -124,7 +124,9 @@
     if (t === activeTab()) applyTabSettings(t);
     persistTabPrefs(t);
     try {
-      if (window._applySettings) _applySettings(t.id, t.permMode, EFFORTS[t.effortIdx], t.model, t.thinking ? '1' : '0');
+      // The tab's Ultracode goes with them: left out, the view takes it for off and the
+      // process is told to switch it off, while the tab's switch still says on.
+      if (window._applySettings) _applySettings(t.id, t.permMode, EFFORTS[t.effortIdx], t.model, t.thinking ? '1' : '0', !!t.ultracode);
     } catch (e) {}
   }
 
@@ -156,6 +158,9 @@
     loadRender(t);
     const queueing = !!t.streaming;
     addUserMessage(text, null, [], null, nowIso(), t.pane, null);
+    // Sent while the tab is working: remembered as doSend does (stream.js), so that what
+    // Claude writes after it is handed over goes below its bubble.
+    if (queueing && typeof noteQueuedSend === 'function') noteQueuedSend(t);
     if (!queueing) setStreaming(true);
     // The live gerund is for the tab in front only: showWorking restarts the page's one set
     // of gerund timers, and the front tab's own turn may be running on them. A tab behind
@@ -164,7 +169,7 @@
     else resumeWorkingFor(t);
     if (window._sendToJava) {
       window._sendToJava(text, false, t.sessionId || '', t.permMode || DEFAULT_PERM_MODE, EFFORTS[t.effortIdx],
-        t.model || '', t.thinking ? '1' : '0', t.id, '', rootPathOf(t));
+        t.model || '', t.thinking ? '1' : '0', t.id, '', rootPathOf(t), !!t.ultracode);
     }
     persistTabPrefs(t);
     // A tab behind hands the render target back: the gerund timers animate the line of
