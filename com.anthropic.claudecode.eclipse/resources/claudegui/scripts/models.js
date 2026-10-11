@@ -88,6 +88,7 @@ function customModelLabel(id) {
 function updateModelLabel() {
   const el = document.getElementById('cur-model');
   if (el) el.textContent = '(' + modelLabelFor(curModel) + ')';
+  if (typeof ultracodeFollowsModel === 'function') ultracodeFollowsModel();
 }
 function openModelChooser(e) {
   if (e) e.stopPropagation();
@@ -212,6 +213,11 @@ window.onSettingsChanged = function (tabId, json) {
   const t = tabById(tabId);
   if (!t) return;
   if (d.permMode && typeof adoptModeForTab === 'function') adoptModeForTab(t, d.permMode);
+  // The CLI's answer to "did Ultracode take effect" (chat.rs, ultracode_in_effect). It
+  // says yes to the switch either way, and leaves it off when the model cannot run it or
+  // the user has dynamic workflows disabled: the switch then comes back off, here and in
+  // the process, so that neither it nor the status bar says what is not so.
+  if (d.ultracode === false && t.ultracode) setUltracode(t, false);
   if (d.model) {
     // The CLI names the concrete model; show it as the entry the chooser has, so an
     // alias stays an alias instead of turning into a bare id.
@@ -392,7 +398,7 @@ function persistTabPrefs(t) {
 /* Push the current model/effort/thinking selection to the Java status bar so it
    updates immediately (rather than waiting for the next response). */
 function notifyStatusSelection() {
-  try { if (window._statusSelection) window._statusSelection(modelLabelFor(curModel), effort, thinkingOn ? '1' : '0'); }
+  try { if (window._statusSelection) window._statusSelection(modelLabelFor(curModel), effort, thinkingOn ? '1' : '0', ultracodeOn ? '1' : '0'); }
   catch (e) {}
 }
 
@@ -572,16 +578,94 @@ function toggleThinking(e) {
 /* ---- Ultracode toggle (per-conversation, mirrors Thinking above) ---- */
 let ultracodeOn = false;
 
+/** Whether the tab's model can run Ultracode. The CLI's own rule is a model with an
+    "xhigh" effort stop (Haiku has none), and it lists each model's stops with what the
+    folder offers. Yes when the CLI has not said: it is then asked once the switch is
+    on, and the switch comes back off if the answer is no (onSettingsChanged). */
+function modelSupportsUltracode(t) {
+  const o = (typeof offersFor === 'function') ? offersFor(t) : null;
+  const models = (o && o.models) || [];
+  if (!models.length) return true;
+  // The tab in front is read off the chooser's own value: a pick is there before the tab has it.
+  const model = (t && t !== activeTab() && t.model !== undefined) ? t.model : curModel;
+  const m = models.find(x => x && (x.value === model || x.resolvedModel === model
+                                   || (!model && x.value === 'default')));
+  if (!m) return true;
+  return Array.isArray(m.supportedEffortLevels) && m.supportedEffortLevels.indexOf('xhigh') >= 0;
+}
+
+/* The first Claude Code that takes the `ultracode` setting: the release that introduced
+   dynamic workflows, which Ultracode runs on. Found by asking the published versions
+   themselves (2.1.154 applies it; see ULTRACODE_MIN_CLI's use below for older ones). */
+const ULTRACODE_MIN_CLI = [2, 1, 154];
+/** Whether the installed Claude Code knows Ultracode: 'yes', 'no', or 'unknown' while its
+    version has not been read (cliversion.js). */
+function cliUltracodeState() {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec((typeof cliVersion !== 'undefined' && cliVersion && cliVersion.installed) || '');
+  if (!m) return 'unknown';
+  for (let i = 0; i < 3; i++) {
+    const have = Number(m[i + 1]);
+    if (have !== ULTRACODE_MIN_CLI[i]) return have > ULTRACODE_MIN_CLI[i] ? 'yes' : 'no';
+  }
+  return 'yes';
+}
+/** Whether the Ultracode switch is shown at all: only for a Claude Code known to have it.
+    Unknown is not shown either, so that it cannot be switched on over a CLI that would
+    take no notice; a tab's stored setting is kept meanwhile (ultracodeFollowsModel). */
+function ultracodeOffered() { return cliUltracodeState() === 'yes'; }
+
+/* The switches in the Modes and model menus (the command menu draws its own row, and asks
+   ultracodeOffered and modelSupportsUltracode as it does). With a Claude Code from before
+   Ultracode the row is not there. A model that cannot run it has the row greyed and the
+   switch does nothing, rather than going on and coming back off. */
 function updateUltracodeToggle() {
-  document.querySelectorAll('.ultracode-sw').forEach(el => el.classList.toggle('on', ultracodeOn));
+  const offered = ultracodeOffered();
+  const can = modelSupportsUltracode(activeTab());
+  document.querySelectorAll('.ultracode-sw').forEach(el => {
+    el.classList.toggle('on', ultracodeOn);
+    const row = el.closest('.item');
+    if (!row) return;
+    row.style.display = offered ? '' : 'none';
+    row.classList.toggle('disabled', !can);
+  });
+}
+
+/** Sets a tab's Ultracode, and tells whoever shows or runs it: the switches, the status
+    bar and the tab's process. */
+function setUltracode(t, on) {
+  if (!t) return;
+  t.ultracode = !!on;
+  if (t === activeTab()) {
+    ultracodeOn = !!on;
+    updateUltracodeToggle();
+    notifyStatusSelection();
+    pushLaunchSettings(t);
+  }
+  persistTabPrefs(t);
 }
 
 function toggleUltracode(e) {
   if (e) e.stopPropagation();
-  ultracodeOn = !ultracodeOn;
-  const t = activeTab(); if (t) t.ultracode = ultracodeOn;
+  const t = activeTab();
+  if (!t || !ultracodeOffered() || !modelSupportsUltracode(t)) return;
+  setUltracode(t, !ultracodeOn);
+}
+
+/* A model was picked, or the CLI has now said what each model can do: Ultracode that was
+   on does not stay on for a model that cannot run it. In the tab only: this also runs
+   while a tab's stored settings are being painted, when nothing may be written back or
+   pushed (applyTabSettings). The process hears of it with the next message, and until
+   then has it off by itself, as it does for any model that cannot run it. */
+function ultracodeFollowsModel() {
+  const t = activeTab();
+  // A Claude Code known to be from before Ultracode turns it off as an unfit model does.
+  // One whose version is not read yet does not: the tab keeps what it had, and the
+  // process is asked whether it took effect (onSettingsChanged).
+  if (t && t.ultracode && (cliUltracodeState() === 'no' || !modelSupportsUltracode(t))) {
+    t.ultracode = false; ultracodeOn = false;
+    notifyStatusSelection();
+  }
   updateUltracodeToggle();
-  persistTabPrefs(t); pushLaunchSettings(t);
 }
 
 /* ---- Account & usage window ----

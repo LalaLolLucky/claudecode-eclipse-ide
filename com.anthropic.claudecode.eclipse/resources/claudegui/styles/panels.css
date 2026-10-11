@@ -194,6 +194,9 @@
 #model-list .m-desc { color: var(--fg-dim); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 #model-list .item.disabled { opacity: .5; cursor: default; }
 #model-list .item.disabled:hover { background: transparent; }
+/* A row the tab's model cannot use (Ultracode on a model without it): greyed, and inert. */
+.menu .item.disabled { opacity: .5; cursor: default; }
+.menu .item.disabled:hover { background: transparent; }
 #model-list .item .check { margin-left: auto; color: var(--accent); flex-shrink: 0; }
 #actions-slash .item .cmd { font-family: 'Cascadia Code','Consolas',monospace; color: var(--fg); font-size: 12.5px; }
 #actions-slash .item .d { color: var(--fg-dim); font-size: 11px; margin-left: auto; }

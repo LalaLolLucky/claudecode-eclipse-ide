@@ -65,6 +65,8 @@ function offersChanged(root) {
   const t = activeTab();
   if (!t || rootPathOf(t) !== root) return;
   if (cmdMenu.loaderShown && cmdMenuIsOpen()) cmdMenuRender(true);
+  // What each model can do came with the offers: Ultracode follows it.
+  if (typeof ultracodeFollowsModel === 'function') ultracodeFollowsModel();
   if (typeof slashDialogOffersChanged === 'function') slashDialogOffersChanged();
 }
 
@@ -162,6 +164,7 @@ function cmdMenuRows() {
       on: () => thinkingOn, run: (e) => toggleThinking(e) },
     { id: 'ultracode', sec: 'Model', label: 'Ultracode', icon: 'BOLT', toggle: true,
       tip: 'Orchestrate background subagents more aggressively',
+      show: () => ultracodeOffered(), disabled: () => !modelSupportsUltracode(t),
       on: () => ultracodeOn, run: (e) => toggleUltracode(e) },
     { id: 'flagswitch', sec: 'Model', label: 'Switch models when a message is flagged', icon: 'FLAG', toggle: true,
       tip: 'When safeguards flag a message, automatically switch to a different model to keep chatting. '
@@ -248,6 +251,7 @@ function cmdRowEl(r) {
   const it = document.createElement('div');
   it.className = 'item' + (r.cmd ? ' cmd' : '');
   it.dataset.id = r.id;
+  if (r.disabled && r.disabled()) it.classList.add('disabled');
   if (r.tip) it.title = r.tip;
   if (r.cmd) {
     it.innerHTML = '<div class="txt"><span class="lbl"></span><span class="d"></span></div>';
@@ -388,6 +392,7 @@ function cmdMenuMove(by) {
 /** A row was picked, by click or by key. viaTab: with the Tab key, which for a slash
     command only completes it in the composer so its arguments can be typed. */
 function cmdMenuActivate(r, e, viaTab) {
+  if (r.disabled && r.disabled()) return;   // greyed: the model cannot do this
   if (r.toggle) {
     r.run(e);
     const it = cmdMenuItems().find(x => x._row === r);

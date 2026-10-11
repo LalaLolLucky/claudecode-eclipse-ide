@@ -312,6 +312,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private volatile String displayModel = "";     // shown model — live GUI selection OR last actual (whichever changed last)
     private volatile String lastEffort = "";       // current GUI selection
     private volatile boolean lastThinking = true;
+    private volatile boolean lastUltracode = false;
 
     private volatile boolean contextPolling;
     private String lastContextJson = "";
@@ -435,6 +436,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 // model + context + cost, but not these launch-time choices).
                 this.lastEffort = effort;
                 this.lastThinking = !"0".equals(thinking);
+                this.lastUltracode = ultracode;
                 ChatProcessManager mgr = managerFor(tabId);
                 mgr.setRoot(root);
                 final String attachments = withCtx ? concatJsonArrays(buildContextItem(), imagesJson) : imagesJson;
@@ -1370,6 +1372,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             if (a.length > 0 && a[0] instanceof String ml && !ml.isEmpty()) displayModel = ml;
             if (a.length > 1 && a[1] instanceof String ef) lastEffort = ef;
             if (a.length > 2 && a[2] instanceof String th) lastThinking = !"0".equals(th);
+            if (a.length > 3 && a[3] instanceof String uc) lastUltracode = "1".equals(uc);
             refreshStatusBar();
             return null;
         });
@@ -2384,6 +2387,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         com.google.gson.JsonObject th = new com.google.gson.JsonObject();
         th.addProperty("enabled", lastThinking);
         root.add("thinking", th);
+        com.google.gson.JsonObject uc = new com.google.gson.JsonObject();
+        uc.addProperty("enabled", lastUltracode);
+        root.add("ultracode", uc);
         // Account-global usage limits shared from the CLI statusLine — identical numbers.
         com.google.gson.JsonObject rl = ClaudeStatusStore.rateLimitsSchema();
         if (rl.size() > 0) root.add("rate_limits", rl);

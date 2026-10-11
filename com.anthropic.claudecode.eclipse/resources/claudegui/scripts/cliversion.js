@@ -18,6 +18,8 @@ window.onCliVersion = function (json) {
   if (!info) return;
   cliVersion = info;
   renderUpdateBanner();
+  // Whether Ultracode is offered goes by this version (models.js, ultracodeOffered).
+  if (typeof ultracodeFollowsModel === 'function') ultracodeFollowsModel();
 };
 
 /* FreeBSD setup guide (Markdown), pushed by Java while the `claude` CLI is missing.

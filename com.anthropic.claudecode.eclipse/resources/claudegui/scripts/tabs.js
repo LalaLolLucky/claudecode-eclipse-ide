@@ -349,6 +349,12 @@ function applyTabSettings(t) {
   permMode = (t.permMode !== undefined ? t.permMode : DEFAULT_PERM_MODE);
   if (typeof applyModeUI === 'function') applyModeUI(permMode);
   ultracodeOn = (t.ultracode !== undefined ? t.ultracode : DEFAULT_ULTRACODE);
+  // Stored on for a model that cannot run it: off, in the tab only (nothing is written
+  // back while a tab's stored settings are being painted).
+  if (ultracodeOn && typeof modelSupportsUltracode === 'function'
+      && (cliUltracodeState() === 'no' || !modelSupportsUltracode(t))) {
+    ultracodeOn = false; t.ultracode = false;
+  }
   if (typeof updateUltracodeToggle === 'function') updateUltracodeToggle();
   if (typeof updateSwitchModelsOnFlagToggle === 'function') updateSwitchModelsOnFlagToggle();
   if (typeof notifyStatusSelection === 'function') notifyStatusSelection();

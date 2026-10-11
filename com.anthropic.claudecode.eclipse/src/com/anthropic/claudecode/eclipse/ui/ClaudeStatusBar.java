@@ -482,7 +482,8 @@ public final class ClaudeStatusBar extends Canvas {
     }
 
     /**
-     * {@code Opus 4.8 · high · thinking} — model name in foreground; effort and the thinking
+     * {@code Opus 4.8 · high · ultracode · thinking} — model name in foreground; effort,
+     * Ultracode (only while it is on, and shown with the effort it goes with) and the thinking
      * indicator muted, each joined by {@code · } after the preceding piece. Any piece may be
      * hidden (by preference or absent data).
      */
@@ -491,12 +492,15 @@ public final class ClaudeStatusBar extends Canvas {
                 && s.modelDisplayName().isPresent() ? s.modelDisplayName().get() : null;
         String effort = prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_EFFORT)
                 && s.effortLevel().isPresent() ? s.effortLevel().get() : null;
+        boolean ultracode = prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_EFFORT)
+                && s.ultracodeEnabled().orElse(false);
         boolean thinking = prefs.getBoolean(Constants.PREF_STATUSLINE_SHOW_THINKING)
                 && s.thinkingEnabled().orElse(false);
 
         // Muted suffixes after the model name, in display order.
         List<String> muted = new ArrayList<>();
         if (effort != null) muted.add(effort);
+        if (ultracode) muted.add("ultracode");
         if (thinking) muted.add("thinking");
         if (model == null && muted.isEmpty()) return null;
 

@@ -34,6 +34,7 @@ public final class ClaudeStatus {
     private final Optional<String> modelDisplayName;
     private final Optional<String> effortLevel;
     private final Optional<Boolean> thinkingEnabled;
+    private final Optional<Boolean> ultracodeEnabled;
     private final OptionalDouble totalCostUsd;
     private final OptionalDouble contextUsedPercentage;
     private final OptionalLong contextWindowSize;
@@ -45,7 +46,8 @@ public final class ClaudeStatus {
     private final Optional<RateLimit> sevenDay;
 
     private ClaudeStatus(Optional<String> modelDisplayName, Optional<String> effortLevel,
-                         Optional<Boolean> thinkingEnabled, OptionalDouble totalCostUsd,
+                         Optional<Boolean> thinkingEnabled, Optional<Boolean> ultracodeEnabled,
+                         OptionalDouble totalCostUsd,
                          OptionalDouble contextUsedPercentage, OptionalLong contextWindowSize,
                          OptionalLong inputTokens, OptionalLong outputTokens,
                          OptionalLong cacheCreationTokens, OptionalLong cacheReadTokens,
@@ -53,6 +55,7 @@ public final class ClaudeStatus {
         this.modelDisplayName = modelDisplayName;
         this.effortLevel = effortLevel;
         this.thinkingEnabled = thinkingEnabled;
+        this.ultracodeEnabled = ultracodeEnabled;
         this.totalCostUsd = totalCostUsd;
         this.contextUsedPercentage = contextUsedPercentage;
         this.contextWindowSize = contextWindowSize;
@@ -69,6 +72,10 @@ public final class ClaudeStatus {
 
     /** {@code thinking.enabled}; empty when the field is absent. */
     public Optional<Boolean> thinkingEnabled() { return thinkingEnabled; }
+
+    /** {@code ultracode.enabled}: the Claude Code view's own, for the conversation in front;
+     *  empty when the field is absent (the CLI's status line has none). */
+    public Optional<Boolean> ultracodeEnabled() { return ultracodeEnabled; }
 
     /** {@code cost.total_cost_usd} — accumulated session cost in USD; empty when absent. */
     public OptionalDouble totalCostUsd() { return totalCostUsd; }
@@ -111,6 +118,10 @@ public final class ClaudeStatus {
         Optional<Boolean> thinkingEnabled = thinking != null
                 ? optBoolean(thinking, "enabled") : Optional.empty();
 
+        JsonObject ultracode = optObject(obj, "ultracode");
+        Optional<Boolean> ultracodeEnabled = ultracode != null
+                ? optBoolean(ultracode, "enabled") : Optional.empty();
+
         JsonObject cost = optObject(obj, "cost");
         OptionalDouble totalCostUsd = cost != null
                 ? optDouble(cost, "total_cost_usd") : OptionalDouble.empty();
@@ -137,7 +148,7 @@ public final class ClaudeStatus {
         Optional<RateLimit> sevenDay = limits != null
                 ? parseRateLimit(optObject(limits, "seven_day")) : Optional.empty();
 
-        return new ClaudeStatus(modelName, effortLevel, thinkingEnabled, totalCostUsd, contextPct, contextSize,
+        return new ClaudeStatus(modelName, effortLevel, thinkingEnabled, ultracodeEnabled, totalCostUsd, contextPct, contextSize,
                 inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, fiveHour, sevenDay);
     }
 

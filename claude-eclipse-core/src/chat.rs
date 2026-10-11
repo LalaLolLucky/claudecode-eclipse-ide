@@ -253,8 +253,66 @@ fn spawn_signature(
 /// (unlike model/effort), so always passed explicitly — the GUI's per-tab preference
 /// overrides the user's own settings.json, same as --effort/--model/--permission-mode
 /// already do.
+///
+/// On, it takes dynamic workflows on with it ([`ultracode_settings`]). Off, it says
+/// nothing of them: whether they are on is then the user's own setting, as it was.
 fn flag_settings_arg(ultracode: bool) -> String {
-    serde_json::json!({ "ultracode": ultracode }).to_string()
+    if ultracode {
+        ultracode_settings(true).to_string()
+    } else {
+        serde_json::json!({ "ultracode": false }).to_string()
+    }
+}
+
+/// The flag settings that switch Ultracode on or off on a running process.
+///
+/// Ultracode is the Workflow tool used on every substantive task, and the CLI keeps it
+/// off while dynamic workflows are off (`applied.ultracodeAvailable`), which they are by
+/// default: on its own the switch did nothing (verified against 2.1.292 on every model).
+/// So switching it on switches them on with it, as a flag setting of this conversation;
+/// a user who has `disableWorkflows` set keeps that (verified), and [`ultracode_in_effect`]
+/// then says so. Switching it off clears the key again (`null`), which hands dynamic
+/// workflows back to the user's own setting.
+fn ultracode_settings(on: bool) -> serde_json::Value {
+    if on {
+        serde_json::json!({ "ultracode": true, "enableWorkflows": true })
+    } else {
+        serde_json::json!({ "ultracode": false, "enableWorkflows": null })
+    }
+}
+
+/// Request ids of the "did Ultracode take effect" read-back. Not [`SETTINGS_PREFIX`]'s:
+/// that reply is the Remote Control poll's, and is read for what moved since the last.
+const ULTRACODE_PREFIX: &str = "eclipse-ultracode-";
+
+/// One settings request asking whether the Ultracode just switched on took effect. The
+/// CLI answers the switch itself with success either way; what it applied is only in
+/// its settings ([`ultracode_in_effect`]).
+fn ultracode_check_line() -> String {
+    static ULTRACODE_SEQ: AtomicU64 = AtomicU64::new(1);
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": format!("{}{}", ULTRACODE_PREFIX, ULTRACODE_SEQ.fetch_add(1, Ordering::Relaxed)),
+        "request": { "subtype": "get_settings" }
+    })
+    .to_string()
+}
+
+/// Whether Ultracode is in effect, from a `get_settings` reply: `applied.ultracode` is
+/// what was asked for AND what the model and dynamic workflows allow. None from a CLI
+/// that says nothing of it.
+fn ultracode_in_effect(response: &serde_json::Value) -> Option<bool> {
+    response["applied"]["ultracode"].as_bool()
+}
+
+/// What the reply to [`ultracode_check_line`] comes to, given the whole control response
+/// (`inner`, a success with its `response` or an error): whether the CLI confirms that
+/// Ultracode is running. The check is only sent with the switch on, so a CLI that says
+/// nothing of Ultracode (one from before the setting) or refuses the request has not
+/// confirmed it, and the page takes the switch back off rather than leave it on over
+/// nothing.
+fn ultracode_confirmed(inner: &serde_json::Value) -> bool {
+    ultracode_in_effect(&inner["response"]).unwrap_or(false)
 }
 
 /// The `set_max_thinking_tokens` request for a GUI thinking value: "0" turns thinking
@@ -335,9 +393,14 @@ fn apply_live_settings(p: &ProcHandle, want: &LiveSettings) -> std::io::Result<(
     if live.ultracode != want.ultracode {
         p.write_line(&live_request_line(serde_json::json!({
             "subtype": "apply_flag_settings",
-            "settings": { "ultracode": want.ultracode }
+            "settings": ultracode_settings(want.ultracode)
         })))?;
         live.ultracode = want.ultracode;
+    }
+    // Asked after whatever changed, a model as much as the switch: Ultracode that was
+    // in effect on one model is not on another that cannot run it.
+    if want.ultracode {
+        p.write_line(&ultracode_check_line())?;
     }
     Ok(())
 }
@@ -1795,6 +1858,10 @@ fn spawn_persistent(
     // Asked once at startup so the answer — which decides whether a later switch back
     // to Default can be done on this process — is in before the user can pick it.
     let _ = proc.write_line(&settings_request_line());
+    // Launched with Ultracode on: whether this model and the user's settings let it be.
+    if ultracode {
+        let _ = proc.write_line(&ultracode_check_line());
+    }
 
     // Stderr drain (surfaced only if the process dies mid-turn).
     let stderr_buf = Arc::new(Mutex::new(String::new()));
@@ -1942,6 +2009,15 @@ fn reader_loop(
                     if let Some(json) = settings_change(&proc, &inner["response"]) {
                         fire_string(&java_vm, &callbacks, "onSettingsChanged", &json);
                     }
+                } else if rid.starts_with(ULTRACODE_PREFIX) {
+                    // The page shows the switch as it was set; it is told what the CLI
+                    // made of it, and takes the switch back off when that is "not on".
+                    let on = ultracode_confirmed(inner);
+                    if crate::is_debug() {
+                        eprintln!("[live-settings] ultracode in effect: {on} ({:?})", inner["response"]["applied"]);
+                    }
+                    fire_string(&java_vm, &callbacks, "onSettingsChanged",
+                                &serde_json::json!({ "ultracode": on }).to_string());
                 } else if rid.starts_with(CHROME_ON_PREFIX) {
                     // The browser was switched off while this was in flight: the
                     // banner is already gone, so a late "connected" must not bring
@@ -3652,5 +3728,61 @@ mod token_counter_tests {
         }
         assert_eq!(last, 122);
         assert!(seen.windows(2).filter(|w| w[0] != w[1]).count() > 4, "it moves through the turn, not only at its ends: {seen:?}");
+    }
+}
+
+#[cfg(test)]
+mod ultracode_tests {
+    use super::{flag_settings_arg, ultracode_check_line, ultracode_confirmed, ultracode_in_effect, ultracode_settings, ULTRACODE_PREFIX};
+    use serde_json::json;
+
+    #[test]
+    fn switching_ultracode_on_enables_dynamic_workflows_with_it() {
+        // Ultracode is the Workflow tool on every task, and the CLI keeps it off while
+        // dynamic workflows are off, which they are by default: on its own the switch did
+        // nothing (verified against 2.1.292, `ultracodeAvailable: false` on every model).
+        assert_eq!(ultracode_settings(true), json!({ "ultracode": true, "enableWorkflows": true }));
+        let launch: serde_json::Value = serde_json::from_str(&flag_settings_arg(true)).unwrap();
+        assert_eq!(launch, json!({ "ultracode": true, "enableWorkflows": true }));
+    }
+
+    #[test]
+    fn switching_ultracode_off_hands_dynamic_workflows_back_to_the_users_own_setting() {
+        // Live, the key set when it went on is cleared; at launch it is never sent.
+        assert_eq!(ultracode_settings(false), json!({ "ultracode": false, "enableWorkflows": null }));
+        let launch: serde_json::Value = serde_json::from_str(&flag_settings_arg(false)).unwrap();
+        assert_eq!(launch, json!({ "ultracode": false }));
+    }
+
+    #[test]
+    fn whether_ultracode_took_effect_is_read_off_the_settings_the_cli_applied() {
+        let on = json!({ "applied": { "model": "claude-opus-5-5", "ultracode": true, "ultracodeRequested": true, "ultracodeAvailable": true } });
+        assert_eq!(ultracode_in_effect(&on), Some(true));
+        // Asked for and not given: the model cannot, or the user has workflows disabled.
+        let refused = json!({ "applied": { "model": "claude-haiku-4-5", "ultracode": false, "ultracodeRequested": true, "ultracodeAvailable": false } });
+        assert_eq!(ultracode_in_effect(&refused), Some(false));
+        // A CLI from before Ultracode says nothing about it: nothing is concluded.
+        assert_eq!(ultracode_in_effect(&json!({ "applied": { "model": "claude-opus-4-8" } })), None);
+        assert_eq!(ultracode_in_effect(&json!({})), None);
+    }
+
+    #[test]
+    fn a_cli_that_cannot_confirm_ultracode_is_taken_as_not_running_it() {
+        // The check is only sent with the switch on. A CLI from before the setting answers
+        // with no word of it, or refuses the request outright: either way nothing says
+        // Ultracode is running, and the switch must not go on saying it is.
+        assert!(ultracode_confirmed(&json!({ "response": { "applied": { "ultracode": true } } })));
+        assert!(!ultracode_confirmed(&json!({ "response": { "applied": { "ultracode": false } } })));
+        assert!(!ultracode_confirmed(&json!({ "response": { "applied": { "model": "claude-opus-4-8" } } })));
+        assert!(!ultracode_confirmed(&json!({ "subtype": "error", "error": "Unsupported control request subtype: get_settings" })));
+    }
+
+    #[test]
+    fn the_check_is_a_settings_request_under_its_own_id() {
+        let line: serde_json::Value = serde_json::from_str(&ultracode_check_line()).unwrap();
+        assert_eq!(line["request"]["subtype"], "get_settings");
+        let id = line["request_id"].as_str().unwrap();
+        assert!(id.starts_with(ULTRACODE_PREFIX), "{id}");
+        assert!(!id.starts_with(super::SETTINGS_PREFIX), "not taken for the Remote Control poll's: {id}");
     }
 }
