@@ -1968,6 +1968,26 @@ fn delete_message_inner(
                 gone.insert(i);
             }
         }
+    } else {
+        // A message that was sent while Claude was working and then got a user line of its
+        // own (an interrupted turn writes both, and the page shows the user line's bubble:
+        // see `splice_queued`) was still handed over in an attachment. That goes with it.
+        // Left behind it holds the words, which refused every such delete, and with the
+        // user line gone it would draw the message again on reopening. Looked for between
+        // the typed prompts on either side, the span this message's bookkeeping is cleared
+        // in; the attachment can come before the user line or after it.
+        let typed = |i: usize| parsed[i].as_ref().map_or(false, |e| prompt_text(e).is_some());
+        let from = (0..target).rev().find(|&i| typed(i)).map_or(0, |i| i + 1);
+        let to = ((target + 1)..parsed.len()).find(|&i| typed(i)).unwrap_or(parsed.len());
+        for i in from..to {
+            let twin = parsed[i]
+                .as_ref()
+                .and_then(queued_prompt_raw)
+                .map_or(false, |t| strip_ide_preamble(&t).trim() == needle);
+            if twin {
+                gone.insert(i);
+            }
+        }
     }
     // Each removed line's parent, so what hung below one of them is handed up to the
     // nearest line that stays (the copies can hang below one another).
@@ -3676,6 +3696,54 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&res).unwrap();
         assert!(v["error"].as_str().map_or(false, |e| e.contains("mystery_carrier")), "{res}");
         assert_eq!(on_disk, fixture, "the transcript was left untouched");
+    }
+
+    #[test]
+    fn deleting_a_message_that_was_queued_and_has_a_user_line_takes_its_attachment_too() {
+        // The real shape of a message sent mid-turn whose turn was then interrupted: the
+        // attachment that hands it over, and a user line of its own a moment later. The page
+        // shows one bubble, with the user line's id, so that is the id a delete is given.
+        let stamp = "2026-10-10T07:10:38.563Z";
+        let lines = vec![
+            serde_json::json!({"type":"user","uuid":"u0","parentUuid":null,"message":{"role":"user","content":"start"}}),
+            serde_json::json!({"type":"assistant","uuid":"a0","parentUuid":"u0","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}),
+            serde_json::json!({"type":"user","uuid":"r0","parentUuid":"a0","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}),
+            serde_json::json!({"type":"queue-operation","operation":"enqueue","content":"stop that"}),
+            serde_json::json!({"type":"attachment","uuid":"q","parentUuid":"r0","timestamp":stamp,
+                "attachment":{"type":"queued_command","prompt":"stop that","source_uuid":"src","commandMode":"prompt","timestamp":stamp}}),
+            serde_json::json!({"type":"user","uuid":"tw","parentUuid":"q","timestamp":"2026-10-10T07:10:39.900Z","message":{"role":"user","content":"stop that"}}),
+            serde_json::json!({"type":"queue-operation","operation":"remove","content":"stop that"}),
+            serde_json::json!({"type":"assistant","uuid":"a1","parentUuid":"tw","message":{"content":[{"type":"text","text":"stopped"}]}}),
+            serde_json::json!({"type":"last-prompt","lastPrompt":"stop that"}),
+            serde_json::json!({"type":"user","uuid":"u2","parentUuid":"a1","message":{"role":"user","content":"next"}}),
+        ];
+        let mut env = EnvGuard::lock();
+        let (home, dir) = msg_home("del-queued-twin");
+        let path = dir.join("sess1.jsonl");
+        fs::write(&path, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("
+")).unwrap();
+        env.set_home(&home);
+
+        let res = super::delete_message(r"C:\msgtest", "sess1", "tw");
+        let raw = fs::read_to_string(&path).unwrap();
+        let after = lines_of(&path);
+        let shown = super::load_session_history(r"C:\msgtest", "sess1");
+        let _ = fs::remove_dir_all(&home);
+
+        let v: serde_json::Value = serde_json::from_str(&res).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true), "it was refused over its own attachment: {res}");
+        assert!(!raw.contains("stop that"), "the words are gone from every line: {raw}");
+        assert!(!after.iter().any(|l| l["attachment"]["type"] == "queued_command"), "{after:?}");
+        // What hung below the user line, which hung below the attachment, hangs below what stays.
+        let a1 = after.iter().find(|l| l["uuid"] == "a1").unwrap();
+        assert_eq!(a1["parentUuid"], "r0");
+        let uuids: std::collections::HashSet<&str> = after.iter().filter_map(|l| l["uuid"].as_str()).collect();
+        for l in &after {
+            if let Some(p) = l["parentUuid"].as_str() {
+                assert!(uuids.contains(p), "dangling parentUuid {p} in {l}");
+            }
+        }
+        assert!(!shown.contains("stop that"), "and it is not drawn again on reopening: {shown}");
     }
 
     #[test]
