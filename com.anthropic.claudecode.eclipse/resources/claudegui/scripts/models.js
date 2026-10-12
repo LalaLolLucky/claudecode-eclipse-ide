@@ -217,7 +217,12 @@ window.onSettingsChanged = function (tabId, json) {
   // says yes to the switch either way, and leaves it off when the model cannot run it or
   // the user has dynamic workflows disabled: the switch then comes back off, here and in
   // the process, so that neither it nor the status bar says what is not so.
-  if (d.ultracode === false && t.ultracode) setUltracode(t, false);
+  if (d.ultracode === false && t.ultracode) {
+    // Remembered against the model it was refused on, so its row is greyed from here on
+    // instead of going on and coming back off each time (modelSupportsUltracode).
+    t.ultracodeRefusedFor = (t === activeTab() ? curModel : t.model) || '';
+    setUltracode(t, false);
+  }
   if (d.model) {
     // The CLI names the concrete model; show it as the entry the chooser has, so an
     // alias stays an alias instead of turning into a bare id.
@@ -583,11 +588,14 @@ let ultracodeOn = false;
     folder offers. Yes when the CLI has not said: it is then asked once the switch is
     on, and the switch comes back off if the answer is no (onSettingsChanged). */
 function modelSupportsUltracode(t) {
+  // The tab in front is read off the chooser's own value: a pick is there before the tab has it.
+  const model = (t && t !== activeTab() && t.model !== undefined) ? t.model : curModel;
+  // A model the CLI does not list (an older one the account still offers) is only known
+  // not to run it once the CLI has been asked: it said no for this one, in this tab.
+  if (t && t.ultracodeRefusedFor !== undefined && t.ultracodeRefusedFor === model) return false;
   const o = (typeof offersFor === 'function') ? offersFor(t) : null;
   const models = (o && o.models) || [];
   if (!models.length) return true;
-  // The tab in front is read off the chooser's own value: a pick is there before the tab has it.
-  const model = (t && t !== activeTab() && t.model !== undefined) ? t.model : curModel;
   const m = models.find(x => x && (x.value === model || x.resolvedModel === model
                                    || (!model && x.value === 'default')));
   if (!m) return true;

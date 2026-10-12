@@ -119,6 +119,9 @@ struct ProcHandle {
     /// The model and effort the CLI last reported, so a change made somewhere else
     /// — the phone, claude.ai — can be told from the settings already known here.
     last_applied: Mutex<Option<(String, String)>>,
+    /// The id of a model switch whose reply the Ultracode check is waiting for
+    /// ([`CheckWhen::AfterModelReply`]); the reader sends the check when it arrives.
+    ultracode_check_after: Mutex<Option<String>>,
     /// Whether going back to a Default model can be done on this process.
     ///
     /// The CLI's model reset returns to the model it would pick with no setting at
@@ -330,18 +333,50 @@ fn thinking_request(thinking: &str) -> serde_json::Value {
     }
 }
 
-/// Wraps a live-settings request as a control-request line.
-fn live_request_line(request: serde_json::Value) -> String {
+/// Request ids of the live-settings requests, so the reader can tell their replies apart.
+const LIVE_PREFIX: &str = "eclipse-live-";
+
+/// Wraps a live-settings request as a control-request line, with the id its reply will carry.
+fn live_request(request: serde_json::Value) -> (String, String) {
     static LIVE_SEQ: AtomicU64 = AtomicU64::new(1);
     if crate::is_debug() {
         eprintln!("[live-settings] {}", request);
     }
-    serde_json::json!({
+    let id = format!("{}{}", LIVE_PREFIX, LIVE_SEQ.fetch_add(1, Ordering::Relaxed));
+    let line = serde_json::json!({
         "type": "control_request",
-        "request_id": format!("eclipse-live-{}", LIVE_SEQ.fetch_add(1, Ordering::Relaxed)),
+        "request_id": id,
         "request": request
     })
-    .to_string()
+    .to_string();
+    (id, line)
+}
+
+/// [`live_request`] for a request whose reply nothing waits on.
+fn live_request_line(request: serde_json::Value) -> String {
+    live_request(request).1
+}
+
+/// When to ask whether Ultracode took effect ([`ultracode_check_line`]) after live settings
+/// were sent.
+#[derive(Debug, PartialEq)]
+enum CheckWhen {
+    /// Straight behind what was sent: right after `apply_flag_settings` (verified).
+    Now,
+    /// Once the model switch has been answered. A settings request written right behind
+    /// `set_model` is answered from the model the process was on (verified against 2.1.295),
+    /// so Ultracode read as in effect on a model that cannot run it, and the switch stayed on.
+    AfterModelReply,
+    /// Ultracode is off: there is nothing to confirm.
+    Never,
+}
+
+fn ultracode_check_when(model_changed: bool, ultracode: bool) -> CheckWhen {
+    match (ultracode, model_changed) {
+        (false, _) => CheckWhen::Never,
+        (true, true) => CheckWhen::AfterModelReply,
+        (true, false) => CheckWhen::Now,
+    }
 }
 
 /// Brings a running process's settings to `want` by sending it the control requests
@@ -361,6 +396,8 @@ fn apply_live_settings(p: &ProcHandle, want: &LiveSettings) -> std::io::Result<(
             "a running process cannot go back to a Default model or effort",
         ));
     }
+    // The id of the model switch, when one is sent: the Ultracode check waits on its reply.
+    let mut model_request: Option<String> = None;
     if live.model != want.model {
         // Empty is "Default": null resets the process to the model it would pick with
         // no setting, which is what a fresh Default process launches on.
@@ -369,7 +406,9 @@ fn apply_live_settings(p: &ProcHandle, want: &LiveSettings) -> std::io::Result<(
         } else {
             serde_json::json!(want.model)
         };
-        p.write_line(&live_request_line(serde_json::json!({ "subtype": "set_model", "model": model })))?;
+        let (id, line) = live_request(serde_json::json!({ "subtype": "set_model", "model": model }));
+        p.write_line(&line)?;
+        model_request = Some(id);
         live.model = want.model.clone();
     }
     if live.effort != want.effort && !want.effort.is_empty() {
@@ -399,8 +438,10 @@ fn apply_live_settings(p: &ProcHandle, want: &LiveSettings) -> std::io::Result<(
     }
     // Asked after whatever changed, a model as much as the switch: Ultracode that was
     // in effect on one model is not on another that cannot run it.
-    if want.ultracode {
-        p.write_line(&ultracode_check_line())?;
+    match ultracode_check_when(model_request.is_some(), want.ultracode) {
+        CheckWhen::Now => p.write_line(&ultracode_check_line())?,
+        CheckWhen::AfterModelReply => *p.ultracode_check_after.lock().unwrap() = model_request,
+        CheckWhen::Never => {}
     }
     Ok(())
 }
@@ -1849,6 +1890,7 @@ fn spawn_persistent(
         settings_poll: AtomicBool::new(false),
         fdescfs_diagnosed: AtomicBool::new(false),
         last_applied: Mutex::new(None),
+        ultracode_check_after: Mutex::new(None),
         default_model_live: AtomicBool::new(false),
     });
     if thinking == "0" {
@@ -2018,6 +2060,20 @@ fn reader_loop(
                     }
                     fire_string(&java_vm, &callbacks, "onSettingsChanged",
                                 &serde_json::json!({ "ultracode": on }).to_string());
+                } else if rid.starts_with(LIVE_PREFIX) {
+                    // The model switch an Ultracode check was waiting on has been answered:
+                    // the settings now say what that model made of it.
+                    let due = {
+                        let mut after = proc.ultracode_check_after.lock().unwrap();
+                        let mine = after.as_deref() == Some(rid);
+                        if mine {
+                            after.take();
+                        }
+                        mine
+                    };
+                    if due {
+                        let _ = proc.write_line(&ultracode_check_line());
+                    }
                 } else if rid.starts_with(CHROME_ON_PREFIX) {
                     // The browser was switched off while this was in flight: the
                     // banner is already gone, so a late "connected" must not bring
@@ -3733,7 +3789,7 @@ mod token_counter_tests {
 
 #[cfg(test)]
 mod ultracode_tests {
-    use super::{flag_settings_arg, ultracode_check_line, ultracode_confirmed, ultracode_in_effect, ultracode_settings, ULTRACODE_PREFIX};
+    use super::{flag_settings_arg, live_request, ultracode_check_line, ultracode_check_when, ultracode_confirmed, ultracode_in_effect, ultracode_settings, CheckWhen, LIVE_PREFIX, ULTRACODE_PREFIX};
     use serde_json::json;
 
     #[test]
@@ -3775,6 +3831,28 @@ mod ultracode_tests {
         assert!(!ultracode_confirmed(&json!({ "response": { "applied": { "ultracode": false } } })));
         assert!(!ultracode_confirmed(&json!({ "response": { "applied": { "model": "claude-opus-4-8" } } })));
         assert!(!ultracode_confirmed(&json!({ "subtype": "error", "error": "Unsupported control request subtype: get_settings" })));
+    }
+
+    #[test]
+    fn after_a_model_switch_the_check_waits_for_the_switch_to_be_answered() {
+        // Verified against 2.1.295: a settings request written right behind set_model is
+        // answered from the model the process was on, so Ultracode still reads as in effect
+        // on a model that cannot run it; one written after the reply to set_model is right.
+        // Right behind apply_flag_settings it is right as it stands.
+        assert_eq!(ultracode_check_when(true, true), CheckWhen::AfterModelReply);
+        assert_eq!(ultracode_check_when(false, true), CheckWhen::Now);
+        // Off, there is nothing to confirm.
+        assert_eq!(ultracode_check_when(true, false), CheckWhen::Never);
+        assert_eq!(ultracode_check_when(false, false), CheckWhen::Never);
+    }
+
+    #[test]
+    fn a_live_request_says_which_reply_is_its_own() {
+        let (id, line) = live_request(json!({ "subtype": "set_model", "model": "haiku" }));
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["request_id"], id.as_str());
+        assert!(id.starts_with(LIVE_PREFIX), "{id}");
+        assert_eq!(v["request"]["subtype"], "set_model");
     }
 
     #[test]
