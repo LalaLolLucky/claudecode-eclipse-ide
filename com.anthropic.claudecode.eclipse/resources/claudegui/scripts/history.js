@@ -1011,7 +1011,15 @@ function loadHistory(id, title, targetTab, opts) {
     hideWorking();
     curTurn = null; curBody = null; curText = ''; curThink = null; curThinkText = '';
   } else {
+    // A blank tab that is only connecting gives way to the conversation: the new tab
+    // takes its place and it is closed, its bridge with it, instead of staying behind.
+    const blank = isBlankConnecting(activeTab()) ? activeTab() : null;
     t = createTab({ sessionId: id, titled: true });
+    if (blank) {
+      tabs.splice(tabs.indexOf(t), 1);
+      tabs.splice(tabs.indexOf(blank), 0, t);
+      closeTab(blank.id);
+    }
     loadRender(t);                        // operate on THIS tab's render state
     // t is brand new (no stream, no render state) — nothing here to cancel or clear.
   }

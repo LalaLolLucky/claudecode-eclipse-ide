@@ -663,6 +663,14 @@ function isTabEmpty(t) {
       && !(t.images && t.images.length) && !input.value.trim()
       && !t.pane.querySelector('.turn');
 }
+/* The tab in front holds nothing but the "Establishing connection…" that Remote Control
+   on startup put in it. Not empty to isTabEmpty, and not to be loaded into either: its
+   bridge is coming up on a new conversation. */
+function isBlankConnecting(t) {
+  return !!t && t === activeTab() && !!t.rcConnecting && !t.sessionId && !t.streaming && !t.pendingCard
+      && !(t.images && t.images.length) && !input.value.trim()
+      && !t.pane.querySelector('.turn:not(.working-turn)');
+}
 
 /* /clear — start a fresh conversation IN PLACE. VSCode stays on the tab the
    command was invoked from rather than opening another one, so the tab, its
