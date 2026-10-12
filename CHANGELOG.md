@@ -4,7 +4,40 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.15] — 2026-10-09 *(current)*
+## [3.2.16] — 2026-10-12 *(current)*
+
+### Added
+- Ultracode switch in the command menu's Model section and in the Modes and model menus; it is greyed for a model that cannot run it, and the status bar shows `ultracode` while it is on ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #184).
+- The question card handles multi-select questions, with checkboxes, and shows an option's preview beside the options ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #187).
+- Answered questions stay in the conversation as a folding overview with the chosen options marked; a dismissed one reads "Declined" ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #187).
+- The Sandbox window can change the mode, the "Allow unsandboxed fallback" override and the excluded commands ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #183).
+- A message sent while Claude is working can be forked and deleted like any other ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #182).
+- The command menu has a footer with the plug-in and Claude Code versions and "Report a problem" ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #184).
+- `/usage` opens Account & Usage ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #184).
+
+### Changed
+- `/context` opens a window built from Claude Code's own numbers: the model, a token bar, a breakdown by category, the memory files and the custom agents ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #184).
+- Account & Usage shows the session's cost, time, code changes and what each model used, and the plan's limits with when each resets ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #184).
+- Long conversations open several times faster ([@jmoraleda](https://github.com/jmoraleda), PR #185).
+- Clicking the Effort or Zoom row in the command menu steps to the next value ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #184).
+- In the command menu, Support comes last, after Appearance, and `/workflows` is no longer listed ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #184).
+- The Sandbox window says in words why sandboxing is unavailable, and lists the sandbox's restrictions ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #183).
+- A forked conversation is named after the one it came from, with "(fork)" after it ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #183).
+
+### Fixed
+- A message sent while Claude is working no longer disappears when the conversation is reopened ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #182).
+- What Claude writes after a message sent mid-turn appears below that message, not above it ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #182).
+- Find in Conversation opens whatever hides a match (the rest of a long message, a collapsed tool card, a thinking block) and no longer matches the labels of buttons ([@jmoraleda](https://github.com/jmoraleda), PR #186).
+- "Thought for Ns" shows each thinking step's own time instead of growing through the turn ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #183).
+- The token count beside "Thinking…" no longer falls back at each step of a turn ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #183).
+- "Remote Control could not start." now says why ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #183).
+- Account & Usage no longer says "not signed in" for an API key or auth token login ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #184).
+- With "Enable Remote Control for all sessions" on, forking a message no longer opens two tabs.
+- With "Enable Remote Control for all sessions" on, opening a conversation from Session History no longer leaves a blank connecting tab behind.
+
+---
+
+## [3.2.15] — 2026-10-09
 
 ### Added
 - The command menu is rebuilt in sections (Context, Model, Customize, Settings, Support, Appearance), with switches for Thinking and Focus view (#90).
