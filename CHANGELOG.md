@@ -4,7 +4,24 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.16] — 2026-10-12 *(current)*
+## [3.2.17] — 2026-10-13 *(current)*
+
+### Added
+- `forge` tool: Claude runs the whole build procedure in one call (refresh, clean, build, refresh, build) and warns when Build Automatically is on.
+- `autoBuild` tool: Claude reports Build Automatically, or switches it on or off.
+- `quickFix` tool: Claude lists the quick fixes Eclipse offers for a file's problems and applies one.
+- `projects`, `localHistory`, `tasks` and `workspaceSearch` tools: Claude opens, closes and imports projects, restores a file from local history, lists task markers, and searches with Eclipse's File Search.
+- `callHierarchy`, `classpath` and `generateJava` tools for Java: a method's callers and callees, a project's build path, and generated getters and setters, constructors and override stubs.
+- `targetPlatform` and `mavenUpdate` tools, where PDE or m2e is installed: reload the target platform, and update Maven projects from their `pom.xml`.
+- `claudeCodeEclipse` in the Claude Code view: Claude reads a tab's conversation, stops its turn, attaches files to a prompt, forks, rewinds or deletes at a message, bookmarks replies, archives or renames a saved conversation, and gets the usage figures or the conversation as text.
+- `claudeCodeEclipse` in the Claude Terminal: Claude reads what the terminal shows and presses keys in it.
+
+### Fixed
+- With Remote Control on, forking a conversation no longer switches Remote Control off in the conversation it was forked from.
+
+---
+
+## [3.2.16] — 2026-10-12
 
 ### Added
 - Ultracode switch in the command menu's Model section and in the Modes and model menus; it is greyed for a model that cannot run it, and the status bar shows `ultracode` while it is on ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #184).
