@@ -88,6 +88,7 @@ import org.eclipse.terminal.control.ITerminalViewControl;
 import org.eclipse.terminal.control.TerminalTitleRequestor;
 import org.eclipse.terminal.internal.emulator.VT100TerminalControl;
 import org.eclipse.terminal.internal.preferences.ITerminalConstants;
+import org.eclipse.terminal.model.ITerminalTextDataReadOnly;
 import org.eclipse.terminal.model.TerminalColor;
 
 import com.anthropic.claudecode.eclipse.Activator;
@@ -165,9 +166,18 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
     /** How long it gives /remote-control to put its menu up before answering it. */
     private static final int MENU_PAUSE_MS = 1500;
 
-    /** Something the tool types into a tab: the text, then Enter, then {@code then} if there is
-     *  one, then a pause before whatever it types next. No text is a bare Enter. */
-    private record Typed(String text, int pauseMs, Runnable then) {}
+    /** How long it leaves between two keys it presses one after the other: a program reading
+     *  keys takes what arrives together as one key. */
+    private static final int KEY_PAUSE_MS = 150;
+
+    /** Something the tool types into a tab: the text, then Enter unless {@code enter} is off,
+     *  then {@code then} if there is one, then a pause before whatever it types next. No text
+     *  is a bare Enter. */
+    private record Typed(String text, int pauseMs, Runnable then, boolean enter) {
+        Typed(String text, int pauseMs, Runnable then) {
+            this(text, pauseMs, then, true);
+        }
+    }
 
     /** The view while it exists, in whichever perspective it is open: a page finds only the
      *  views of the perspective in front. Null once it is disposed. */
@@ -866,6 +876,20 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         return item != null && ((TerminalSession) item.getData()).switchRemoteControl(on);
     }
 
+    /** Presses {@code keys} in the tab with that id, each given as the characters a terminal
+     *  sends for it. False when there is no such tab, or nothing running in it to take them. */
+    public static boolean toolPress(String tabId, List<String> keys) {
+        CTabItem item = toolTab(tabId);
+        return item != null && ((TerminalSession) item.getData()).press(keys);
+    }
+
+    /** The last {@code lines} lines of the tab with that id, as text. Null when there is no
+     *  such tab, or its text cannot be read. */
+    public static String toolScreen(String tabId, int lines) {
+        CTabItem item = toolTab(tabId);
+        return item == null ? null : ((TerminalSession) item.getData()).screen(lines);
+    }
+
     /** Closes the tab with that id, ending Claude in it, as its close button does. False when
      *  there is no such tab. */
     public static boolean toolClose(String tabId) {
@@ -1280,6 +1304,49 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             return true;
         }
 
+        /** Presses keys for the claudeCodeEclipse tool: each as the characters a terminal
+         *  sends for it, one after the other with no Enter of its own, behind whatever the
+         *  tool typed here just before. */
+        boolean press(List<String> keys) {
+            Typed[] entries = new Typed[keys.size()];
+            for (int i = 0; i < entries.length; i++) {
+                entries[i] = new Typed(keys.get(i), i == entries.length - 1 ? TYPING_PAUSE_MS : KEY_PAUSE_MS, null, false);
+            }
+            return type(entries);
+        }
+
+        /**
+         * The last {@code lines} lines the terminal holds, scrollback included, as text; the
+         * blank lines below the last one with anything on it are left off. Null when it
+         * cannot be read: the control keeps what it shows to itself (no API reaches it), so
+         * it is taken from the control's own field, which another version may not have.
+         */
+        String screen(int lines) {
+            if (disposed || termControl == null || termControl.isDisposed()) return null;
+            try {
+                java.lang.reflect.Field model = VT100TerminalControl.class.getDeclaredField("fTerminalModel");
+                model.setAccessible(true);
+                if (!(model.get(termControl) instanceof ITerminalTextDataReadOnly text)) return null;
+                int last = text.getHeight() - 1;
+                while (last >= 0 && lineOf(text, last).isEmpty()) last--;
+                StringBuilder out = new StringBuilder();
+                for (int i = Math.max(0, last - lines + 1); i <= last; i++) {
+                    out.append(lineOf(text, i)).append('\n');
+                }
+                return out.toString();
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                ClaudeCodeView.debug("[claudeCodeEclipse] the terminal's text could not be read: " + e);
+                return null;
+            }
+        }
+
+        private static String lineOf(ITerminalTextDataReadOnly text, int line) {
+            char[] chars = text.getChars(line);
+            if (chars == null) return "";
+            // A cell nothing was written to holds a NUL.
+            return new String(chars).replace('\0', ' ').stripTrailing();
+        }
+
         private boolean type(Typed... entries) {
             if (disposed || termControl == null || termControl.isDisposed()
                     || termControl.getState() != TerminalState.CONNECTED) {
@@ -1299,7 +1366,7 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             }
             typing = true;
             if (!next.text().isEmpty()) termControl.pasteString(next.text());
-            termControl.sendKey('\r');
+            if (next.enter()) termControl.sendKey('\r');
             if (next.then() != null) next.then().run();
             Display.getCurrent().timerExec(next.pauseMs(), this::typeNext);
         }

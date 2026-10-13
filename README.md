@@ -141,16 +141,25 @@ Claude has access to the following MCP tools, which it invokes automatically:
 | `refresh` | Refresh projects from the filesystem, so files changed outside Eclipse are picked up |
 | `clean` | Discard build output and problem markers |
 | `build` | Clean and/or rebuild projects and report the resulting compile errors |
+| `forge` | Run the whole build procedure in one call — refresh, clean, build, refresh, build — and report the errors after each pass |
+| `autoBuild` | Report whether the workspace builds automatically, or switch that on or off |
 | `runAs` | Run a project the way **Run As** does, or a saved launch configuration by name |
 | `launches` | List running and finished launches, read a launch's console output, or stop it |
 | `errorLog` | Read Eclipse's error log (the Error Log view), newest first, filtered by severity or plug-in |
 | `debug` | Debug a program started in debug mode: threads, stack and variables, evaluate expressions, line breakpoints, resume and step |
 | `format` | Format a file with Eclipse's formatter for its language and the project's settings, then save it |
 | `refactorResource` | Rename or move a file, folder or project as an Eclipse refactoring — references follow, and Edit → Undo reverts it |
+| `quickFix` | List the quick fixes Eclipse offers for a file's problems, and apply one |
+| `projects` | List the workspace's projects, open or close them, or import a folder as a project |
+| `localHistory` | List a file's earlier contents in Eclipse's local history, read one, or restore it |
+| `tasks` | List the TODO, FIXME and other task markers of the Tasks view |
+| `workspaceSearch` ‡ | Search file contents with Eclipse's File Search: unsaved editor contents and linked folders included, build output skipped |
+| `targetPlatform` ‡ | Show the target platform plug-in projects are built against, or reload it after a `.target` file has changed |
+| `mavenUpdate` ‡ | Update Maven projects from their `pom.xml`, as **Maven → Update Project** does |
 | `eclipseShowView` | Open or close a view such as Problems, Console or Git Staging, or list the views this Eclipse has |
 | `eclipseOpenPerspective` | Switch to or close a perspective such as Java, Debug or Git, or list the perspectives this Eclipse has |
 | `eclipseDialog` | List the dialogs that are open, in this Eclipse or another Eclipse instance, and press a button in one by its label |
-| `claudeCodeEclipse` | Drive the plugin's own views. In the Claude Code view: list, open, set up, prompt and close conversation tabs — under any folder already trusted — run slash commands, reopen past conversations and switch Remote Control. In the Claude Terminal: open and close tabs, send a prompt or a slash command, set the model and effort, and switch Remote Control |
+| `claudeCodeEclipse` | Drive the plugin's own views. In the Claude Code view: list, open, set up, prompt and close conversation tabs — under any folder already trusted — run slash commands, reopen past conversations and switch Remote Control; read a tab's conversation, stop its turn, attach files to a prompt, fork, rewind or delete at a message, bookmark replies, archive or rename a saved conversation, and get the usage figures or the conversation as text. In the Claude Terminal: open and close tabs, send a prompt or a slash command, set the model and effort, switch Remote Control, read what the terminal shows and press keys in it |
 | `findReferences` † | Find every reference to a Java type or member |
 | `getSymbolInfo` † | Resolve the Java symbol at a position — kind, declaring type, signature |
 | `getTypeHierarchy` † | Show a Java type's supertypes and subtypes |
@@ -158,8 +167,13 @@ Claude has access to the following MCP tools, which it invokes automatically:
 | `getSource` † | Read the source of a Java type or member, including library classes inside JARs |
 | `refactorJava` † | Rename a Java type, method or field, or move a type to another package, updating every reference |
 | `organizeImports` † | Add missing imports, remove unused ones, and order them by the project's settings |
+| `callHierarchy` † | Show what calls a Java method, or what it calls, as a tree several levels deep |
+| `classpath` † | Show a Java project's build path — source folders, projects, libraries and containers — and its problems |
+| `generateJava` † | Generate getters and setters, a constructor from fields, or stubs overriding inherited methods |
 
 † Requires the Java Development Tools (JDT). The plugin never hard-depends on JDT — these tools are simply absent from the tool list when it isn't installed, and everything else works without it.
+
+‡ Present only when the plug-in it drives is installed: Eclipse's File Search for `workspaceSearch`, the Plug-in Development Environment (PDE) for `targetPlatform`, and Maven integration (m2e) for `mavenUpdate`.
 
 In the Claude Terminal these tools are available while **Enable MCP tools integration** is ticked in the preferences, which it is by default.
 

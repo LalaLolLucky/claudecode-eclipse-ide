@@ -1,8 +1,12 @@
 package com.anthropic.claudecode.eclipse.tools;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.BooleanSupplier;
@@ -23,7 +27,9 @@ import com.google.gson.JsonParser;
  * The Claude Code view's part of {@link ClaudeCodeEclipseTool}: its conversation tabs — opening
  * and closing them, sending a prompt or a slash command into one, switching Remote Control on or
  * off for one — each tab's model, effort, thinking and permission mode, and the saved
- * conversations a tab can be opened on.
+ * conversations a tab can be opened on; and what the view offers on a conversation: reading
+ * it, stopping its turn, forking, rewinding or deleting at a message, bookmarks, the archive,
+ * a conversation's name, the usage figures and the conversation as text.
  *
  * <p>The tabs and their settings live in the view's page, so an action on them is carried out
  * there ({@code scripts/claudetool.js}) by the same code paths the composer's own controls
@@ -32,10 +38,24 @@ import com.google.gson.JsonParser;
  */
 class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
 
-    private static final List<String> ACTIONS = List.of("listTabs", "newTab", "configureTab", "sendPrompt", "runCommand", "remoteControl", "closeTab", "listHistory", "openSession");
+    private static final List<String> ACTIONS = List.of("listTabs", "newTab", "configureTab", "sendPrompt", "runCommand", "remoteControl", "closeTab", "listHistory", "openSession",
+            "readTab", "stopTab", "forkMessage", "rewindCode", "deleteMessage", "listBookmarks", "setBookmark",
+            "archiveSession", "renameSession", "usage", "exportConversation");
+
+    /** The actions on a saved conversation, which is checked here before the page is asked. */
+    private static final List<String> ON_A_SESSION = List.of("openSession", "archiveSession", "renameSession");
 
     /** What an action may send to the page; anything else in the call stays behind. */
-    private static final List<String> PARAMS = List.of("tabId", "folder", "model", "effort", "thinking", "mode", "prompt", "command", "enabled", "remoteControl");
+    private static final List<String> PARAMS = List.of("tabId", "folder", "model", "effort", "thinking", "mode", "prompt", "command", "enabled", "remoteControl",
+            "messageId", "replyId", "restoreCode", "preview", "archived", "limit");
+
+    /** How long an answer the page has to wait for is waited for here, and how often the page
+     *  is asked whether it has come. The page gives up on the CLI first, and says so. */
+    private static final long WAIT_MS = 120_000;
+    private static final long POLL_MS = 200;
+
+    /** The most of an exported conversation that goes into a result; the rest needs 'file'. */
+    private static final int MAX_EXPORT_CHARS = 100_000;
 
     /** How many conversations 'listHistory' shows when no 'limit' says, and the most there are
      *  to show: the core lists a folder's 100 most recent. */
@@ -160,24 +180,71 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
                 + "machine, not the ones on claude.ai. action='openSession' opens the conversation "
                 + "with 'sessionId' in a new tab under that folder, on the settings it was last "
                 + "used with, or brings its tab to the front when it is already open. "
+                + "action='readTab' returns the conversation the tab with 'tabId' shows, or the tab "
+                + "in front: the last 'limit' of the user's messages and Claude's replies, each "
+                + "with the 'messageId' or 'replyId' other actions take, and whether Claude is "
+                + "still working or the tab waits on an approval or question card. Read it to "
+                + "see the answer to a prompt that was sent. "
+                + "action='stopTab' stops what Claude is doing in the tab with 'tabId', like the "
+                + "Stop button, and leaves the tab open. "
+                + "'sendPrompt' and 'newTab' with a 'prompt' also take 'files', which go with the "
+                + "message as attached files. "
+                + "action='forkMessage' opens the conversation as it was before the user's message "
+                + "'messageId' in a new tab, and answers with that message's text; with "
+                + "'restoreCode' true the files Claude edited are first put back as they were then. "
+                + "action='rewindCode' puts those files back and leaves the conversation alone; "
+                + "with 'preview' true it only lists what would change. Either overwrites what is "
+                + "in those files now. action='deleteMessage' removes the user's message "
+                + "'messageId' from the conversation's saved history for good, which cannot be "
+                + "undone. These three work on a tab under the folder tab in front. "
+                + "action='listBookmarks' lists the bookmarked replies of a tab, and "
+                + "action='setBookmark' bookmarks the reply 'replyId' or, with 'enabled' false, "
+                + "takes its bookmark away. "
+                + "action='archiveSession' puts the saved conversation 'sessionId' into the archive "
+                + "('archived' true), closing its tab when it has one, or takes it back out. "
+                + "action='renameSession' gives the saved conversation 'sessionId' the name "
+                + "'title'; it has to be one of the folder tab in front. "
+                + "action='usage' returns the account's usage figures as Claude Code reports them. "
+                + "action='exportConversation' returns a tab's whole conversation as plain text, or "
+                + "writes it to 'file'. "
                 + "A call cannot tell which tab it was made from, so take 'tabId' from 'listTabs' "
                 + "or 'newTab'; closing the tab the call came from ends this conversation.";
     }
 
     @Override
     public void describeParams(JsonObject props) {
-        props.add("tabId", param("string", "claudeCodeView configureTab/sendPrompt/runCommand/remoteControl/closeTab: "
-                + "the tab, as shown by 'listTabs', e.g. 'tab2'. Required for all but 'configureTab'; "
-                + "'configureTab' without it changes the tab in front."));
-        props.add("folder", param("string", "claudeCodeView newTab/listHistory/openSession: the full "
+        props.add("tabId", param("string", "claudeCodeView configureTab/sendPrompt/runCommand/remoteControl/closeTab/"
+                + "readTab/stopTab/forkMessage/rewindCode/deleteMessage/listBookmarks/setBookmark/usage/"
+                + "exportConversation: the tab, as shown by 'listTabs', e.g. 'tab2'. Left out, "
+                + "'configureTab', 'readTab', 'listBookmarks', 'usage' and 'exportConversation' take the "
+                + "tab in front; the others require it."));
+        props.add("folder", param("string", "claudeCodeView newTab/listHistory/openSession/archiveSession: the full "
                 + "path of the folder the conversation runs in, such as a 'root' from 'listTabs'. Left "
                 + "out, the folder tab in front."));
-        props.add("sessionId", param("string", "claudeCodeView openSession: the conversation, as "
-                + "'listHistory' shows it."));
+        props.add("sessionId", param("string", "claudeCodeView openSession/archiveSession/renameSession: "
+                + "the conversation, as 'listHistory' shows it."));
         props.add("query", param("string", "claudeCodeView listHistory: show only the conversations "
                 + "whose title contains this."));
         props.add("limit", param("number", "claudeCodeView listHistory: how many to show, 1 to 100; "
-                + "30 when left out."));
+                + "30 when left out. readTab: how many of the last messages and replies, 1 to 200; 20 "
+                + "when left out."));
+        props.add("files", ToolSupport.strings("claudeCodeView sendPrompt/newTab: full paths of files to "
+                + "attach to the prompt."));
+        props.add("messageId", param("string", "claudeCodeView forkMessage/rewindCode/deleteMessage: a "
+                + "message of the user's, as 'readTab' shows it."));
+        props.add("replyId", param("string", "claudeCodeView setBookmark: a reply of Claude's, as "
+                + "'readTab' shows it."));
+        props.add("restoreCode", param("boolean", "claudeCodeView forkMessage: true also puts the files "
+                + "back as they were at that message."));
+        props.add("preview", param("boolean", "claudeCodeView rewindCode: true only lists the files that "
+                + "would change."));
+        props.add("archived", param("boolean", "claudeCodeView archiveSession: true archives the "
+                + "conversation, false takes it back out of the archive."));
+        props.add("title", param("string", "claudeCodeView renameSession: the conversation's new name, "
+                + "on one line."));
+        props.add("file", param("string", "claudeCodeView exportConversation: the full path of a file "
+                + "to write the conversation to; it must not exist yet. Left out, the text comes back "
+                + "in the result."));
         props.add("prompt", param("string", "claudeCodeView sendPrompt/newTab: the message to send. "
                 + "A slash command goes through 'runCommand' instead."));
         props.add("command", param("string", "claudeCodeView runCommand: the slash command, with "
@@ -193,7 +260,8 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
                 + "default (ask before edits), acceptEdits, plan, auto or bypassPermissions; "
                 + "'listTabs' shows which are available here."));
         props.add("enabled", param("boolean", "claudeCodeView remoteControl: true switches Remote "
-                + "Control on for the tab, false switches it off."));
+                + "Control on for the tab, false switches it off. setBookmark: false takes the "
+                + "bookmark away."));
         props.add("remoteControl", param("boolean", "claudeCodeView newTab: true opens the tab with "
                 + "Remote Control on. A 'prompt' given with it is sent once it has connected."));
     }
@@ -215,27 +283,151 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
         for (String key : PARAMS) {
             if (params.has(key) && !params.get(key).isJsonNull()) request.add(key, params.get(key));
         }
-        if ("openSession".equals(action)) {
-            String refusal = describeSession(params, request);
-            if (refusal != null) return McpToolResult.error(refusal);
+        Path exportTo = null;
+        try {
+            if (ON_A_SESSION.contains(action)) {
+                String refusal = describeSession(params, request);
+                if (refusal != null) return McpToolResult.error(refusal);
+            }
+            if ("renameSession".equals(action)) nameRename(params, request);
+            if (params.has("files") && !params.get("files").isJsonNull()) request.add("files", filesOf(params));
+            if ("exportConversation".equals(action)) exportTo = exportFileOf(params);
+        } catch (IllegalArgumentException e) {
+            return McpToolResult.error(e.getMessage());
         }
 
-        String reply = page.apply(request.toString());
-        if (reply == null) {
-            return McpToolResult.error("The Claude Code view is not open. Open it with eclipseShowView "
-                    + "(viewId '" + ClaudeGuiView.VIEW_ID + "') and try again.");
-        }
         try {
-            JsonObject out = JsonParser.parseString(reply).getAsJsonObject();
-            if (!out.has("ok") || !out.get("ok").getAsBoolean()) {
+            JsonObject out = answer(request.toString());
+            // An answer the page has to wait for itself comes as a token to ask again under.
+            if (out != null && ok(out) && out.has("wait")) out = collect(out.get("wait").getAsString());
+            if (out == null) {
+                return McpToolResult.error("The Claude Code view is not open. Open it with eclipseShowView "
+                        + "(viewId '" + ClaudeGuiView.VIEW_ID + "') and try again.");
+            }
+            if (!ok(out)) {
                 return McpToolResult.error(out.has("error") ? out.get("error").getAsString()
                         : "The Claude Code view could not carry out '" + action + "'.");
             }
             out.remove("ok");
+            if ("exportConversation".equals(action)) deliverExport(out, exportTo);
             return McpToolResult.success(out);
+        } catch (IOException e) {
+            return McpToolResult.error("The conversation could not be written to " + exportTo + ": " + e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return McpToolResult.error("'" + action + "' was interrupted while waiting for Claude Code's answer.");
         } catch (RuntimeException e) {
             return McpToolResult.error("The Claude Code view gave an unreadable answer to '" + action
                     + "': " + e.getClass().getSimpleName());
+        }
+    }
+
+    /** The page's answer to a request, null when there is no page to ask. */
+    private JsonObject answer(String requestJson) {
+        String reply = page.apply(requestJson);
+        return reply == null ? null : JsonParser.parseString(reply).getAsJsonObject();
+    }
+
+    private static boolean ok(JsonObject out) {
+        return out.has("ok") && out.get("ok").getAsBoolean();
+    }
+
+    /**
+     * Asks the page for an answer it was still waiting for, until it has it. The page answers
+     * on the UI thread and cannot wait there, so the waiting is done here, between asks.
+     */
+    private JsonObject collect(String token) throws InterruptedException {
+        JsonObject ask = new JsonObject();
+        ask.addProperty("action", "collect");
+        ask.addProperty("token", token);
+        long until = System.currentTimeMillis() + WAIT_MS;
+        while (true) {
+            JsonObject out = answer(ask.toString());
+            if (out == null || !ok(out)) return out;
+            if (out.has("done") && out.get("done").getAsBoolean()) {
+                out.remove("done");
+                return out;
+            }
+            if (System.currentTimeMillis() > until) {
+                JsonObject late = new JsonObject();
+                late.addProperty("ok", false);
+                late.addProperty("error", "Claude Code did not answer in time.");
+                return late;
+            }
+            Thread.sleep(POLL_MS);
+        }
+    }
+
+    /** A 'renameSession' call's new name, and the one folder it can be carried out in. */
+    private void nameRename(JsonObject params, JsonObject request) {
+        String title = ClaudeCodeEclipseTool.str(params, "title");
+        if (title == null) throw new IllegalArgumentException("'title' is required: the conversation's new name.");
+        // The view renames a conversation of the folder in front (ClaudeGuiView#renameSessionFile).
+        if (!Paths.get(request.get("folder").getAsString()).equals(Paths.get(history.frontFolder()).normalize())) {
+            throw new IllegalArgumentException("A conversation is renamed under the folder tab in front, and "
+                    + "that one belongs to another folder. The user brings its folder tab to the front first.");
+        }
+        request.addProperty("newTitle", title);
+    }
+
+    /** The files a call attaches, each checked to be one, as full paths. */
+    private static JsonArray filesOf(JsonObject params) {
+        if (!params.get("files").isJsonArray()) {
+            throw new IllegalArgumentException("'files' must be a list of file paths.");
+        }
+        JsonArray out = new JsonArray();
+        for (JsonElement e : params.getAsJsonArray("files")) {
+            String named = e.isJsonPrimitive() ? e.getAsString().trim() : "";
+            Path path = null;
+            try {
+                path = Paths.get(named);
+            } catch (InvalidPathException bad) {
+                // refused below
+            }
+            if (path == null || !path.isAbsolute()) {
+                throw new IllegalArgumentException("'files' takes full paths; '" + named + "' is not one.");
+            }
+            if (!Files.isRegularFile(path)) throw new IllegalArgumentException("There is no file at " + path + ".");
+            out.add(path.normalize().toString());
+        }
+        return out;
+    }
+
+    /** Where an 'exportConversation' call wants the text written, null for in the result. */
+    private static Path exportFileOf(JsonObject params) {
+        String named = ClaudeCodeEclipseTool.str(params, "file");
+        if (named == null) return null;
+        Path path = null;
+        try {
+            path = Paths.get(named);
+        } catch (InvalidPathException bad) {
+            // refused below
+        }
+        if (path == null || !path.isAbsolute()) throw new IllegalArgumentException("'file' must be a full path.");
+        path = path.normalize();
+        if (Files.exists(path)) throw new IllegalArgumentException("There is already a file at " + path + ".");
+        if (path.getParent() == null || !Files.isDirectory(path.getParent())) {
+            throw new IllegalArgumentException("There is no folder " + path.getParent() + " to write the file in.");
+        }
+        return path;
+    }
+
+    /** Puts an exported conversation where the call wanted it: in the file, or in the result
+     *  as far as a result should carry it. */
+    private static void deliverExport(JsonObject out, Path file) throws IOException {
+        String text = out.has("text") ? out.get("text").getAsString() : "";
+        out.addProperty("characters", text.length());
+        if (file != null) {
+            Files.writeString(file, text, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+            out.remove("text");
+            out.addProperty("file", file.toString());
+        } else if (text.length() > MAX_EXPORT_CHARS) {
+            out.addProperty("text", text.substring(0, MAX_EXPORT_CHARS));
+            out.addProperty("truncated", true);
+            JsonArray notes = new JsonArray();
+            notes.add("Only the first " + MAX_EXPORT_CHARS + " characters are here. Pass 'file' to have "
+                    + "the whole conversation written to a file.");
+            out.add("notes", notes);
         }
     }
 
@@ -282,8 +474,8 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
     }
 
     /**
-     * Checks an 'openSession' call and gives the page what it needs to carry it out: the folder
-     * spelled out, and the conversation's title.
+     * Checks a call on a saved conversation and gives the page what it needs to carry it out:
+     * the folder spelled out, and the conversation's title.
      *
      * @return why it cannot be opened, or null when it can
      */

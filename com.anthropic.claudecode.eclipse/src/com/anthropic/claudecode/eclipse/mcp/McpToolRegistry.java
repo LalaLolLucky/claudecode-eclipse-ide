@@ -7,6 +7,7 @@ import org.eclipse.core.runtime.Platform;
 
 import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.tools.AcceptDiffTool;
+import com.anthropic.claudecode.eclipse.tools.AutoBuildTool;
 import com.anthropic.claudecode.eclipse.tools.BuildTool;
 import com.anthropic.claudecode.eclipse.tools.CheckDocumentDirtyTool;
 import com.anthropic.claudecode.eclipse.tools.ClaudeCodeEclipseTool;
@@ -18,20 +19,32 @@ import com.anthropic.claudecode.eclipse.tools.EclipseOpenPerspectiveTool;
 import com.anthropic.claudecode.eclipse.tools.EclipseShowViewTool;
 import com.anthropic.claudecode.eclipse.tools.ErrorLogTool;
 import com.anthropic.claudecode.eclipse.tools.FormatTool;
+import com.anthropic.claudecode.eclipse.tools.ForgeTool;
 import com.anthropic.claudecode.eclipse.tools.GetCurrentSelectionTool;
 import com.anthropic.claudecode.eclipse.tools.GetDiagnosticsTool;
 import com.anthropic.claudecode.eclipse.tools.GetLatestSelectionTool;
 import com.anthropic.claudecode.eclipse.tools.GetOpenEditorsTool;
 import com.anthropic.claudecode.eclipse.tools.GetWorkspaceFoldersTool;
 import com.anthropic.claudecode.eclipse.tools.LaunchesTool;
+import com.anthropic.claudecode.eclipse.tools.LocalHistoryTool;
+import com.anthropic.claudecode.eclipse.tools.MavenUpdateTool;
 import com.anthropic.claudecode.eclipse.tools.OpenDiffTool;
 import com.anthropic.claudecode.eclipse.tools.OpenFileTool;
+import com.anthropic.claudecode.eclipse.tools.ProjectsTool;
+import com.anthropic.claudecode.eclipse.tools.QuickFixTool;
 import com.anthropic.claudecode.eclipse.tools.RefactorResourceTool;
 import com.anthropic.claudecode.eclipse.tools.RefreshTool;
 import com.anthropic.claudecode.eclipse.tools.RejectDiffTool;
 import com.anthropic.claudecode.eclipse.tools.RunAsTool;
 import com.anthropic.claudecode.eclipse.tools.SaveDocumentTool;
+import com.anthropic.claudecode.eclipse.tools.TargetPlatformTool;
+import com.anthropic.claudecode.eclipse.tools.TasksTool;
+import com.anthropic.claudecode.eclipse.tools.ToolSupport;
+import com.anthropic.claudecode.eclipse.tools.WorkspaceSearchTool;
+import com.anthropic.claudecode.eclipse.tools.jdt.CallHierarchyTool;
+import com.anthropic.claudecode.eclipse.tools.jdt.ClasspathTool;
 import com.anthropic.claudecode.eclipse.tools.jdt.FindReferencesTool;
+import com.anthropic.claudecode.eclipse.tools.jdt.GenerateJavaTool;
 import com.anthropic.claudecode.eclipse.tools.jdt.GetSourceTool;
 import com.anthropic.claudecode.eclipse.tools.jdt.GetSymbolInfoTool;
 import com.anthropic.claudecode.eclipse.tools.jdt.GetTypeHierarchyTool;
@@ -65,7 +78,8 @@ public class McpToolRegistry {
         // FormatTool the platform debug model and editor bundles, RefactorResourceTool
         // org.eclipse.ltk.core.refactoring, and EclipseShowViewTool,
         // EclipseOpenPerspectiveTool and EclipseDialogTool only org.eclipse.ui — all hard Require-Bundles in the base
-        // Platform.
+        // Platform. ForgeTool, AutoBuildTool, ProjectsTool, LocalHistoryTool and TasksTool need only
+        // org.eclipse.core.resources, and QuickFixTool org.eclipse.ui.ide.
         // RunAsTool reaches the individual launchers (PDE's "Eclipse Application", JDT's "Java
         // Application", …) through the extension registry, and DebugTool each language's
         // debugger through the debug model's interfaces, never an import — so a missing
@@ -73,19 +87,45 @@ public class McpToolRegistry {
         register(new RefreshTool());
         register(new CleanTool());
         register(new BuildTool());
+        register(new ForgeTool());
+        register(new AutoBuildTool());
         register(new RunAsTool());
         register(new LaunchesTool());
         register(new ErrorLogTool());
         register(new DebugTool());
         register(new FormatTool());
         register(new RefactorResourceTool());
+        register(new QuickFixTool());
+        register(new ProjectsTool());
+        register(new LocalHistoryTool());
+        register(new TasksTool());
         register(new EclipseShowViewTool());
         register(new EclipseOpenPerspectiveTool());
         register(new EclipseDialogTool());
         register(new ClaudeCodeEclipseTool());
         register(new com.anthropic.claudecode.eclipse.tools.ApprovalPromptTool());
         register(new com.anthropic.claudecode.eclipse.tools.AskUserQuestionTool());
+        registerOptionalToolsIfAvailable();
         registerJdtToolsIfAvailable();
+    }
+
+    /**
+     * Registers the tools that drive a plug-in an Eclipse may not have. workspaceSearch
+     * imports the File Search engine, an optional {@code Require-Bundle}, so its class is
+     * loaded only behind the guard, like the JDT tools below. targetPlatform and mavenUpdate
+     * reach PDE and m2e by name and import neither; their guards only keep a tool that could
+     * do nothing out of the list.
+     */
+    private void registerOptionalToolsIfAvailable() {
+        if (ToolSupport.installed("org.eclipse.search")) {
+            try {
+                register(new WorkspaceSearchTool());
+            } catch (LinkageError | RuntimeException e) {
+                Activator.logError("File Search present but the workspaceSearch tool could not be created; skipping", e);
+            }
+        }
+        if (ToolSupport.installed(TargetPlatformTool.PDE)) register(new TargetPlatformTool());
+        if (ToolSupport.installed(MavenUpdateTool.M2E)) register(new MavenUpdateTool());
     }
 
     /**
@@ -106,6 +146,9 @@ public class McpToolRegistry {
             register(new GetTypeHierarchyTool());
             register(new GetSymbolInfoTool());
             register(new GetSourceTool());
+            register(new CallHierarchyTool());
+            register(new ClasspathTool());
+            register(new GenerateJavaTool());
         } catch (LinkageError | RuntimeException e) {
             Activator.logError("JDT present but Java navigation tools could not be created; skipping", e);
         }

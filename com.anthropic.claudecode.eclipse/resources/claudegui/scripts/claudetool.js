@@ -2,7 +2,9 @@
    lists the conversation tabs, opens them (under a chosen folder) and closes them, sends a prompt into one,
    runs a slash command in one, opens a saved conversation in one,
    switches Remote Control on or off for one, and sets a tab's model/effort/thinking/
-   permission mode. Java calls window.__ccTool(requestJson) and hands the returned JSON
+   permission mode; reads a tab's conversation, stops its turn, forks, rewinds or deletes
+   at one of its messages, bookmarks a reply, archives or renames a saved conversation,
+   and asks the CLI for the usage figures or the conversation as text. Java calls window.__ccTool(requestJson) and hands the returned JSON
    back to Claude (ClaudeGuiView#pageTool). */
 
 (function () {
@@ -139,25 +141,40 @@
     return text;
   }
 
+  /* A tab restored from the last Eclipse session holds only its session id until it is
+     first shown (see switchTab). Whatever reads or adds to its conversation has it
+     rebuilt first, read on the spot and not in the background. */
+  function drawn(t) {
+    if (!t._restore) return;
+    const rs = t._restore;
+    t._restore = null;
+    loadHistory(rs.sessionId, rs.title, t, { sync: true });
+  }
+
+  /* The files a request attaches, each the way the composer attaches a file by its path:
+     the message names the path and Claude reads the file itself. Java has checked that
+     each one is there. */
+  function filesOf(req) {
+    if (req.files === undefined) return [];
+    if (!Array.isArray(req.files)) refuse("'files' must be a list of file paths.");
+    return req.files.map(p => pathAttachment(basename(String(p)), String(p)));
+  }
+
   /* Sends `text` as the user's next message in tab `t`, front or not — what doSend()
-     does for the tab in front, without the composer: no draft, attachment or editor
-     context goes with it, and the composer of the tab in front is left as it is.
+     does for the tab in front, without the composer: no draft or editor context goes
+     with it, only the `files` the call names, and the composer of the tab in front is
+     left as it is.
      @returns {boolean} whether it was queued behind a turn already running */
-  function send(t, text) {
-    // A tab restored from the last Eclipse session holds only its session id until it
-    // is first shown (see switchTab). Rebuilt here first, or that later rebuild would
-    // empty the pane this turn is rendering into. Read on the spot, not in the
-    // background: the message about to be sent is written to the same transcript.
-    if (t._restore) {
-      const rs = t._restore;
-      t._restore = null;
-      loadHistory(rs.sessionId, rs.title, t, { sync: true });
-    }
+  function send(t, text, files) {
+    // Rebuilt first, or the later rebuild would empty the pane this turn is rendering
+    // into; and on the spot, since the message is written to the same transcript.
+    drawn(t);
+    files = files || [];
     const target = rtab;           // whichever tab the page was rendering into
     t.cancelled = false;
     loadRender(t);
     const queueing = !!t.streaming;
-    addUserMessage(text, null, [], null, nowIso(), t.pane, null);
+    addUserMessage(text, null, files, null, nowIso(), t.pane, null);
     // Sent while the tab is working: remembered as doSend does (stream.js), so that what
     // Claude writes after it is handed over goes below its bubble.
     if (queueing && typeof noteQueuedSend === 'function') noteQueuedSend(t);
@@ -169,7 +186,8 @@
     else resumeWorkingFor(t);
     if (window._sendToJava) {
       window._sendToJava(text, false, t.sessionId || '', t.permMode || DEFAULT_PERM_MODE, EFFORTS[t.effortIdx],
-        t.model || '', t.thinking ? '1' : '0', t.id, '', rootPathOf(t), !!t.ultracode);
+        t.model || '', t.thinking ? '1' : '0', t.id, files.length ? JSON.stringify(files.map(f => f.block)) : '',
+        rootPathOf(t), !!t.ultracode);
     }
     persistTabPrefs(t);
     // A tab behind hands the render target back: the gerund timers animate the line of
@@ -204,13 +222,13 @@
      the same way, and goes out once the tab has stopped connecting — connected or
      not, since the conversation works here either way.
      @returns {boolean} whether the prompt is waiting rather than sent */
-  function sendOnceConnected(t, text) {
-    if (!t.rcConnecting) { send(t, text); return false; }
+  function sendOnceConnected(t, text, files) {
+    if (!t.rcConnecting) { send(t, text, files); return false; }
     const timer = setInterval(() => {
       if (!tabById(t.id)) { clearInterval(timer); return; }   // closed while it waited
       if (t.rcConnecting) return;
       clearInterval(timer);
-      if (!t.rcDisconnecting) send(t, text);
+      if (!t.rcDisconnecting) send(t, text, files);
     }, 250);
     return true;
   }
@@ -333,6 +351,75 @@
     }
   };
 
+  /* ---- reading a conversation, and acting at one of its messages ---- */
+
+  /* The tab an action that only reads is for: the one named, or the one in front. */
+  function tabForRead(req) {
+    if (req.tabId) return tabForChange(req);
+    const t = activeTab();
+    if (!t) refuse('No tab is open.');
+    if (t.setupGuide) refuse('The tab in front is the setup guide, not a conversation.');
+    return t;
+  }
+  /* Forking, rewinding and deleting are carried out by the view for the folder in front
+     (ClaudeGuiView hands RewindService activeRoot()), so a conversation under another
+     folder tab is refused here, not looked for in the wrong folder. */
+  function requireFrontFolder(t) {
+    if (t.rootId !== activeRootId) {
+      refuse("That tab's folder is not the one in front in the view, and this is carried out for the "
+        + 'folder in front. The user brings that folder tab to the front first.');
+    }
+  }
+  /* The bubble of the user's message a call names, by the id 'readTab' gave it. */
+  function bubbleOf(t, req) {
+    const mid = (typeof req.messageId === 'string') ? req.messageId.trim() : '';
+    if (!mid) refuse("'messageId' is required: a message of the user's, as action 'readTab' lists them.");
+    if (!t.sessionId) refuse('That tab has no saved conversation yet.');
+    drawn(t);
+    backfillMessageIds(t);
+    const all = t.pane.querySelectorAll('.user-msg[data-mid]');
+    for (let i = 0; i < all.length; i++) if (all[i].dataset.mid === mid) return all[i];
+    refuse("That tab shows no message of the user's with id '" + mid + "'. Use action 'readTab'.");
+  }
+  const MAX_TEXT = 20000;
+  function clip(text) {
+    text = String(text || '');
+    return text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) + '… (' + (text.length - MAX_TEXT) + ' more characters)' : text;
+  }
+  function requireBookmarks(t) {
+    if (!bookmarksAvailable()) refuse('Bookmarks are not available in this build.');
+    if (!t.sessionId) refuse('That tab has no saved conversation yet.');
+  }
+  /* A saved conversation the history panel has in its list, when it has read one. */
+  function listedSession(id) {
+    try { return histSessions.find(s => s.sessionId === id) || null; } catch (e) { return null; }
+  }
+  function redrawHistory() {
+    try { if (document.getElementById('history-list')) renderHistoryList(); } catch (e) {}
+  }
+
+  /* ---- answers that take a moment ---- */
+
+  /* The CLI answers a control request later, and this page answers Java at once. So an
+     action that asks the CLI answers with a token ('wait'), and Java asks for the result
+     under it (action 'collect') until it is there. */
+  const waiting = {};
+  /* One control request to `t`'s process, on that tab's own settings — cliAsk
+     (clidialogs.js) sends the ones of the tab in front, which are what a process
+     started for the request would come up on. `shape` turns the CLI's answer into what
+     the action answers with. */
+  function ask(t, subtype, shape) {
+    if (!window._cli || typeof cliWaiting !== 'function') refuse('That is not available in this build.');
+    const w = cliWaiting('c');
+    waiting[w.token] = { done: false };
+    w.done.then(
+      r => { waiting[w.token] = { done: true, out: Object.assign({ ok: true }, shape(r || {})) }; },
+      e => { waiting[w.token] = { done: true, out: { ok: false, error: (e && e.message) || 'Claude Code did not answer.' } }; });
+    _cli(t.id, w.token, JSON.stringify({ subtype: subtype }), t.sessionId || '', t.permMode || DEFAULT_PERM_MODE,
+      EFFORTS[t.effortIdx], t.model || '', t.thinking ? '1' : '0', rootPathOf(t), !!t.ultracode);
+    return { ok: true, wait: w.token };
+  }
+
   function result(t, notes) {
     const out = { ok: true, tab: describe(t) };
     if (notes.length) out.notes = notes;
@@ -347,6 +434,8 @@
     },
     newTab: function (req) {
       const text = req.prompt !== undefined ? promptOf(req) : null;
+      if (text === null && req.files !== undefined) refuse("'files' go with a 'prompt'.");
+      const files = filesOf(req);
       if (req.remoteControl !== undefined && typeof req.remoteControl !== 'boolean') {
         refuse("'remoteControl' must be true or false.");
       }
@@ -362,7 +451,7 @@
         thinking: r.thinking, permMode: r.permMode });
       // After createTab: with Remote Control on startup set, it is already connecting.
       if (req.remoteControl) remoteControlOn(t);
-      const waiting = text !== null && sendOnceConnected(t, text);
+      const waiting = text !== null && sendOnceConnected(t, text, files);
       const out = result(t, r.notes);
       if (waiting) out.promptDeferred = true;
       return out;
@@ -381,8 +470,9 @@
     sendPrompt: function (req) {
       const t = tabForChange(req);
       const text = promptOf(req);
+      const files = filesOf(req);
       requireSendable(t);
-      const queued = send(t, text);
+      const queued = send(t, text, files);
       return { ok: true, queued: queued, tab: describe(t) };
     },
     runCommand: function (req) {
@@ -455,6 +545,212 @@
       }
       closeTab(t.id);
       return { ok: true, closed: t.id, tabs: tabs.map(describe) };
+    },
+    /* What the tab shows of its conversation: the user's messages and Claude's replies, in
+       order, each with the id the actions below take. Tool lines and thinking are left out. */
+    readTab: function (req) {
+      const t = tabForRead(req);
+      drawn(t);
+      backfillMessageIds(t);
+      if (typeof backfillReplyIds === 'function') backfillReplyIds(t);
+      let limit = 20;
+      if (req.limit !== undefined) {
+        limit = Number(req.limit);
+        if (!(limit >= 1 && limit <= 200) || Math.floor(limit) !== limit) refuse("'limit' must be a number from 1 to 200.");
+      }
+      const marked = (bookmarksAvailable() && t.sessionId) ? tabBookmarks(t).map(b => b.uuid) : [];
+      const all = [];
+      t.pane.querySelectorAll('.user-msg, .a-item').forEach(el => {
+        if (el.classList.contains('user-msg')) {
+          const body = el.querySelector('.body');
+          const m = { role: 'user', text: clip(body ? body.textContent : '') };
+          if (el.dataset.mid) m.messageId = el.dataset.mid;
+          all.push(m);
+        } else if (typeof el._replyText === 'string' && el._replyText.trim()) {
+          const m = { role: 'assistant', text: clip(el._replyText) };
+          if (el.dataset.rid) {
+            m.replyId = el.dataset.rid;
+            if (marked.indexOf(el.dataset.rid) >= 0) m.bookmarked = true;
+          }
+          all.push(m);
+        }
+      });
+      const out = { ok: true, tab: describe(t), total: all.length, messages: all.slice(-limit),
+        waitingOnCard: !!t.pendingCard };
+      const notes = [];
+      if (t.streaming) notes.push('Claude is still working in this tab; its reply so far may be incomplete.');
+      if (t.opening) notes.push('The conversation is still being drawn; its older messages are not all here yet.');
+      if (notes.length) out.notes = notes;
+      return out;
+    },
+    /* Stop, for a tab that need not be in front. In front it is the Stop button itself. */
+    stopTab: function (req) {
+      const t = tabForChange(req);
+      if (!t.streaming) return { ok: true, stopped: false, tab: describe(t) };
+      if (t === activeTab()) {
+        doCancel();
+      } else {
+        // What doCancel does, for a tab behind. Its working line is a still one, so the
+        // page's one set of gerund timers, which the tab in front may be running on, is
+        // left alone: no hideWorking and no setStreaming here.
+        const target = rtab;
+        loadRender(t);
+        t.cancelled = true;
+        if (window._cancelRequest) window._cancelRequest(t.id);
+        const stoppedTool = markInterrupted();
+        discardAssistant();
+        if (workingEl) { workingEl.remove(); workingEl = null; }
+        sweepWorkingNodes(t.pane);
+        t.streaming = false; t.queuedSends = 0;
+        addSystemTo(t, 'Request cancelled.');
+        addInterrupted(stoppedTool ? 'Tool interrupted' : 'Interrupted', t.pane);
+        backfillMessageIds(t);
+        if (typeof refreshReplies === 'function') refreshReplies(t);
+        if (target && target !== t) loadRender(target);
+      }
+      return { ok: true, stopped: true, tab: describe(t) };
+    },
+    /* "Fork conversation from here", and with 'restoreCode' "Fork conversation and rewind
+       code": the conversation up to that message in a new tab, which comes to the front.
+       forkFrom (rewind.js) with two differences: a failure is the call's answer and not a
+       line in the conversation, and the message forked at comes back in the result where
+       the view puts it in the composer for the user to send again. */
+    forkMessage: function (req) {
+      const t = tabForChange(req);
+      requireFrontFolder(t);
+      const mid = bubbleOf(t, req).dataset.mid;
+      if (req.restoreCode !== undefined && typeof req.restoreCode !== 'boolean') refuse("'restoreCode' must be true or false.");
+      const fn = req.restoreCode ? window._rewindApply : window._rewindForkOnly;
+      if (!fn) refuse('Forking is not available in this build.');
+      let res = {};
+      try { res = JSON.parse(fn(t.sessionId, mid) || '{}') || {}; } catch (e) {}
+      if (res.error) refuse((req.restoreCode ? 'Rewind failed: ' : 'Fork failed: ') + res.error);
+      if (!res.sessionId) refuse('The fork was not created.');
+      closeMenus();
+      const titled = t.titled, title = forkTitle(t.title, titled);
+      const forked = createTab({ rootId: t.rootId, title: title, titled: titled, sessionId: res.sessionId });
+      loadHistory(res.sessionId, title, forked, { sync: true });
+      if (titled && window._renameSession) window._renameSession(res.sessionId, title);
+      const out = { ok: true, forkedFrom: t.id, codeRestored: !!req.restoreCode, tab: describe(forked),
+        prompt: stripMeta(res.prompt || '') };
+      out.notes = ["The fork ends before that message; 'prompt' is its text, to send again or change with action 'sendPrompt'."];
+      return out;
+    },
+    /* "Rewind code to here": the files as they were when that message was sent, the
+       conversation left alone. With 'preview' it only says what would change. */
+    rewindCode: function (req) {
+      const t = tabForChange(req);
+      requireFrontFolder(t);
+      const mid = bubbleOf(t, req).dataset.mid;
+      if (req.preview !== undefined && typeof req.preview !== 'boolean') refuse("'preview' must be true or false.");
+      if (!window._rewindPreview || !window._rewindCodeOnly) refuse('Rewinding is not available in this build.');
+      let prev = {};
+      try { prev = JSON.parse(window._rewindPreview(t.sessionId, mid) || '{}') || {}; } catch (e) {}
+      if (prev.error) refuse('Could not read the checkpoint (' + prev.error + ').');
+      if (prev.queued) refuse('That message was sent while Claude was working, so no file checkpoint was taken for it and code cannot be restored.');
+      if (prev.noCheckpoint) refuse('That message has no file checkpoint, so code cannot be restored.');
+      const files = prev.files || [];
+      const out = { ok: true, tab: describe(t), messageId: mid, files: files, restored: false };
+      if (req.preview) { out.preview = true; return out; }
+      if (!files.length) { out.notes = ['The code has not changed since that message, so nothing was restored.']; return out; }
+      let res = {};
+      try { res = JSON.parse(window._rewindCodeOnly(t.sessionId, mid) || '{}') || {}; } catch (e) {}
+      if (res.error) refuse('Rewind failed: ' + res.error);
+      addInterrupted('Code rewind successful', t.pane);
+      out.restored = true;
+      out.notes = ['Rewinding does not affect files edited manually or via bash.'];
+      return out;
+    },
+    /* The message's Delete, already confirmed: it is gone from the transcript for good. */
+    deleteMessage: function (req) {
+      const t = tabForChange(req);
+      requireFrontFolder(t);
+      const box = bubbleOf(t, req);
+      if (t.streaming) refuse("Claude is working in that tab; let it finish or stop it (action 'stopTab') before deleting a message.");
+      if (!window._deleteMessage) refuse('Deleting a message is not supported by this build.');
+      const mid = box.dataset.mid;
+      let res = {};
+      try { res = JSON.parse(window._deleteMessage(t.id, t.sessionId, mid) || '{}') || {}; } catch (e) {}
+      if (!res.ok) refuse('Could not delete the message: ' + (res.error || 'unknown error'));
+      markMessageDeleted(box);
+      return { ok: true, deleted: mid, tab: describe(t) };
+    },
+    listBookmarks: function (req) {
+      const t = tabForRead(req);
+      requireBookmarks(t);
+      drawn(t);
+      return { ok: true, tab: describe(t),
+        bookmarks: tabBookmarks(t).map(b => ({ replyId: b.uuid, text: clip(bookmarkText(t, b.uuid) || '') })) };
+    },
+    setBookmark: function (req) {
+      const t = tabForChange(req);
+      requireBookmarks(t);
+      const id = (typeof req.replyId === 'string') ? req.replyId.trim() : '';
+      if (!id) refuse("'replyId' is required: a reply of Claude's, as action 'readTab' lists them.");
+      if (typeof req.enabled !== 'boolean') refuse("'enabled' must be true or false.");
+      drawn(t);
+      if (typeof backfillReplyIds === 'function') backfillReplyIds(t);
+      const el = replyEl(t, id);
+      const has = tabBookmarks(t).some(b => b.uuid === id);
+      // Only a reply the tab shows is bookmarked; one that is bookmarked already can
+      // always have its bookmark taken away.
+      if (!el && !(has && !req.enabled)) refuse("That tab shows no reply with id '" + id + "'. Use action 'readTab'.");
+      if (has !== req.enabled) {
+        setBookmark(t, id, req.enabled, (el && el._replyAt) || 0);
+        if (tabBookmarks(t).some(b => b.uuid === id) !== req.enabled) refuse('The bookmark could not be written.');
+      }
+      return { ok: true, replyId: id, bookmarked: req.enabled, tab: describe(t) };
+    },
+    /* A saved conversation into the archive or back out of it, as its row in the history
+       panel does it. Java has checked that it exists. Open in a tab, archiving it closes
+       the tab, as the view does. */
+    archiveSession: function (req) {
+      const id = (typeof req.sessionId === 'string') ? req.sessionId.trim() : '';
+      if (!id) refuse("'sessionId' is required. Use action 'listHistory'.");
+      if (typeof req.archived !== 'boolean') refuse("'archived' must be true or false.");
+      const open = tabs.find(tb => tb.sessionId === id);
+      if (req.archived && open && tabs.filter(x => x.rootId === open.rootId).length === 1) {
+        refuse('That conversation is open in the only tab of its folder, and archiving it would close the folder. Open another tab first.');
+      }
+      let recorded = false;
+      try { recorded = !!(window._setSessionsArchived && window._setSessionsArchived(JSON.stringify([id]), req.archived)); } catch (e) {}
+      if (!recorded) refuse('The conversation could not be ' + (req.archived ? 'archived.' : 'taken out of the archive.'));
+      const listed = listedSession(id);
+      if (listed) { listed.archived = req.archived; redrawHistory(); }
+      const out = { ok: true, sessionId: id, archived: req.archived };
+      if (req.archived && open) { closeTab(open.id); out.closedTab = open.id; }
+      return out;
+    },
+    /* A saved conversation's name, as renaming its row in the history panel sets it. */
+    renameSession: function (req) {
+      const id = (typeof req.sessionId === 'string') ? req.sessionId.trim() : '';
+      if (!id) refuse("'sessionId' is required. Use action 'listHistory'.");
+      const title = (typeof req.newTitle === 'string') ? req.newTitle.trim() : '';
+      if (!title || /[\r\n]/.test(title) || title.length > 200) refuse("'title' must be one line of at most 200 characters.");
+      if (!window._renameSession) refuse('Renaming is not available in this build.');
+      window._renameSession(id, title);
+      const listed = listedSession(id);
+      if (listed) { listed.display = title; redrawHistory(); }
+      const t = tabs.find(tb => tb.sessionId === id);
+      if (t) { t.title = title; renderTabs(); }
+      return { ok: true, sessionId: id, title: title };
+    },
+    /* The figures of Account & Usage, as the CLI gives them. */
+    usage: function (req) {
+      return ask(tabForRead(req), 'get_usage', r => ({ usage: r }));
+    },
+    /* The whole conversation as plain text, as Export conversation gets it. */
+    exportConversation: function (req) {
+      const t = tabForRead(req);
+      if (!t.sessionId) refuse('That tab has no saved conversation yet.');
+      return ask(t, 'export_conversation', d => ({ sessionId: t.sessionId, text: String(d.text || '') }));
+    },
+    collect: function (req) {
+      const entry = waiting.hasOwnProperty(req.token) ? waiting[req.token] : null;
+      if (!entry) refuse('Nothing is waiting under that token.');
+      if (!entry.done) return { ok: true, done: false };
+      delete waiting[req.token];
+      return Object.assign({ done: true }, entry.out);
     }
   };
 
@@ -468,7 +764,13 @@
     } catch (e) {
       out = { ok: false, error: (e && e.refused) || ('claudeCodeView failed: ' + (e && e.message || e)) };
     }
-    try { if (window.__ccDebug && window._debugLog) _debugLog('[CCTOOL] ' + json + ' -> ' + JSON.stringify(out)); } catch (e) {}
+    try {
+      // Not each "not yet" of a wait, and never a whole exported conversation.
+      if (window.__ccDebug && window._debugLog && !(out.ok && out.done === false)) {
+        const said = JSON.stringify(out);
+        _debugLog('[CCTOOL] ' + json + ' -> ' + (said.length > 2000 ? said.slice(0, 2000) + '… (' + said.length + ' characters)' : said));
+      }
+    } catch (e) {}
     return JSON.stringify(out);
   };
 })();

@@ -464,4 +464,118 @@ class ClaudeCodeEclipseToolTest {
 
         assertTrue(result.isError());
     }
+
+    /** A page that answers each request with the next of its replies, recording what it was asked. */
+    private static final class Script {
+        final List<JsonObject> asked = new ArrayList<>();
+        final List<String> replies = new ArrayList<>();
+
+        String call(String requestJson) {
+            asked.add(JsonParser.parseString(requestJson).getAsJsonObject());
+            return replies.get(Math.min(asked.size(), replies.size()) - 1);
+        }
+    }
+
+    @Test
+    void anAnswerThePageWaitsForIsAskedForAgainUntilItIsThere() {
+        Script page = new Script();
+        page.replies.add("{\"ok\":true,\"wait\":\"c1\"}");
+        page.replies.add("{\"ok\":true,\"done\":false}");
+        page.replies.add("{\"ok\":true,\"done\":true,\"usage\":{\"five_hour\":12}}");
+
+        McpToolResult result = new ClaudeCodeEclipseTool(new ClaudeCodeViewModule(page::call))
+                .execute(args("claudeCodeView", "usage"));
+
+        assertFalse(result.isError());
+        assertEquals(3, page.asked.size());
+        assertEquals("collect", page.asked.get(1).get("action").getAsString());
+        assertEquals("c1", page.asked.get(2).get("token").getAsString());
+        JsonObject out = JsonParser.parseString(text(result)).getAsJsonObject();
+        assertEquals(12, out.getAsJsonObject("usage").get("five_hour").getAsInt());
+        assertFalse(out.has("done"));
+    }
+
+    @Test
+    void whatTheCliRefusedWhileThePageWaitedIsTheCallsError() {
+        Script page = new Script();
+        page.replies.add("{\"ok\":true,\"wait\":\"c1\"}");
+        page.replies.add("{\"ok\":false,\"error\":\"Claude Code did not answer in time.\"}");
+
+        McpToolResult result = new ClaudeCodeEclipseTool(new ClaudeCodeViewModule(page::call))
+                .execute(args("claudeCodeView", "usage"));
+
+        assertTrue(result.isError());
+        assertTrue(text(result).contains("did not answer in time"));
+    }
+
+    @Test
+    void attachedFilesHaveToBeFilesThatAreThere() {
+        Page page = new Page("{\"ok\":true}");
+        JsonObject call = args("claudeCodeView", "sendPrompt");
+        call.addProperty("tabId", "tab1");
+        call.addProperty("prompt", "look at this");
+        JsonArray files = new JsonArray();
+        files.add(Paths.get("no-such-file.txt").toAbsolutePath().toString());
+        call.add("files", files);
+
+        McpToolResult result = toolOver(page).execute(call);
+
+        assertTrue(result.isError());
+        assertTrue(text(result).contains("There is no file at"));
+        assertTrue(page.asked.isEmpty());
+    }
+
+    @Test
+    void aMessageIdGoesToThePageAndAParameterItDoesNotKnowStaysBehind() {
+        Page page = new Page("{\"ok\":true,\"deleted\":\"m1\"}");
+        JsonObject call = args("claudeCodeView", "deleteMessage");
+        call.addProperty("tabId", "tab1");
+        call.addProperty("messageId", "m1");
+        call.addProperty("somethingElse", "x");
+
+        McpToolResult result = toolOver(page).execute(call);
+
+        assertFalse(result.isError());
+        assertEquals("m1", page.asked.get(0).get("messageId").getAsString());
+        assertFalse(page.asked.get(0).has("somethingElse"));
+    }
+
+    @Test
+    void aRenameCarriesTheNewNameAndIsRefusedForAConversationThatIsNotThere() {
+        Page page = new Page("{\"ok\":true}");
+        Saved saved = new Saved();
+        JsonObject front = args("claudeCodeView", "renameSession");
+        front.addProperty("sessionId", "aaaa-1");
+        front.addProperty("title", "A better name");
+        JsonObject other = front.deepCopy();
+        other.addProperty("folder", OTHER);
+        saved.filesFound = true;
+
+        McpToolResult renamed = toolOver(page, saved).execute(front);
+        McpToolResult refused = toolOver(page, saved).execute(other);
+
+        assertFalse(renamed.isError());
+        assertEquals("A better name", page.asked.get(0).get("newTitle").getAsString());
+        assertTrue(refused.isError());
+        assertEquals(1, page.asked.size());
+    }
+
+    @Test
+    void anExportedConversationIsWrittenToTheFileNamedAndLeftOutOfTheResult() throws Exception {
+        Page page = new Page("{\"ok\":true,\"sessionId\":\"aaaa-1\",\"text\":\"User: hi\"}");
+        java.nio.file.Path folder = java.nio.file.Files.createTempDirectory("cc-export");
+        java.nio.file.Path file = folder.resolve("conversation.txt");
+        JsonObject call = args("claudeCodeView", "exportConversation");
+        call.addProperty("file", file.toString());
+
+        McpToolResult result = toolOver(page).execute(call);
+
+        assertFalse(result.isError());
+        JsonObject out = JsonParser.parseString(text(result)).getAsJsonObject();
+        assertFalse(out.has("text"));
+        assertEquals(8, out.get("characters").getAsInt());
+        assertEquals("User: hi", java.nio.file.Files.readString(file));
+        java.nio.file.Files.delete(file);
+        java.nio.file.Files.delete(folder);
+    }
 }

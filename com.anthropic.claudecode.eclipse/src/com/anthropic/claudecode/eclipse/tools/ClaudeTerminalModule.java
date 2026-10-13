@@ -1,8 +1,10 @@
 package com.anthropic.claudecode.eclipse.tools;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 import com.anthropic.claudecode.eclipse.editor.UiHelper;
@@ -14,11 +16,13 @@ import com.google.gson.JsonObject;
 
 /**
  * The Claude Terminal's part of {@link ClaudeCodeEclipseTool}: opening and closing a terminal
- * tab, typing a prompt or a slash command into one, and what a command can set in one.
+ * tab, typing a prompt or a slash command into one, what a command can set in one, pressing
+ * keys in one and reading what it shows.
  *
  * <p>Claude runs in that view as the terminal program it is, so there is no page to ask, no
- * list of commands to check one against and nothing that reports back: whatever is done here
- * is typed at the prompt and Enter pressed, the way the view itself renames a tab. That is
+ * list of commands to check one against and nothing that reports back but the text on its
+ * screen: whatever is done here is typed at the prompt and Enter pressed, the way the view
+ * itself renames a tab, or pressed as keys. That is
  * also the limit of it — the model and the effort have a command that sets them, thinking and
  * the permission mode only keys that step to the next state, and Remote Control one command
  * that switches it on and, while it is on, shows a menu. The view works in the workspace
@@ -27,7 +31,34 @@ import com.google.gson.JsonObject;
 class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
 
     private static final List<String> ACTIONS =
-            List.of("newTab", "sendPrompt", "runCommand", "configureTab", "remoteControl", "closeTab");
+            List.of("newTab", "sendPrompt", "runCommand", "configureTab", "remoteControl", "closeTab",
+                    "readScreen", "sendKeys");
+
+    /** The keys 'sendKeys' knows by name, each with what a terminal sends for it. Anything
+     *  else it presses is one printable character, sent as itself. */
+    private static final Map<String, String> KEYS = keys();
+
+    private static Map<String, String> keys() {
+        Map<String, String> keys = new LinkedHashMap<>();
+        keys.put("enter", "\r");
+        keys.put("escape", "\033");
+        keys.put("tab", "\t");
+        keys.put("shiftTab", "\033[Z");
+        keys.put("up", "\033[A");
+        keys.put("down", "\033[B");
+        keys.put("right", "\033[C");
+        keys.put("left", "\033[D");
+        keys.put("backspace", "\177");
+        keys.put("space", " ");
+        return keys;
+    }
+
+    /** How many lines 'readScreen' gives when no 'lines' says, and the most it gives. */
+    private static final int SCREEN_LINES = 60;
+    private static final int MOST_SCREEN_LINES = 1000;
+
+    /** The most keys one 'sendKeys' presses. */
+    private static final int MOST_KEYS = 50;
 
     /** What the terminal's /effort takes. Which of the named levels a model has is the CLI's to
      *  say, and it says so in the terminal; 'auto' it always takes. */
@@ -60,6 +91,13 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
 
         /** Closes the tab, ending Claude in it. False when there is no such tab. */
         boolean close(String tabId);
+
+        /** Presses keys in the tab, each given as the characters a terminal sends for it, with
+         *  no Enter of its own. False when it could not take them. */
+        boolean press(String tabId, List<String> keys);
+
+        /** The last {@code lines} lines the tab holds, as text. Null when it cannot be read. */
+        String screen(String tabId, int lines);
     }
 
     /** The view itself, reached on the UI thread. */
@@ -88,6 +126,16 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
         @Override
         public boolean close(String tabId) {
             return Boolean.TRUE.equals(UiHelper.syncCall(() -> ClaudeCliView.toolClose(tabId)));
+        }
+
+        @Override
+        public boolean press(String tabId, List<String> keys) {
+            return Boolean.TRUE.equals(UiHelper.syncCall(() -> ClaudeCliView.toolPress(tabId, keys)));
+        }
+
+        @Override
+        public String screen(String tabId, int lines) {
+            return UiHelper.syncCall(() -> ClaudeCliView.toolScreen(tabId, lines));
         }
     };
 
@@ -119,7 +167,8 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
     public String description() {
         return "the Claude Terminal view, where Claude runs as its own terminal program, always in the "
                 + "workspace folder. Everything here is typed into a terminal tab and Enter pressed, "
-                + "as if it were typed there, and nothing the terminal prints comes back; whatever is "
+                + "as if it were typed there, and what the terminal prints does not come back with it "
+                + "(action 'readScreen' reads it); whatever is "
                 + "already typed at that prompt is submitted along with it. The tab is the one with "
                 + "'tabId', or the one in front when it is left out. action='newTab' opens a new "
                 + "terminal tab, and the view when it is closed, and brings it to the front; it takes "
@@ -136,14 +185,22 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
                 + "from here opens its menu instead, and the next thing typed there would take "
                 + "'Disconnect this session'. The first switch-on ever asks for a confirmation in the "
                 + "terminal. action='closeTab' closes the tab with 'tabId', ending Claude in it; "
-                + "closing the terminal tab the call came from ends this conversation. Every result "
-                + "lists the terminal tabs with their ids.";
+                + "closing the terminal tab the call came from ends this conversation. "
+                + "action='readScreen' returns what the terminal tab shows as text, its last 'lines' "
+                + "lines with what has scrolled off above included: read it to see Claude's answer, "
+                + "or which picker or question is waiting there. action='sendKeys' presses 'keys' "
+                + "one after the other, with no Enter of its own: " + String.join(", ", KEYS.keySet())
+                + ", or one printable character such as '1' or 'y'. It is how a picker or a question "
+                + "in the terminal is answered, a turn stopped (escape), and thinking or the "
+                + "permission mode stepped to the next state (tab, shiftTab); read the screen first "
+                + "and after, since a key means whatever the terminal is showing takes it to mean. "
+                + "Every result lists the terminal tabs with their ids.";
     }
 
     @Override
     public void describeParams(JsonObject props) {
         ClaudeCodeEclipseTool.param(props, "tabId", "string", "claudeTerminal sendPrompt/runCommand/"
-                + "configureTab/remoteControl/closeTab: the terminal tab, as every result of this "
+                + "configureTab/remoteControl/closeTab/readScreen/sendKeys: the terminal tab, as every result of this "
                 + "module lists them, e.g. 'term2'. Left out, the terminal tab in front; 'closeTab' "
                 + "requires it.");
         ClaudeCodeEclipseTool.param(props, "prompt", "string", "claudeTerminal sendPrompt: the message, "
@@ -157,6 +214,11 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
                 + "terminal says.");
         ClaudeCodeEclipseTool.param(props, "enabled", "boolean", "claudeTerminal remoteControl: true "
                 + "switches Remote Control on for the terminal tab, false switches it off.");
+        props.add("keys", ToolSupport.strings("claudeTerminal sendKeys: the keys to press, in order, "
+                + "each a key's name or one printable character."));
+        ClaudeCodeEclipseTool.param(props, "lines", "integer", "claudeTerminal readScreen: how many of "
+                + "the last lines to return, 1 to " + MOST_SCREEN_LINES + "; " + SCREEN_LINES
+                + " when left out.");
     }
 
     @Override
@@ -175,6 +237,10 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
                     return remoteControl(params);
                 case "closeTab":
                     return closeTab(params);
+                case "readScreen":
+                    return readScreen(params);
+                case "sendKeys":
+                    return sendKeys(params);
                 default:
                     return McpToolResult.error("Unknown action: " + action + ". Use one of: "
                             + String.join(", ", ACTIONS) + ".");
@@ -293,6 +359,63 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
         out.addProperty("closed", tabId);
         out.add("tabs", json(terminal.tabs()));
         return McpToolResult.success(out);
+    }
+
+    /** What the tab shows. A tab Claude has ended in is read too: what it last said is there. */
+    private McpToolResult readScreen(JsonObject params) {
+        int lines = ToolSupport.integer(params, "lines", SCREEN_LINES, 1, MOST_SCREEN_LINES);
+        List<TerminalTab> tabs = terminal.tabs();
+        TerminalTab tab = tabFor(params, tabs);
+        String screen = terminal.screen(tab.id(), lines);
+        if (screen == null) {
+            throw new Refusal("That terminal tab's text could not be read in this Eclipse.");
+        }
+        JsonObject out = new JsonObject();
+        out.addProperty("screen", screen);
+        out.add("tab", json(tab));
+        out.add("tabs", json(tabs));
+        return McpToolResult.success(out);
+    }
+
+    private McpToolResult sendKeys(JsonObject params) {
+        List<String> names = ToolSupport.list(params, "keys");
+        if (names.isEmpty()) {
+            throw new Refusal("'keys' is required: the keys to press, in order. " + keyHelp());
+        }
+        if (names.size() > MOST_KEYS) {
+            throw new Refusal("At most " + MOST_KEYS + " keys go in one call.");
+        }
+        List<String> sent = new ArrayList<>();
+        for (String name : names) {
+            String key = keyOf(name);
+            if (key == null) throw new Refusal("Unknown key '" + name + "'. " + keyHelp());
+            sent.add(key);
+        }
+        List<TerminalTab> tabs = terminal.tabs();
+        TerminalTab tab = ready(tabFor(params, tabs));
+        if (!terminal.press(tab.id(), sent)) {
+            throw new Refusal("The keys could not be pressed in that terminal tab.");
+        }
+        JsonArray pressed = new JsonArray();
+        for (String name : names) pressed.add(name);
+        JsonObject out = new JsonObject();
+        out.add("pressed", pressed);
+        out.add("tab", json(tab));
+        out.add("tabs", json(tabs));
+        return McpToolResult.success(out);
+    }
+
+    /** What a terminal sends for a key 'sendKeys' was given, or null when it is not one. */
+    static String keyOf(String name) {
+        if (KEYS.containsKey(name)) return KEYS.get(name);
+        // One character that prints, a letter or a digit or a sign: the control characters
+        // are keys to the terminal, and the ones it takes have names above.
+        return name.codePointCount(0, name.length()) == 1 && !Character.isISOControl(name.codePointAt(0))
+                && !Character.isWhitespace(name.codePointAt(0)) ? name : null;
+    }
+
+    private static String keyHelp() {
+        return "A key is one of: " + String.join(", ", KEYS.keySet()) + ", or one printable character.";
     }
 
     /** The tab a call is for: the one it names, or the one in front. */

@@ -28,6 +28,8 @@ class ClaudeTerminalModuleTest {
         final List<String> typed = new ArrayList<>();
         final List<String> switched = new ArrayList<>();
         final List<String> closed = new ArrayList<>();
+        final List<String> pressed = new ArrayList<>();
+        String screen = "";
         boolean opens = true;
         boolean takesInput = true;
 
@@ -43,6 +45,18 @@ class ClaudeTerminalModuleTest {
         @Override
         public List<TerminalTab> tabs() {
             return List.copyOf(tabs);
+        }
+
+        @Override
+        public boolean press(String tabId, List<String> keys) {
+            if (!takesInput) return false;
+            for (String key : keys) pressed.add(tabId + ":" + key);
+            return true;
+        }
+
+        @Override
+        public String screen(String tabId, int lines) {
+            return screen;
         }
 
         @Override
@@ -438,5 +452,68 @@ class ClaudeTerminalModuleTest {
         assertTrue(run(terminal, call("remoteControl", "term1")).isError());
         assertTrue(run(terminal, word).isError());
         assertTrue(terminal.switched.isEmpty());
+    }
+
+    private static JsonObject keys(String tabId, String... keys) {
+        JsonObject call = call("sendKeys", tabId);
+        com.google.gson.JsonArray list = new com.google.gson.JsonArray();
+        for (String key : keys) list.add(key);
+        call.add("keys", list);
+        return call;
+    }
+
+    @Test
+    void keysArePressedInOrderAsWhatATerminalSendsForThem() {
+        Terminal terminal = new Terminal().with("term1", true, true, false);
+
+        McpToolResult result = run(terminal, keys("term1", "down", "2", "enter"));
+
+        assertFalse(result.isError());
+        assertEquals(List.of("term1:\033[B", "term1:2", "term1:\r"), terminal.pressed);
+        assertTrue(terminal.typed.isEmpty());
+    }
+
+    @Test
+    void aKeyItDoesNotKnowIsRefusedAndNoneIsPressed() {
+        Terminal terminal = new Terminal().with("term1", true, true, false);
+
+        McpToolResult unknown = run(terminal, keys("term1", "down", "ctrlC"));
+        McpToolResult control = run(terminal, keys("term1", "\003"));
+        McpToolResult none = run(terminal, call("sendKeys", "term1"));
+
+        assertTrue(unknown.isError());
+        assertTrue(text(unknown).contains("ctrlC"));
+        assertTrue(control.isError());
+        assertTrue(none.isError());
+        assertTrue(terminal.pressed.isEmpty());
+    }
+
+    @Test
+    void keysAreNotPressedInATabThatIsNotRunning() {
+        Terminal terminal = new Terminal().with("term1", true, true, true);
+
+        McpToolResult result = run(terminal, keys("term1", "enter"));
+
+        assertTrue(result.isError());
+        assertTrue(terminal.pressed.isEmpty());
+    }
+
+    @Test
+    void theScreenIsReadEvenAfterClaudeHasEndedInTheTab() {
+        Terminal terminal = new Terminal().with("term1", true, true, true);
+        terminal.screen = "> hello\nHi there\n";
+
+        McpToolResult result = run(terminal, call("readScreen", "term1"));
+
+        assertFalse(result.isError());
+        assertEquals("> hello\nHi there\n", json(result).get("screen").getAsString());
+    }
+
+    @Test
+    void aScreenThatCannotBeReadIsAnError() {
+        Terminal terminal = new Terminal().with("term1", true, true, false);
+        terminal.screen = null;
+
+        assertTrue(run(terminal, call("readScreen", "term1")).isError());
     }
 }
