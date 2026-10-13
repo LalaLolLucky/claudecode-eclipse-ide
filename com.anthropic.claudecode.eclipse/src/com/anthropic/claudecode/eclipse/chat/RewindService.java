@@ -136,6 +136,25 @@ public final class RewindService {
         return applyInternal(workspaceRoot, sessionId, messageId, true, false);
     }
 
+    /**
+     * A conversation's lines as its fork holds them: each under the fork's id, and without the
+     * {@code bridge-session} lines. Those record which Remote Control session the conversation
+     * is reached through. Carried into the fork under the fork's id, they name the parent's
+     * session as the fork's own: switching Remote Control on in the fork then takes that
+     * session over, and the parent's tab is cut off from the other devices. A fork is a new
+     * conversation and gets a session of its own.
+     */
+    static List<String> forkedLines(List<String> lines, String sessionId, String newId) {
+        List<String> out = new ArrayList<>(lines.size());
+        for (String raw : lines) {
+            JsonObject line = parse(raw);
+            if (line != null && "bridge-session".equals(str(line, "type"))) continue;
+            out.add(raw.replace("\"sessionId\":\"" + sessionId + "\"",
+                                "\"sessionId\":\"" + newId + "\""));
+        }
+        return out;
+    }
+
     private static String applyInternal(String workspaceRoot, String sessionId, String messageId,
                                         boolean restoreFiles, boolean fork) {
         JsonObject out = new JsonObject();
@@ -182,11 +201,7 @@ public final class RewindService {
             if (cut > 0) {
                 newId = UUID.randomUUID().toString();
                 Path forked = sessionFile(workspaceRoot, newId);
-                List<String> rewritten = new ArrayList<>(kept.size());
-                for (String l : kept)
-                    rewritten.add(l.replace("\"sessionId\":\"" + sessionId + "\"",
-                                            "\"sessionId\":\"" + newId + "\""));
-                Files.write(forked, rewritten, StandardCharsets.UTF_8);
+                Files.write(forked, forkedLines(kept, sessionId, newId), StandardCharsets.UTF_8);
                 copyBackupBlobs(sessionId, newId, blobs);
                 copySessionPrefs(sessionId, newId);
             }

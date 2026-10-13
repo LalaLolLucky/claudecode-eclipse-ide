@@ -154,4 +154,25 @@ class RewindServiceTest {
         assertEquals(List.of("u1", "u2"),
                 listed(typed("u1", "first"), queued("att-1", "wait", "prompt"), typed("u2", "second")));
     }
+
+    @Test
+    void aForkDoesNotTakeItsParentsRemoteControlSession() {
+        // As the CLI writes it. Copied into a fork under the fork's id, it names the parent's
+        // Remote Control session as the fork's own, and the fork takes that session over.
+        String bridge = "{\"type\":\"bridge-session\",\"sessionId\":\"parent\",\"bridgeSessionId\":\"cse_01\","
+                + "\"lastSequenceNum\":357}";
+
+        assertEquals(List.of(typed("u1", "first"), reply("a1")),
+                RewindService.forkedLines(List.of(typed("u1", "first"), bridge, reply("a1"), bridge), "parent", "fork"));
+    }
+
+    @Test
+    void aForkCarriesEveryOtherLineUnderItsOwnId() {
+        String theirs = "{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"parent\",\"message\":{\"role\":\"user\","
+                + "\"content\":\"first\"}}";
+        String notJson = "not a line of json";
+
+        assertEquals(List.of(theirs.replace("parent", "fork"), notJson),
+                RewindService.forkedLines(List.of(theirs, notJson), "parent", "fork"));
+    }
 }
