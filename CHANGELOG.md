@@ -4,7 +4,14 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.18] — 2026-10-14 *(current)*
+## [3.2.19] — 2026-10-14 *(current)*
+
+### Fixed
+- With Debug Mode on, an Eclipse started by a launcher that never reads its output (such as PDE Tools' "Launch New Workspace") no longer breaks Remote Control, model switching or the slash-command list, and prompts in a tab keep going through.
+
+---
+
+## [3.2.18] — 2026-10-14
 
 ### Added
 - `/copy`, `/plan` and `/tasks` in the Claude Code view: copy one of Claude's replies, switch to plan mode or show the plan, and open the Agent map ([#90](https://github.com/eilonwy06/claudecode-eclipse-ide/issues/90)).
