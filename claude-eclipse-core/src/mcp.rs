@@ -20,7 +20,7 @@ pub async fn handle_message(
         Ok(v) => v,
         Err(e) => {
             if crate::is_debug() {
-                eprintln!("MCP: failed to parse JSON: {} — body: {}", e, body);
+                crate::elog!("MCP: failed to parse JSON: {} — body: {}", e, body);
             }
             return;
         }
@@ -111,7 +111,7 @@ fn handle_initialize(
         state.sessions_counting_from_zero.lock().unwrap().insert(session_id.to_string());
     }
     if crate::is_debug() {
-        eprintln!(
+        crate::elog!(
             "MCP: initialize from {} {}: selection lines sent {}",
             client_info["name"].as_str().unwrap_or("?"),
             client_info["version"].as_str().unwrap_or("?"),

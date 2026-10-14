@@ -73,7 +73,7 @@ pub fn write(port: u16, auth_token: &str, workspace_root: &str, project_paths_js
 
     if let Err(e) = std::fs::create_dir_all(&dir) {
         if crate::is_debug() {
-            eprintln!("lock_file: create_dir_all {:?}: {}", dir, e);
+            crate::elog!("lock_file: create_dir_all {:?}: {}", dir, e);
         }
         return;
     }
@@ -103,7 +103,7 @@ pub fn write(port: u16, auth_token: &str, workspace_root: &str, project_paths_js
         }
         Err(e) => {
             if crate::is_debug() {
-                eprintln!("lock_file: write {:?}: {}", path, e);
+                crate::elog!("lock_file: write {:?}: {}", path, e);
             }
         }
     }
@@ -115,7 +115,7 @@ pub fn remove() {
     if let Some(path) = guard.take() {
         if let Err(e) = std::fs::remove_file(&path) {
             if crate::is_debug() {
-                eprintln!("lock_file: remove {:?}: {}", path, e);
+                crate::elog!("lock_file: remove {:?}: {}", path, e);
             }
         }
     }

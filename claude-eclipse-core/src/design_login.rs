@@ -296,7 +296,7 @@ fn start(claude_cmd: &str, cwd: &str) -> String {
         Ok(run) => run,
         Err(e) => {
             if crate::is_debug() {
-                eprintln!("[design-login] could not be started: {e}");
+                crate::elog!("[design-login] could not be started: {e}");
             }
             return failed(COULD_NOT_START);
         }
@@ -306,7 +306,7 @@ fn start(claude_cmd: &str, cwd: &str) -> String {
     let started = run.started();
     if crate::is_debug() {
         // Never the pages themselves: their addresses carry the sign-in's secrets.
-        eprintln!("[design-login] started: {}", if started.is_ok() { "pages named" } else { "ended before naming its pages" });
+        crate::elog!("[design-login] started: {}", if started.is_ok() { "pages named" } else { "ended before naming its pages" });
     }
     start_json(started)
 }
@@ -319,7 +319,7 @@ fn wait() -> String {
         *current = None;
     }
     if crate::is_debug() {
-        eprintln!("[design-login] ended: ok={} {}", outcome.0, outcome.1.as_deref().unwrap_or(""));
+        crate::elog!("[design-login] ended: ok={} {}", outcome.0, outcome.1.as_deref().unwrap_or(""));
     }
     outcome_json(outcome)
 }

@@ -10,6 +10,7 @@ import java.util.function.Consumer;
 import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.Constants;
 import com.anthropic.claudecode.eclipse.NativeCore;
+import com.anthropic.claudecode.eclipse.StdioLog;
 
 /**
  * The bridge relay, hosted by the native core. The relay shares the MCP
@@ -196,13 +197,13 @@ public final class Bridge {
 
     private void debugLog(String message) {
         if (isDebugMode()) {
-            System.out.println(message);
+            StdioLog.out(message);
         }
     }
 
     private void debugErr(String message) {
         if (isDebugMode()) {
-            System.err.println(message);
+            StdioLog.err(message);
         }
     }
 }

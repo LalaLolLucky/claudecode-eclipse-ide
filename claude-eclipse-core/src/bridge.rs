@@ -282,13 +282,13 @@ fn accept_authed(listener: &TcpListener, token: &str) -> Option<TcpStream> {
     let presented = String::from_utf8_lossy(&line);
     if !constant_time_eq(presented.trim().as_bytes(), token.as_bytes()) {
         if crate::is_debug() {
-            eprintln!("[bridge-relay] rejected unauthenticated peer");
+            crate::elog!("[bridge-relay] rejected unauthenticated peer");
         }
         return None;
     }
     conn.set_read_timeout(None).ok();
     if crate::is_debug() {
-        eprintln!("[bridge-relay] authenticated peer");
+        crate::elog!("[bridge-relay] authenticated peer");
     }
     Some(conn)
 }

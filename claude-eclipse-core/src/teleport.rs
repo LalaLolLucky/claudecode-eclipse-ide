@@ -450,7 +450,7 @@ pub fn fetch_events(
     }
 
     if crate::is_debug() {
-        eprintln!("[teleport] fetched {} events", all.len());
+        crate::elog!("[teleport] fetched {} events", all.len());
     }
     Ok(all)
 }
@@ -533,7 +533,7 @@ pub fn write_local_session(
     std::fs::write(&path, body).ok()?;
 
     if crate::is_debug() {
-        eprintln!(
+        crate::elog!(
             "[teleport] wrote {} transcript lines to {}",
             lines.len(),
             path.display()
@@ -622,7 +622,7 @@ pub fn repo_check(claude_cmd: &str, session_id: &str, workspace_root: &str) -> S
     };
     let decision = classify(&session_repo_url(&detail), workspace_root);
     if crate::is_debug() {
-        eprintln!("[teleport] repo check: {}", decision.status.as_str());
+        crate::elog!("[teleport] repo check: {}", decision.status.as_str());
     }
     decision_json(&decision)
 }
@@ -656,7 +656,7 @@ pub fn run(claude_cmd: &str, session_id: &str, workspace_root: &str) -> String {
     let lines = to_transcript(&events, "", workspace_root);
     if lines.is_empty() {
         if crate::is_debug() {
-            eprintln!("[teleport] no transcript in {} events", events.len());
+            crate::elog!("[teleport] no transcript in {} events", events.len());
         }
         return serde_json::json!({
             "ok": false, "error": "empty",
@@ -688,14 +688,14 @@ pub fn run(claude_cmd: &str, session_id: &str, workspace_root: &str) -> String {
     let branch_exists = !branch.is_empty()
         && (branch_exists_local(root, &branch) || branch_exists_on_origin(root, &branch));
     if !branch.is_empty() && !branch_exists && crate::is_debug() {
-        eprintln!(
+        crate::elog!(
             "[teleport] branch {} exists neither locally nor on origin — skipping the prompt",
             branch
         );
     }
 
     if crate::is_debug() {
-        eprintln!(
+        crate::elog!(
             "[teleport] {} → local {} ({} lines, branch={})",
             session_id,
             local_id,
@@ -806,7 +806,7 @@ pub fn checkout_branch(workspace_root: &str, branch: &str) -> String {
 
     if git(root, &["checkout", branch]).is_none() {
         if crate::is_debug() {
-            eprintln!("[teleport] checkout of {} failed", branch);
+            crate::elog!("[teleport] checkout of {} failed", branch);
         }
         return serde_json::json!({
             "ok": false,
@@ -815,7 +815,7 @@ pub fn checkout_branch(workspace_root: &str, branch: &str) -> String {
         .to_string();
     }
     if crate::is_debug() {
-        eprintln!("[teleport] checked out {}", branch);
+        crate::elog!("[teleport] checked out {}", branch);
     }
     serde_json::json!({ "ok": true, "branch": branch }).to_string()
 }

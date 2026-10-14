@@ -291,12 +291,12 @@ pub fn fetch_commands(claude_cmd: &str, cwd: &str) -> String {
     let result = run_once(claude_cmd, cwd);
     if crate::is_debug() {
         match &result {
-            Ok(answer) => eprintln!(
+            Ok(answer) => crate::elog!(
                 "[cli-ask] initialize answered in {} ms: {} commands (in {cwd})",
                 started.elapsed().as_millis(),
                 answer["commands"].as_array().map_or(0, Vec::len)
             ),
-            Err(error) => eprintln!("[cli-ask] initialize failed after {} ms: {error} (in {cwd})", started.elapsed().as_millis()),
+            Err(error) => crate::elog!("[cli-ask] initialize failed after {} ms: {error} (in {cwd})", started.elapsed().as_millis()),
         }
     }
     fetch_json(result)
@@ -367,7 +367,7 @@ fn reap(mut child: Child, grace: Duration) -> bool {
     }
     if crate::is_debug() {
         let how = if left { "left by itself" } else { "was ended" };
-        eprintln!("[cli-ask] the short-lived process {how} after {} ms", started.elapsed().as_millis());
+        crate::elog!("[cli-ask] the short-lived process {how} after {} ms", started.elapsed().as_millis());
     }
     left
 }
@@ -542,8 +542,8 @@ pub fn edit(claude_cmd: &str, cwd: &str, subcommand: &str, input_json: &str) -> 
     if crate::is_debug() {
         // The subcommand and the outcome only: an edit can carry a rule or a hook's command.
         match &result {
-            Ok(_) => eprintln!("[cli-ask] claude {subcommand} finished (in {cwd})"),
-            Err(error) => eprintln!("[cli-ask] claude {subcommand} failed: {error} (in {cwd})"),
+            Ok(_) => crate::elog!("[cli-ask] claude {subcommand} finished (in {cwd})"),
+            Err(error) => crate::elog!("[cli-ask] claude {subcommand} failed: {error} (in {cwd})"),
         }
     }
     edit_json(result)

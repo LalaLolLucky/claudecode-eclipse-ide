@@ -226,8 +226,8 @@ pub fn set(key: &str, value_json: &str) -> String {
     };
     if crate::is_debug() {
         match &result {
-            Ok(()) => eprintln!("[user-settings] saved {key} = {value_json}"),
-            Err(error) => eprintln!("[user-settings] {key} not saved: {error}"),
+            Ok(()) => crate::elog!("[user-settings] saved {key} = {value_json}"),
+            Err(error) => crate::elog!("[user-settings] {key} not saved: {error}"),
         }
     }
     set_json(result)

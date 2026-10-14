@@ -17,6 +17,7 @@ mod promptcache;
 mod server;
 mod session;
 mod shell_env;
+mod stdio_log;
 mod stt;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod alsa_capture;
@@ -74,6 +75,7 @@ pub unsafe extern "system" fn JNI_OnLoad(
     _reserved: *mut std::ffi::c_void,
 ) -> jni::sys::jint {
     std::panic::catch_unwind(|| {
+        stdio_log::install_panic_hook();
         let vm = jni::JavaVM::from_raw(raw_jvm).expect("JavaVM::from_raw failed");
         JAVA_VM.set(Arc::new(vm)).ok();
         jni::sys::JNI_VERSION_1_8

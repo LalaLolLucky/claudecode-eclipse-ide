@@ -234,7 +234,7 @@ impl Server {
             Ok(l) => l,
             Err(_) => {
                 if crate::is_debug() {
-                    eprintln!(
+                    crate::elog!(
                         "[server] no free port in range {}-{}; server not started",
                         port_min, port_max
                     );
@@ -471,7 +471,7 @@ async fn sse_handler(
     // Reject anything that isn't a loopback-origin request (DNS-rebinding guard).
     if !is_local_request(&headers) {
         if crate::is_debug() {
-            eprintln!("[sse_handler] rejected non-local request (Host/Origin not loopback)");
+            crate::elog!("[sse_handler] rejected non-local request (Host/Origin not loopback)");
         }
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -520,7 +520,7 @@ async fn messages_handler(
     // Reject anything that isn't a loopback-origin request (DNS-rebinding guard).
     if !is_local_request(&headers) {
         if crate::is_debug() {
-            eprintln!("[messages_handler] rejected non-local request (Host/Origin not loopback)");
+            crate::elog!("[messages_handler] rejected non-local request (Host/Origin not loopback)");
         }
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -620,7 +620,7 @@ fn call_java_status(
         Ok(env) => env,
         Err(e) => {
             if crate::is_debug() {
-                eprintln!("statusline: JVM attach failed: {}", e);
+                crate::elog!("statusline: JVM attach failed: {}", e);
             }
             return;
         }

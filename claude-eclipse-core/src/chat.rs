@@ -340,7 +340,7 @@ const LIVE_PREFIX: &str = "eclipse-live-";
 fn live_request(request: serde_json::Value) -> (String, String) {
     static LIVE_SEQ: AtomicU64 = AtomicU64::new(1);
     if crate::is_debug() {
-        eprintln!("[live-settings] {}", request);
+        crate::elog!("[live-settings] {}", request);
     }
     let id = format!("{}{}", LIVE_PREFIX, LIVE_SEQ.fetch_add(1, Ordering::Relaxed));
     let line = serde_json::json!({
@@ -531,7 +531,7 @@ fn settings_change(proc: &ProcHandle, response: &serde_json::Value) -> Option<St
         }
     }
     if crate::is_debug() {
-        eprintln!("[live-settings] changed elsewhere: model={:?} effort={:?}", model, effort);
+        crate::elog!("[live-settings] changed elsewhere: model={:?} effort={:?}", model, effort);
     }
     Some(serde_json::json!({ "model": model, "effort": effort }).to_string())
 }
@@ -607,7 +607,7 @@ fn restore_remote_control(
     };
     if carry.conversation != resume_id {
         if crate::is_debug() {
-            eprintln!("[remote-control] not carried: bridge was on {:?}, new process is on {:?}",
+            crate::elog!("[remote-control] not carried: bridge was on {:?}, new process is on {:?}",
                       carry.conversation, resume_id);
         }
         gone();
@@ -619,7 +619,7 @@ fn restore_remote_control(
         &carry.bridge_session_id,
     );
     if crate::is_debug() {
-        eprintln!("[remote-control] carrying bridge {:?} to the replacement process", carry.bridge_session_id);
+        crate::elog!("[remote-control] carrying bridge {:?} to the replacement process", carry.bridge_session_id);
     }
     if p.write_line(&line).is_err() {
         gone();
@@ -2017,12 +2017,12 @@ fn reader_loop(
                     // on an empty id before it ever makes a call). This is the only
                     // place that says what the CLI actually sends.
                     if crate::is_debug() {
-                        eprintln!("[remote-control] raw control_response: {}", inner);
+                        crate::elog!("[remote-control] raw control_response: {}", inner);
                     }
                     let reply = crate::bridge::rc_parse_reply(inner);
                     let json = crate::bridge::rc_reply_json(&reply);
                     if crate::is_debug() {
-                        eprintln!("[remote-control] {}", json);
+                        crate::elog!("[remote-control] {}", json);
                     }
                     // What retire_proc hands on if this process is replaced.
                     *proc.rc_session.lock().unwrap() =
@@ -2056,7 +2056,7 @@ fn reader_loop(
                     // made of it, and takes the switch back off when that is "not on".
                     let on = ultracode_confirmed(inner);
                     if crate::is_debug() {
-                        eprintln!("[live-settings] ultracode in effect: {on} ({:?})", inner["response"]["applied"]);
+                        crate::elog!("[live-settings] ultracode in effect: {on} ({:?})", inner["response"]["applied"]);
                     }
                     fire_string(&java_vm, &callbacks, "onSettingsChanged",
                                 &serde_json::json!({ "ultracode": on }).to_string());
@@ -2156,7 +2156,7 @@ fn reader_loop(
                     "bridge_state" => {
                         let state = event["state"].as_str().unwrap_or("");
                         if crate::is_debug() {
-                            eprintln!("[remote-control] bridge {}", state);
+                            crate::elog!("[remote-control] bridge {}", state);
                         }
                         // Only "failed" is a bridge gone for good — the VS Code extension's
                         // rule; the CLI passes through other states on its way back up. A
@@ -2258,7 +2258,7 @@ fn reader_loop(
                     continue;
                 }
                 if crate::is_debug() {
-                    eprintln!("[remote-control] inbound command {}", uuid);
+                    crate::elog!("[remote-control] inbound command {}", uuid);
                 }
                 // Off this thread — it is a network round trip, and this thread
                 // is the only reader of the CLI's stdout.
@@ -2273,11 +2273,11 @@ fn reader_loop(
                         if let Some(text) = inbound_message_text(&workspace, &lookup_proc,
                                                                 &bridge_id, &uuid) {
                             if crate::is_debug() {
-                                eprintln!("[remote-control] inbound message ({} chars)", text.len());
+                                crate::elog!("[remote-control] inbound message ({} chars)", text.len());
                             }
                             fire_string(&vm, &cb, "onRemoteMessage", &text);
                         } else if crate::is_debug() {
-                            eprintln!("[remote-control] no text found for {}", uuid);
+                            crate::elog!("[remote-control] no text found for {}", uuid);
                         }
                     })
                     .ok();
@@ -2528,12 +2528,12 @@ fn inbound_message_text(
                     crate::session::message_text_by_uuid(workspace_root, &session_id, uuid)
                 {
                     if crate::is_debug() {
-                        eprintln!("[remote-control] {} read from the transcript", uuid);
+                        crate::elog!("[remote-control] {} read from the transcript", uuid);
                     }
                     return Some(text);
                 }
             } else if crate::is_debug() && attempt == 0 {
-                eprintln!(
+                crate::elog!(
                     "[remote-control] {} arrived before the session id was known, waiting",
                     uuid
                 );
@@ -2544,7 +2544,7 @@ fn inbound_message_text(
         }
     }
     if crate::is_debug() {
-        eprintln!("[remote-control] {} not in the transcript, asking the API", uuid);
+        crate::elog!("[remote-control] {} not in the transcript, asking the API", uuid);
     }
     crate::bridge::rc_lookup_message("", bridge_session_id, uuid)
 }
@@ -2572,7 +2572,7 @@ fn cancel_card(
         s.cancelled_cards.insert(request_id.to_string());
     }
     if crate::is_debug() {
-        eprintln!("[chat] card {} cancelled (answered elsewhere or turn ended)", request_id);
+        crate::elog!("[chat] card {} cancelled (answered elsewhere or turn ended)", request_id);
     }
     fire_string(java_vm, callbacks, "onCardCancel", request_id);
 }

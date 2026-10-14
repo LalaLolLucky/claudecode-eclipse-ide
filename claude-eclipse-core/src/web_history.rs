@@ -239,7 +239,7 @@ fn read_credential_keychain() -> Option<Credential> {
                 Ok(raw) => {
                     if let Some(c) = parse_credential(raw.trim()) {
                         if crate::is_debug() {
-                            eprintln!(
+                            crate::elog!(
                                 "[web-history] keychain hit: service {service}, account {}",
                                 account.unwrap_or("<any>")
                             );
@@ -247,14 +247,14 @@ fn read_credential_keychain() -> Option<Credential> {
                         return Some(c);
                     }
                     if crate::is_debug() {
-                        eprintln!(
+                        crate::elog!(
                             "[web-history] keychain item {service} is not an OAuth credential"
                         );
                     }
                 }
                 Err(why) => {
                     if crate::is_debug() {
-                        eprintln!(
+                        crate::elog!(
                             "[web-history] keychain {service} (account {}): {why}",
                             account.unwrap_or("<any>")
                         );
@@ -393,7 +393,7 @@ pub(crate) fn api_get(claude_cmd: &str, path: &str) -> Result<String, ApiError> 
 
     let cred = read_credential().ok_or(ApiError::SignedOut)?;
     if crate::is_debug() {
-        eprintln!(
+        crate::elog!(
             "[web-history] GET {} (token {} bytes, expired={})",
             path,
             cred.token.len(),
@@ -419,7 +419,7 @@ pub(crate) fn api_get(claude_cmd: &str, path: &str) -> Result<String, ApiError> 
         // a real sign-in problem (or an untrusted device), not a stale token.
         Err(RawError::Unauthorized) => {
             if crate::is_debug() {
-                eprintln!("[web-history] still unauthorized after refresh");
+                crate::elog!("[web-history] still unauthorized after refresh");
             }
             Err(ApiError::Expired)
         }
@@ -474,7 +474,7 @@ fn get_once(url: &str, token: &Secret) -> Result<String, RawError> {
 /// these probes out of `/resume`.
 fn refresh_credential(claude_cmd: &str) {
     if crate::is_debug() {
-        eprintln!("[web-history] refreshing credential via CLI probe");
+        crate::elog!("[web-history] refreshing credential via CLI probe");
     }
     let _ = crate::chat::fetch_usage(claude_cmd, "");
 }
@@ -673,7 +673,7 @@ mod disk_cache {
         }
         let _ = std::fs::write(&path, &blob);
         if crate::is_debug() {
-            eprintln!("[web-history] cached {} encrypted bytes", blob.len());
+            crate::elog!("[web-history] cached {} encrypted bytes", blob.len());
         }
     }
 
@@ -686,7 +686,7 @@ mod disk_cache {
         let plain = win_dpapi::unprotect(&blob)?;
         let s = String::from_utf8(plain).ok()?;
         if crate::is_debug() {
-            eprintln!("[web-history] warmed cache from disk");
+            crate::elog!("[web-history] warmed cache from disk");
         }
         Some(s)
     }
@@ -851,7 +851,7 @@ pub fn list(claude_cmd: &str, force_refresh: bool) -> String {
     if !force_refresh {
         if let Some(cached) = cache_fresh() {
             if crate::is_debug() {
-                eprintln!("[web-history] serving cached list");
+                crate::elog!("[web-history] serving cached list");
             }
             return cached;
         }
@@ -861,7 +861,7 @@ pub fn list(claude_cmd: &str, force_refresh: bool) -> String {
         Ok(b) => b,
         Err(e) => {
             if crate::is_debug() {
-                eprintln!("[web-history] list failed: {}", e.state());
+                crate::elog!("[web-history] list failed: {}", e.state());
             }
             return match e {
                 ApiError::Failed(reason) => error_json(&reason),
@@ -874,7 +874,7 @@ pub fn list(claude_cmd: &str, force_refresh: bool) -> String {
         return error_json("unexpected response");
     };
     if crate::is_debug() {
-        eprintln!("[web-history] fetched {} sessions", rows.len());
+        crate::elog!("[web-history] fetched {} sessions", rows.len());
     }
     let json = rows_to_json(&rows);
     cache_store(&json);

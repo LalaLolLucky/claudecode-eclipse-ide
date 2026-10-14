@@ -546,22 +546,22 @@ impl ConsoleSession {
     pub fn set_font(&self, font_name: &str, font_size: i16) {
         let debug = crate::is_debug();
         if debug {
-            eprintln!("[DEBUG] set_font called: name='{}', size={}, child_pid={}",
+            crate::elog!("[DEBUG] set_font called: name='{}', size={}, child_pid={}",
                       font_name, font_size, self.child_pid);
         }
         if self.child_pid == 0 {
-            if debug { eprintln!("[DEBUG] child_pid is 0, returning early"); }
+            if debug { crate::elog!("[DEBUG] child_pid is 0, returning early"); }
             return;
         }
         let _lock = CONSOLE_LOCK.lock().unwrap();
         unsafe {
             let original = win32::GetConsoleWindow();
-            if debug { eprintln!("[DEBUG] original console window: {}", original); }
+            if debug { crate::elog!("[DEBUG] original console window: {}", original); }
             win32::FreeConsole();
 
             let attach_result = win32::AttachConsole(self.child_pid);
             if debug {
-                eprintln!("[DEBUG] AttachConsole({}) returned {}", self.child_pid, attach_result);
+                crate::elog!("[DEBUG] AttachConsole({}) returned {}", self.child_pid, attach_result);
             }
 
             if attach_result != 0 {
@@ -576,7 +576,7 @@ impl ConsoleSession {
                     0,
                     0,
                 );
-                if debug { eprintln!("[DEBUG] CreateFileW(CONOUT$) returned {}", stdout); }
+                if debug { crate::elog!("[DEBUG] CreateFileW(CONOUT$) returned {}", stdout); }
 
                 if stdout != win32::INVALID_HANDLE_VALUE {
                     let mut font_info: win32::CONSOLE_FONT_INFOEX = std::mem::zeroed();
@@ -590,7 +590,7 @@ impl ConsoleSession {
 
                     let set_result = win32::SetCurrentConsoleFontEx(stdout, 0, &mut font_info);
                     if debug {
-                        eprintln!("[DEBUG] SetCurrentConsoleFontEx returned {}", set_result);
+                        crate::elog!("[DEBUG] SetCurrentConsoleFontEx returned {}", set_result);
                     }
 
                     if set_result == 0 && debug {
@@ -598,7 +598,7 @@ impl ConsoleSession {
                         extern "system" {
                             fn GetLastError() -> u32;
                         }
-                        eprintln!("[DEBUG] GetLastError: {}", GetLastError());
+                        crate::elog!("[DEBUG] GetLastError: {}", GetLastError());
                     }
                     win32::CloseHandle(stdout);
                 }
@@ -617,11 +617,11 @@ impl ConsoleSession {
     pub fn set_colors(&self, bg_r: u8, bg_g: u8, bg_b: u8, fg_r: u8, fg_g: u8, fg_b: u8) {
         let debug = crate::is_debug();
         if debug {
-            eprintln!("[DEBUG] set_colors called: bg=({},{},{}), fg=({},{},{})",
+            crate::elog!("[DEBUG] set_colors called: bg=({},{},{}), fg=({},{},{})",
                       bg_r, bg_g, bg_b, fg_r, fg_g, fg_b);
         }
         if self.child_pid == 0 {
-            if debug { eprintln!("[DEBUG] child_pid is 0, returning early"); }
+            if debug { crate::elog!("[DEBUG] child_pid is 0, returning early"); }
             return;
         }
         let _lock = CONSOLE_LOCK.lock().unwrap();
@@ -631,7 +631,7 @@ impl ConsoleSession {
 
             let attach_result = win32::AttachConsole(self.child_pid);
             if debug {
-                eprintln!("[DEBUG] AttachConsole({}) returned {}", self.child_pid, attach_result);
+                crate::elog!("[DEBUG] AttachConsole({}) returned {}", self.child_pid, attach_result);
             }
 
             if attach_result != 0 {
@@ -668,10 +668,10 @@ impl ConsoleSession {
 
                         let set_result = win32::SetConsoleScreenBufferInfoEx(stdout, &info);
                         if debug {
-                            eprintln!("[DEBUG] SetConsoleScreenBufferInfoEx returned {}", set_result);
+                            crate::elog!("[DEBUG] SetConsoleScreenBufferInfoEx returned {}", set_result);
                         }
                     } else if debug {
-                        eprintln!("[DEBUG] GetConsoleScreenBufferInfoEx failed");
+                        crate::elog!("[DEBUG] GetConsoleScreenBufferInfoEx failed");
                     }
                     win32::CloseHandle(stdout);
                 }
