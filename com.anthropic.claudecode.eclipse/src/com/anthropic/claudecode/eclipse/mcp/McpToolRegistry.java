@@ -14,6 +14,7 @@ import com.anthropic.claudecode.eclipse.tools.ClaudeCodeEclipseTool;
 import com.anthropic.claudecode.eclipse.tools.CleanTool;
 import com.anthropic.claudecode.eclipse.tools.CloseAllDiffTabsTool;
 import com.anthropic.claudecode.eclipse.tools.DebugTool;
+import com.anthropic.claudecode.eclipse.tools.EclipseCustomizePerspectiveTool;
 import com.anthropic.claudecode.eclipse.tools.EclipseDialogTool;
 import com.anthropic.claudecode.eclipse.tools.EclipseOpenPerspectiveTool;
 import com.anthropic.claudecode.eclipse.tools.EclipseShowViewTool;
@@ -77,7 +78,9 @@ public class McpToolRegistry {
         // org.eclipse.jface.text, ErrorLogTool only org.eclipse.core.runtime, DebugTool and
         // FormatTool the platform debug model and editor bundles, RefactorResourceTool
         // org.eclipse.ltk.core.refactoring, and EclipseShowViewTool,
-        // EclipseOpenPerspectiveTool and EclipseDialogTool only org.eclipse.ui — all hard Require-Bundles in the base
+        // EclipseOpenPerspectiveTool, EclipseCustomizePerspectiveTool and EclipseDialogTool only
+        // org.eclipse.ui (EclipseCustomizePerspectiveTool also its internal workbench API, guarded,
+        // and org.eclipse.e4.ui.model.workbench for the window's toolbar) — all hard Require-Bundles in the base
         // Platform. ForgeTool, AutoBuildTool, ProjectsTool, LocalHistoryTool and TasksTool need only
         // org.eclipse.core.resources, and QuickFixTool org.eclipse.ui.ide.
         // RunAsTool reaches the individual launchers (PDE's "Eclipse Application", JDT's "Java
@@ -101,6 +104,12 @@ public class McpToolRegistry {
         register(new TasksTool());
         register(new EclipseShowViewTool());
         register(new EclipseOpenPerspectiveTool());
+        // Built on the workbench's internal API: an Eclipse without it loses this tool, not all of them.
+        try {
+            register(new EclipseCustomizePerspectiveTool());
+        } catch (LinkageError | RuntimeException e) {
+            Activator.logError("eclipseCustomizePerspective could not be created; skipping", e);
+        }
         register(new EclipseDialogTool());
         register(new ClaudeCodeEclipseTool());
         register(new com.anthropic.claudecode.eclipse.tools.ApprovalPromptTool());

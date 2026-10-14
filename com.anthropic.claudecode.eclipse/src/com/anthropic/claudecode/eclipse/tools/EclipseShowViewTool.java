@@ -45,7 +45,10 @@ public class EclipseShowViewTool implements McpTool {
                 + "Console, Project Explorer or Git Staging (Window > Show View). action='list' "
                 + "(default) shows the views this Eclipse has, with their ids and whether each is "
                 + "open; narrow it with 'filter'. action='open' brings the view with 'viewId' to "
-                + "the front, and action='close' closes it. Closing the Claude Code or Claude "
+                + "the front, and action='close' closes it. A view open more than once, or under "
+                + "another title, lists each open instance with its tab title and 'secondaryId'; "
+                + "'filter' matches those titles too, and 'close' with 'secondaryId' closes only "
+                + "that one (without it every instance closes). Closing the Claude Code or Claude "
                 + "Terminal view ends the sessions running in it.";
     }
 
@@ -73,10 +76,17 @@ public class EclipseShowViewTool implements McpTool {
                         + "Required for 'open' and 'close'.");
         props.add("viewId", viewId);
 
+        JsonObject secondaryId = new JsonObject();
+        secondaryId.addProperty("type", "string");
+        secondaryId.addProperty("description",
+                "For 'close': only the instance with this secondary id, as action='list' shows it.");
+        props.add("secondaryId", secondaryId);
+
         JsonObject filter = new JsonObject();
         filter.addProperty("type", "string");
         filter.addProperty("description",
-                "For 'list': only views whose id, name or category contains this text, e.g. 'git'.");
+                "For 'list': only views whose id, name, category or open tab title contains this "
+                        + "text, e.g. 'git'.");
         props.add("filter", filter);
 
         JsonObject openOnly = new JsonObject();
@@ -114,7 +124,8 @@ public class EclipseShowViewTool implements McpTool {
             }
             if ("close".equalsIgnoreCase(action)) {
                 if (viewId == null) return McpToolResult.error("'viewId' is required for action='close'.");
-                return onUiThread(() -> close(viewId));
+                String secondaryId = str(params, "secondaryId");
+                return onUiThread(() -> close(viewId, secondaryId));
             }
             return McpToolResult.error("Unknown action: " + action + ". Use list, open or close.");
         } catch (Exception e) {
@@ -133,11 +144,11 @@ public class EclipseShowViewTool implements McpTool {
         for (IViewDescriptor view : PlatformUI.getWorkbench().getViewRegistry().getViews()) {
             String[] categoryPath = view.getCategoryPath();
             String category = categoryPath == null ? "" : String.join("/", categoryPath);
+            List<IViewReference> refs = openReferences(page, view.getId());
             if (needle != null && !contains(view.getId(), needle) && !contains(view.getLabel(), needle)
-                    && !contains(category, needle)) {
+                    && !contains(category, needle) && !anyTitleContains(refs, needle)) {
                 continue;
             }
-            List<IViewReference> refs = openReferences(page, view.getId());
             if (openOnly && refs.isEmpty()) continue;
 
             JsonObject j = new JsonObject();
@@ -146,6 +157,19 @@ public class EclipseShowViewTool implements McpTool {
             if (!category.isEmpty()) j.addProperty("category", category);
             j.addProperty("open", !refs.isEmpty());
             if (!refs.isEmpty()) j.addProperty("visible", anyVisible(page, refs));
+            // A tab can carry its own title (Oomph's notifications are one view, open once per
+            // notice), and only the secondary id tells two instances apart.
+            if (refs.size() > 1 || (refs.size() == 1 && (refs.get(0).getSecondaryId() != null
+                    || !java.util.Objects.equals(refs.get(0).getPartName(), view.getLabel())))) {
+                JsonArray instances = new JsonArray();
+                for (IViewReference ref : refs) {
+                    JsonObject inst = new JsonObject();
+                    inst.addProperty("title", ref.getPartName());
+                    if (ref.getSecondaryId() != null) inst.addProperty("secondaryId", ref.getSecondaryId());
+                    instances.add(inst);
+                }
+                j.add("instances", instances);
+            }
             listed.add(j);
         }
 
@@ -174,24 +198,28 @@ public class EclipseShowViewTool implements McpTool {
         return McpToolResult.success(out);
     }
 
-    private McpToolResult close(String viewId) {
+    private McpToolResult close(String viewId, String secondaryId) {
         IWorkbenchPage page = UiHelper.getActivePage();
         if (page == null) return McpToolResult.error("No workbench window is open.");
 
         List<IViewReference> refs = openReferences(page, viewId);
+        if (secondaryId != null) refs.removeIf(ref -> !secondaryId.equals(ref.getSecondaryId()));
         if (refs.isEmpty()) {
             IViewRegistry registry = PlatformUI.getWorkbench().getViewRegistry();
             if (registry.find(viewId) == null) return unknownView(viewId);
             JsonObject out = new JsonObject();
             out.addProperty("closed", false);
             out.addProperty("id", viewId);
-            out.addProperty("note", "The view was not open.");
+            if (secondaryId != null) out.addProperty("secondaryId", secondaryId);
+            out.addProperty("note", secondaryId == null ? "The view was not open."
+                    : "No open instance of the view has that secondary id.");
             return McpToolResult.success(out);
         }
 
         JsonObject out = new JsonObject();
         out.addProperty("closed", true);
         out.addProperty("id", viewId);
+        if (secondaryId != null) out.addProperty("secondaryId", secondaryId);
         if (refs.size() > 1) out.addProperty("instances", refs.size());
 
         if (ClaudeGuiView.VIEW_ID.equals(viewId) || ClaudeCliView.VIEW_ID.equals(viewId)) {
@@ -226,6 +254,11 @@ public class EclipseShowViewTool implements McpTool {
             if (viewId.equals(ref.getId())) refs.add(ref);
         }
         return refs;
+    }
+
+    private static boolean anyTitleContains(List<IViewReference> refs, String needle) {
+        for (IViewReference ref : refs) if (contains(ref.getPartName(), needle)) return true;
+        return false;
     }
 
     private static boolean anyVisible(IWorkbenchPage page, List<IViewReference> refs) {
