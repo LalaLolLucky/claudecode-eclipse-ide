@@ -22,6 +22,7 @@ import org.osgi.framework.Bundle;
 import org.osgi.framework.BundleContext;
 
 import com.anthropic.claudecode.eclipse.bridge.Bridge;
+import com.anthropic.claudecode.eclipse.bridge.RelayBackoff;
 import com.anthropic.claudecode.eclipse.editor.SelectionTracker;
 import com.anthropic.claudecode.eclipse.mcp.McpToolRegistry;
 import com.anthropic.claudecode.eclipse.server.HttpSseServer;
@@ -75,10 +76,10 @@ public class Activator extends AbstractUIPlugin {
      * bind at all (no free pair in the range, or the macOS direct-protocol path) would
      * otherwise have every tick rescan the range — and the scan probes each port with a
      * connect timeout, so a failing scan is not cheap. Retries stay frequent while the
-     * cause looks transient and stretch out to a minute or so when it does not.
+     * cause looks transient and stretch out to a minute or so when it does not. A relay
+     * that is gone again before the next tick counts as a failed start too.
      */
-    private int bridgeFailureStreak;
-    private int bridgeTicksToSkip;
+    private final RelayBackoff bridgeBackoff = new RelayBackoff(MAX_BACKOFF_TICKS);
     private static final int MAX_BACKOFF_TICKS = 20;
 
     @Override
@@ -126,8 +127,9 @@ public class Activator extends AbstractUIPlugin {
         // A deliberate start (launch, Restart Server, the view's toggle) is a fresh
         // attempt and must not sit behind a backoff left over from an earlier failure.
         if (enabled) {
-            bridgeFailureStreak = 0;
-            bridgeTicksToSkip = 0;
+            bridgeBackoff.reset();
+        } else {
+            bridgeBackoff.stopped();
         }
     }
 
@@ -218,6 +220,14 @@ public class Activator extends AbstractUIPlugin {
         if (bridge != null && bridge.isOverridden()) {
             return;
         }
+        // Gone before any tick saw it running: a failed start, not a working relay that
+        // later dropped. Wait the backoff out like any other failure — replacing it on
+        // every tick is what kept a relay that died at once cycling every 3 seconds.
+        if (bridgeBackoff.droppedBeforeSettling()) {
+            stopBridge();
+            ClaudeCodeView.debug("[Bridge] Relay went down before it settled; watchdog will retry.");
+            return;
+        }
         // A Bridge whose relay has died still reports running==true internally, and
         // start() early-returns on that. Tear the old one down before replacing it so
         // the native client half is released too.
@@ -250,8 +260,7 @@ public class Activator extends AbstractUIPlugin {
                 : "[Bridge] Relay up on " + bridge.getPortA() + " and " + bridge.getPortB()
                         + " but the handshake failed; watchdog will retry.");
         if (connected) {
-            bridgeFailureStreak = 0;
-            bridgeTicksToSkip = 0;
+            bridgeBackoff.connected();
         } else {
             // Half-open is not a usable relay — drop it so the watchdog rebuilds a clean
             // pair rather than leaving a listener nobody is wired through.
@@ -262,19 +271,17 @@ public class Activator extends AbstractUIPlugin {
 
     /** True while this tick is being skipped for backoff, decrementing the remaining count. */
     private synchronized boolean consumeBackoffTick() {
-        if (bridgeTicksToSkip > 0) {
-            bridgeTicksToSkip--;
-            return true;
-        }
-        return false;
+        return bridgeBackoff.consumeTick();
+    }
+
+    /** A tick found the relay up: once it has lasted a tick, its earlier failures are forgiven. */
+    private synchronized void noteBridgeStillRunning() {
+        bridgeBackoff.stillRunning();
     }
 
     /** Stretches the watchdog's retry interval after a failed start, up to about a minute. */
     private void noteBridgeFailure() {
-        if (bridgeFailureStreak < MAX_BACKOFF_TICKS) {
-            bridgeFailureStreak++;
-        }
-        bridgeTicksToSkip = bridgeFailureStreak;
+        bridgeBackoff.failed();
     }
 
     /**
@@ -288,6 +295,7 @@ public class Activator extends AbstractUIPlugin {
             return;
         }
         ClaudeCodeView.debug("[Bridge] MCP server is no longer running; stopping the relay with it.");
+        bridgeBackoff.stopped();
         stopBridge();
     }
 
@@ -323,7 +331,11 @@ public class Activator extends AbstractUIPlugin {
                 }
                 // Cheap pre-check only; startBridgeIfNeeded re-checks under the lock,
                 // which is what actually makes a concurrent shutdown authoritative.
-                if (isBridgeRunning() || consumeBackoffTick()) {
+                if (isBridgeRunning()) {
+                    noteBridgeStillRunning();
+                    return;
+                }
+                if (consumeBackoffTick()) {
                     return;
                 }
                 startBridgeIfNeeded();
