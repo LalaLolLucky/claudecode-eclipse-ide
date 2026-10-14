@@ -4,7 +4,18 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.17] — 2026-10-13 *(current)*
+## [3.2.18] — 2026-10-14 *(current)*
+
+### Added
+- `/copy`, `/plan` and `/tasks` in the Claude Code view: copy one of Claude's replies, switch to plan mode or show the plan, and open the Agent map ([#90](https://github.com/eilonwy06/claudecode-eclipse-ide/issues/90)).
+- `eclipseCustomizePerspective` tool: Claude shows or hides menu items, toolbar items, action sets and the New, Open Perspective and Show View shortcuts, as Customize Perspective does, and hides the whole main toolbar or any part of it, such as the launch bar.
+
+### Changed
+- `eclipseShowView` lists each open tab of a view by its title and can close one tab of a view that is open more than once.
+
+---
+
+## [3.2.17] — 2026-10-13
 
 ### Added
 - `forge` tool: Claude runs the whole build procedure in one call (refresh, clean, build, refresh, build) and warns when Build Automatically is on.
