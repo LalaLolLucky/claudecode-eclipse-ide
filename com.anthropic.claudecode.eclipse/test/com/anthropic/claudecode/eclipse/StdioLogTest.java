@@ -1,9 +1,8 @@
 package com.anthropic.claudecode.eclipse;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -35,7 +34,7 @@ public class StdioLogTest {
 
     /** A pipe nobody reads: the write never returns. The caller must not notice. */
     @Test
-    public void aStuckStreamNeverHoldsUpTheCaller() {
+    public void aStuckStreamNeverHoldsUpTheCaller() throws Exception {
         CountDownLatch never = new CountDownLatch(1);
         StdioLog log = new StdioLog((toErr, line) -> {
             try {
@@ -44,12 +43,17 @@ public class StdioLogTest {
                 Thread.currentThread().interrupt();
             }
         }, 4);
+        // Its own thread, so a caller that does get stuck fails the test instead of hanging it.
+        Thread caller = new Thread(() -> {
+            for (int i = 0; i < 10_000; i++) {
+                log.line(true, "line " + i);
+            }
+        });
+        caller.setDaemon(true);
         try {
-            assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
-                for (int i = 0; i < 10_000; i++) {
-                    log.line(true, "line " + i);
-                }
-            });
+            caller.start();
+            caller.join(2_000);
+            assertFalse(caller.isAlive(), "the caller waited on a stuck stream");
         } finally {
             never.countDown();
         }
