@@ -102,6 +102,8 @@
 #cli-win .cw-pre { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-code); color: var(--fg);
   font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px; line-height: 1.45; padding: 10px 12px;
   max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
+/* A plan (/plan): Markdown, drawn as a reply is. */
+#cli-win .cw-plan { color: var(--fg); font-size: 13px; line-height: 1.5; word-break: break-word; }
 /* A list of paths or names, in the code face, with no box round it. */
 #cli-win .cw-mono { font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px; line-height: 1.5;
   color: var(--fg); word-break: break-word; padding: 0 0 8px; }

@@ -29,6 +29,10 @@ const SLASH_COMMANDS = [
   { cmd: '/feedback', desc: 'Send feedback to Anthropic or report a bug', hint: '[report]', aliases: ['bug'], dialog: true },
   { cmd: '/login',   desc: 'Log in with a different account', dialog: true },
   { cmd: '/logout',  desc: 'Sign out of Claude on this computer', dialog: true },
+  // The three the CLI has in its terminal only and the extension answers in its panel.
+  { cmd: '/copy',    desc: "Copy Claude's last response to clipboard (or /copy N for the Nth-latest)" },
+  { cmd: '/plan',    desc: 'Enable plan mode or view the current session plan', hint: '[open|<description>]' },
+  { cmd: '/tasks',   desc: 'View and manage everything running in the background', aliases: ['bashes'] },
 ];
 /* The menu these are listed in, and the keys that drive it, are cmdmenu.js: one menu for
    the / button and for a / typed in the composer. */
@@ -66,6 +70,12 @@ function handleSlashCommand(text) {
   if (typeof cliOwnsCommand === 'function' && cliOwnsCommand(cmd.slice(1))) return false;
   // What is typed after /feedback is the report's first words.
   if (cmd === '/feedback') { openFeedbackDialog(text.trim().replace(/^\S+\s*/, '')); return true; }
+  // These three are answered here whatever follows them, and leave only a notice in the
+  // conversation, no bubble: nothing is sent (but the description after /plan).
+  if (cmd === '/copy') { handleCopyCommand(text.trim().replace(/^\S+\s*/, '')); return true; }
+  if (cmd === '/plan') { handlePlanCommand(text.trim().replace(/^\S+\s*/, '')); return true; }
+  // The Agent map is where what runs in the background is listed and stopped.
+  if (cmd === '/tasks') { openAgentsPanel(); return true; }
   // A dialog opens for the bare command only; with arguments the command is the CLI's.
   if (text.trim().split(/\s+/).length === 1) {
     const dialogs = { '/status': openStatusDialog, '/memory': () => openMemoryDialog('memory'),
@@ -165,24 +175,111 @@ function resolveModelArg(arg) {
   return null;
 }
 
+/* ---- /copy [N] ----
+   The CLI's /copy is a picker in its terminal. Here, as in the extension, it copies the
+   Nth-latest of Claude's replies (1 = the latest) and says so in one line. A reply is
+   what the copy button under it copies: the reply as Claude wrote it (bookmarks.js). */
+const COPY_REPLIES_MAX = 20;
+/** The tab's replies, latest first, as Claude wrote them. Read between turns only: the
+    one being written is among them while a turn runs. */
+function repliesToCopy(t) {
+  const out = [];
+  const items = t.pane ? t.pane.querySelectorAll('.a-item') : [];
+  for (let i = items.length - 1; i >= 0 && out.length < COPY_REPLIES_MAX; i--) {
+    const text = items[i]._replyText;
+    if (typeof text === 'string' && text) out.push(text);
+  }
+  return out;
+}
+/** @returns {{text?: string, notice: string}} what /copy with this argument copies and says */
+function copyCommandResult(arg, replies) {
+  if (!replies.length) return { notice: 'No assistant message to copy' };
+  let at = 0;
+  if (arg) {
+    const n = Number(arg);
+    if (!Number.isInteger(n) || n < 1) return { notice: 'Usage: /copy [N] where N is 1 (latest), 2, 3, … Got: ' + arg };
+    if (n > replies.length) {
+      return { notice: 'Only ' + replies.length + ' assistant ' + (replies.length === 1 ? 'message' : 'messages') + ' available to copy' };
+    }
+    at = n - 1;
+  }
+  const text = replies[at];
+  const lines = text.split('\n').length;
+  return { text, notice: 'Copied to clipboard (' + text.length + ' characters, ' + lines + ' ' + (lines === 1 ? 'line' : 'lines') + ')' };
+}
+function handleCopyCommand(arg) {
+  const t = activeTab(); if (!t) return;
+  // The reply being written is not one yet: the copy waits for the turn to end.
+  if (t.streaming) {
+    addSystemTo(t, 'Copying once the reply finishes');
+    (t.afterTurn = t.afterTurn || []).push(() => copyReplyNow(t, arg));
+    return;
+  }
+  copyReplyNow(t, arg);
+}
+function copyReplyNow(t, arg) {
+  const r = copyCommandResult(arg, repliesToCopy(t));
+  let notice = r.notice;
+  if (r.text !== undefined) {
+    // The view's own clipboard first, the one the rest of Eclipse uses (contextmenu.js).
+    if (window._clipSet) window._clipSet(r.text);
+    else if (navigator.clipboard) navigator.clipboard.writeText(r.text).catch(() => {});
+    else notice = 'Could not copy to clipboard';
+  }
+  addSystemTo(t, notice);
+}
+
+/* ---- /plan [open|<description>] ----
+   As the extension answers it. Outside plan mode it switches the tab to plan mode, and
+   what was typed after it is then sent as a message. In plan mode already it shows the
+   plan this conversation has written: in a window here, or with `open` as its file in
+   an editor. The plan is the conversation's own, so it is asked of the tab's process. */
+function handlePlanCommand(args) {
+  const t = activeTab(); if (!t) return;
+  const wasPlan = (t.permMode || permMode) === 'plan';
+  if (!wasPlan) {
+    setMode('plan');
+    if (args && args !== 'open' && args !== 'share') { sendSlashToCli(args, true); return; }
+  }
+  showPlan(t, args.split(/\s+/)[0] === 'open').then((shown) => {
+    if (!wasPlan) return;   // the switch was the answer
+    if (shown === 'unavailable') addSystemTo(t, "Couldn't show the plan");
+    else if (shown === 'none') addSystemTo(t, 'Already in plan mode. No plan written yet.');
+  });
+}
+/** @returns {Promise<string>} 'opened', 'none' (no plan written) or 'unavailable' */
+function showPlan(t, inEditor) {
+  // A tab with no conversation has no plan, and is not given a process to be asked.
+  if (!t.sessionId || typeof cliAsk !== 'function') return Promise.resolve('unavailable');
+  return cliAsk(t, 'get_plan').then((res) => {
+    if (!res || !res.exists || !res.content) return 'none';
+    if (inEditor && res.path && window._openFileInEditor) _openFileInEditor(res.path, rootPathOf(t));
+    else openPlanDialog(res.content);
+    return 'opened';
+  }, () => 'unavailable');
+}
+
 /**
  * Sends a slash command the CLI owns down the same persistent process a normal
  * message uses, echoing it in the transcript so the CLI's reply reads as a turn.
  * The tab's folder goes with it, as with a message: Java reads a send without one as
  * the workspace root, and would restart the process of a tab in another folder there.
  * @param {string} text the full command line (may carry arguments)
+ * @param {boolean} [asMessage] the text is a message (what follows /plan), so the file
+ *        the composer is showing goes with it as it does with any message
  */
-function sendSlashToCli(text) {
+function sendSlashToCli(text, asMessage) {
   const t = activeTab(); if (!t) return;
   t.cancelled = false;
   loadRender(t);
   const queueing = !!t.streaming;
-  addUserMessage(text, null, null, null, nowIso());
+  const withCtx = !!asMessage && ctxActive();
+  addUserMessage(text, withCtx ? ctxChipLabel() : null, null, null, nowIso(), null, withCtx ? ctxChipTarget() : null);
   if (queueing) noteQueuedSend(t);
   closeSlash();
   if (!queueing) { setStreaming(true); showWorking(); }
   else if (!workingEl) showWorking();
-  if (window._sendToJava) window._sendToJava(text, false, t.sessionId || '', t.permMode || permMode, effort, curModel, thinkingOn ? '1' : '0', t.id, '', rootPathOf(t), ultracodeOn);
+  if (window._sendToJava) window._sendToJava(text, withCtx, t.sessionId || '', t.permMode || permMode, effort, curModel, thinkingOn ? '1' : '0', t.id, '', rootPathOf(t), ultracodeOn);
   persistTabPrefs(t);
 }
 

@@ -316,7 +316,10 @@ function applyBypassModeVisibility() {
 }
 
 function selectMode(el) {
-  const mode = el.getAttribute('data-mode') || DEFAULT_PERM_MODE;
+  setMode(el.getAttribute('data-mode') || DEFAULT_PERM_MODE);
+}
+/** Puts the tab in front in `mode`: what picking it in the menu does (and /plan, slash.js). */
+function setMode(mode) {
   const t = activeTab();
   permMode = mode;
   if (t) t.permMode = mode;

@@ -195,6 +195,26 @@ function openAskedDialog(title, subtype, fill, wide) {
   return dlg;
 }
 
+/* ===================== Plan ===================== */
+/* The plan a conversation has written, as /plan shows it (slash.js): the Markdown drawn
+   as a reply is, under the plan's own first heading where it opens with one. */
+function planTitle(content) {
+  const first = String(content).split('\n').map(l => l.trim()).find(l => l);
+  const m = first ? /^#\s+(.+?)(\s+#+)?$/.exec(first) : null;
+  const title = m ? m[1].trim() : '';
+  return title && !/^#+$/.test(title) && title.length <= 200 ? title : 'Claude’s Plan';
+}
+function openPlanDialog(content) {
+  openCliDialog({
+    draw() {
+      const body = cwFrame(planTitle(content), null, true);
+      const plan = cwEl('div', 'a-body cw-plan');
+      plan.innerHTML = renderMarkdown(content);
+      body.appendChild(plan);
+    },
+  });
+}
+
 /* ===================== Slash commands ===================== */
 function openSlashCommandsDialog() {
   const dlg = {

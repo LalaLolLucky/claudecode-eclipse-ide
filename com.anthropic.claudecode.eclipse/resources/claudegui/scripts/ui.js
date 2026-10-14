@@ -458,6 +458,11 @@ function setStreaming(v) {
   // it here too means no future turn-ending path can forget to.
   if (!v && typeof stopWorkingFor === 'function') stopWorkingFor(t);
   syncComposer();
+  // What was waiting for the turn to end (/copy typed while Claude was replying).
+  if (!v && t && t.afterTurn) {
+    const waiting = t.afterTurn; t.afterTurn = null;
+    waiting.forEach(run => { try { run(); } catch (e) {} });
+  }
 }
 
 // Was navigator.clipboard-only (silently did nothing wherever that API isn't available)
