@@ -57,6 +57,11 @@ public class CoverageTool implements McpTool {
 	private static final int WAIT_SECONDS = 300;
 	private static final int MOST_WAIT_SECONDS = 1800;
 
+	/** What a session still being read is answered with. EclEmma leaves it so for good when it
+	 *  could not read it (seen live: a class file deleted behind the workspace's back). */
+	private static final String STILL_READING = "The coverage session is still being read; ask again in a moment. "
+			+ "If it stays so, EclEmma could not read it: the errorLog tool (plugin org.eclipse.eclemma.core) says why.";
+
 	/** How many packages 'summary' lists, those with the most lines missed first. */
 	private static final int MAX_PACKAGES = 60;
 
@@ -178,7 +183,7 @@ public class CoverageTool implements McpTool {
 		}
 		if (!exits.isEmpty()) out.add("exitValues", exits);
 		if (model == null) {
-			out.addProperty("note", "The program ended, but its coverage was still being read; ask action='summary' in a moment.");
+			out.addProperty("note", "The program ended, but its coverage was still being read. " + STILL_READING);
 			return McpToolResult.success(out);
 		}
 		describeSession(out, model, null);
@@ -203,7 +208,7 @@ public class CoverageTool implements McpTool {
 			return McpToolResult.error("There is no coverage session. Run one with action='run', or Coverage As in Eclipse.");
 		}
 		if (model == IJavaModelCoverage.LOADING) {
-			return McpToolResult.error("The coverage session is still being read; ask again in a moment.");
+			return McpToolResult.error(STILL_READING);
 		}
 		JsonObject out = new JsonObject();
 		describeSession(out, model, project);
@@ -213,7 +218,8 @@ public class CoverageTool implements McpTool {
 	private static void describeSession(JsonObject out, IJavaModelCoverage model, String onlyProject) {
 		ICoverageSession session = CoverageTools.getSessionManager().getActiveSession();
 		if (session != null) out.addProperty("session", session.getDescription());
-		out.add("total", counters(model));
+		// The model's own counters are not filled in (seen live): the total is the projects' sum.
+		int[] sum = new int[8];
 		JsonArray projects = new JsonArray();
 		for (IJavaProject p : model.getProjects()) {
 			if (onlyProject != null && !p.getElementName().equalsIgnoreCase(onlyProject)) continue;
@@ -222,7 +228,18 @@ public class CoverageTool implements McpTool {
 			JsonObject j = counters(node);
 			j.addProperty("project", p.getElementName());
 			projects.add(j);
+			ICounter[] each = { node.getLineCounter(), node.getBranchCounter(), node.getInstructionCounter(), node.getMethodCounter() };
+			for (int i = 0; i < each.length; i++) {
+				sum[2 * i] += each[i].getCoveredCount();
+				sum[2 * i + 1] += each[i].getMissedCount();
+			}
 		}
+		JsonObject total = new JsonObject();
+		total.add("lines", CoverageFormat.counter(sum[0], sum[1]));
+		total.add("branches", CoverageFormat.counter(sum[2], sum[3]));
+		total.add("instructions", CoverageFormat.counter(sum[4], sum[5]));
+		total.add("methods", CoverageFormat.counter(sum[6], sum[7]));
+		out.add("total", total);
 		out.add("projects", projects);
 
 		List<IPackageFragment> packages = new ArrayList<>();
@@ -239,6 +256,8 @@ public class CoverageTool implements McpTool {
 			JsonObject j = counters(model.getCoverageFor(f));
 			j.addProperty("package", f.getElementName().isEmpty() ? "(default package)" : f.getElementName());
 			j.addProperty("project", f.getJavaProject().getElementName());
+			// Two source folders can each hold a package of one name, the default one above all.
+			j.addProperty("sourceFolder", f.getParent().getPath().toString());
 			listed.add(j);
 		}
 		out.add("packages", listed);
@@ -266,7 +285,7 @@ public class CoverageTool implements McpTool {
 			return McpToolResult.error("There is no coverage session. Run one with action='run', or Coverage As in Eclipse.");
 		}
 		if (model == IJavaModelCoverage.LOADING) {
-			return McpToolResult.error("The coverage session is still being read; ask again in a moment.");
+			return McpToolResult.error(STILL_READING);
 		}
 		ICompilationUnit unit = unitOf(params);
 		if (unit == null) {
