@@ -142,6 +142,17 @@ public class McpToolRegistry {
                 Activator.logError("CDT present but the cIndex tool could not be created; skipping", e);
             }
         }
+        // pydevCode drives PyDev's own Go to Definition / Find References: the four optional bundles
+        // the Python entity resolver checks (EntitiesRegistry), and the parser for the found nodes.
+        if (ToolSupport.installed("org.python.pydev") && ToolSupport.installed("org.python.pydev.core")
+                && ToolSupport.installed("org.python.pydev.ast") && ToolSupport.installed("com.python.pydev.analysis")
+                && ToolSupport.installed("org.python.pydev.parser")) {
+            try {
+                register(new com.anthropic.claudecode.eclipse.tools.pydev.PyDevCodeTool());
+            } catch (LinkageError | RuntimeException e) {
+                Activator.logError("PyDev present but the pydevCode tool could not be created; skipping", e);
+            }
+        }
         if (ToolSupport.installed(TargetPlatformTool.PDE)) register(new TargetPlatformTool());
         if (ToolSupport.installed(MavenUpdateTool.M2E)) register(new MavenUpdateTool());
     }
