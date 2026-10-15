@@ -23,8 +23,9 @@ import com.google.gson.JsonObject;
  * list of commands to check one against and nothing that reports back but the text on its
  * screen: whatever is done here is typed at the prompt and Enter pressed, the way the view
  * itself renames a tab, or pressed as keys. That is
- * also the limit of it — the model and the effort have a command that sets them, thinking and
- * the permission mode only keys that step to the next state, and Remote Control one command
+ * also the limit of it — the model and the effort have a command that sets them, plan mode one
+ * that switches it on (its footer says when it already is), thinking and the other permission
+ * modes only keys that step to the next state, and Remote Control one command
  * that switches it on and, while it is on, shows a menu. The view works in the workspace
  * folder only; it has no folder tabs.
  */
@@ -32,7 +33,13 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
 
     private static final List<String> ACTIONS =
             List.of("newTab", "sendPrompt", "runCommand", "configureTab", "remoteControl", "closeTab",
-                    "readScreen", "sendKeys");
+                    "readScreen", "sendKeys", "listTabs");
+
+    /** What the terminal's footer shows while it plans: one of its mode labels (CLI 2.1.295). */
+    private static final String PLANNING = "plan mode on";
+
+    /** How many of the last lines are read for that footer. */
+    private static final int FOOTER_LINES = 6;
 
     /** The keys 'sendKeys' knows by name, each with what a terminal sends for it. Anything
      *  else it presses is one printable character, sent as itself. */
@@ -177,8 +184,10 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
                 + "Code works, and one that opens a picker (/model without a name, /resume, /mcp, "
                 + "/config) leaves it waiting for keys in that terminal, where whatever is typed next "
                 + "lands in it. action='configureTab' sets 'model', 'effort' or both with the "
-                + "terminal's own /model and /effort; thinking and the permission mode cannot be set "
-                + "there and are refused. action='remoteControl' switches Remote Control on or off "
+                + "terminal's own /model and /effort, and 'mode' 'plan' with /plan, which is not typed "
+                + "into a tab whose footer already says it plans; thinking and the other permission "
+                + "modes cannot be set there and are refused. action='listTabs' lists the terminal "
+                + "tabs and types nothing. action='remoteControl' switches Remote Control on or off "
                 + "('enabled') with /remote-control, answering the terminal's menu a moment later to "
                 + "switch it off. A terminal does not report Remote Control, so its state here is what "
                 + "Eclipse last knew: if it was switched on by hand in that terminal, switching it on "
@@ -212,6 +221,8 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
         ClaudeCodeEclipseTool.param(props, "effort", "string", "claudeTerminal configureTab: low, "
                 + "medium, high, xhigh, max or auto; which of the named ones a model has, the "
                 + "terminal says.");
+        ClaudeCodeEclipseTool.param(props, "mode", "string", "claudeTerminal configureTab: 'plan' only, "
+                + "typed as /plan.");
         ClaudeCodeEclipseTool.param(props, "enabled", "boolean", "claudeTerminal remoteControl: true "
                 + "switches Remote Control on for the terminal tab, false switches it off.");
         props.add("keys", ToolSupport.strings("claudeTerminal sendKeys: the keys to press, in order, "
@@ -241,6 +252,8 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
                     return readScreen(params);
                 case "sendKeys":
                     return sendKeys(params);
+                case "listTabs":
+                    return listTabs();
                 default:
                     return McpToolResult.error("Unknown action: " + action + ". Use one of: "
                             + String.join(", ", ACTIONS) + ".");
@@ -278,19 +291,29 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
         return typed(params, List.of(command.strip()));
     }
 
-    /** The model and the effort, each by the terminal's own command for it. */
+    private McpToolResult listTabs() {
+        JsonObject out = new JsonObject();
+        out.add("tabs", json(terminal.tabs()));
+        return McpToolResult.success(out);
+    }
+
+    /** The model and the effort, each by the terminal's own command for it, and plan mode by
+     *  its own. */
     private McpToolResult configureTab(JsonObject params) {
-        if (given(params, "thinking") || given(params, "mode")) {
-            throw new Refusal("In the Claude Terminal, thinking is switched with a key that flips it and "
-                    + "the permission mode with one that steps to the next. Only plan mode has a command "
-                    + "(/plan), and a terminal does not report which mode it is in: typed while already "
-                    + "planning, /plan shows the plan instead. So neither can be set from here; 'model' "
-                    + "and 'effort' can.");
+        if (given(params, "thinking")) {
+            throw new Refusal("In the Claude Terminal, thinking is switched with a key that flips it, and a "
+                    + "terminal does not say which way it is, so it cannot be set from here; 'model' and "
+                    + "'effort' can, and 'mode' 'plan'.");
+        }
+        String mode = ClaudeCodeEclipseTool.str(params, "mode");
+        if (mode != null && !"plan".equals(mode)) {
+            throw new Refusal("In the Claude Terminal only plan mode has a command (/plan); the other modes "
+                    + "are stepped through with a key (sendKeys 'shiftTab'). So 'mode' takes 'plan' only.");
         }
         String model = ClaudeCodeEclipseTool.str(params, "model");
         String effort = ClaudeCodeEclipseTool.str(params, "effort");
-        if (model == null && effort == null) {
-            throw new Refusal("Nothing to change: give 'model', 'effort' or both.");
+        if (model == null && effort == null && mode == null) {
+            throw new Refusal("Nothing to change: give 'model', 'effort', 'mode' 'plan' or a mix.");
         }
         if (model != null && !MODEL.matcher(model).matches()) {
             throw new Refusal("'model' must be a model name such as 'opus' or 'sonnet[1m]', a full "
@@ -302,11 +325,25 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
         List<String> lines = new ArrayList<>();
         if (model != null) lines.add("/model " + model);
         if (effort != null) lines.add("/effort " + effort.toLowerCase(Locale.ROOT));
-        return typed(params, lines);
+        boolean planning = false;
+        if (mode != null) {
+            // Typed while it already plans, /plan shows the plan instead of switching anything,
+            // so the footer is read first.
+            String footer = terminal.screen(ready(tabFor(params, terminal.tabs())).id(), FOOTER_LINES);
+            planning = footer != null && footer.toLowerCase(Locale.ROOT).contains(PLANNING);
+            if (!planning) lines.add("/plan");
+        }
+        JsonObject out = typedLines(params, lines);
+        if (planning) out.addProperty("alreadyPlanning", true);
+        return McpToolResult.success(out);
     }
 
     /** Types each line into the tab the call is for, in order, and answers with what was typed. */
     private McpToolResult typed(JsonObject params, List<String> lines) {
+        return McpToolResult.success(typedLines(params, lines));
+    }
+
+    private JsonObject typedLines(JsonObject params, List<String> lines) {
         List<TerminalTab> tabs = terminal.tabs();
         TerminalTab tab = ready(tabFor(params, tabs));
         JsonArray typed = new JsonArray();
@@ -320,7 +357,7 @@ class ClaudeTerminalModule implements ClaudeCodeEclipseTool.Module {
         out.add("typed", typed);
         out.add("tab", json(tab));
         out.add("tabs", json(tabs));
-        return McpToolResult.success(out);
+        return out;
     }
 
     private McpToolResult remoteControl(JsonObject params) {

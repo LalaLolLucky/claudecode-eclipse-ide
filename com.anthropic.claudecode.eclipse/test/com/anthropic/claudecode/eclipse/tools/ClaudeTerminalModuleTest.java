@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import com.anthropic.claudecode.eclipse.mcp.McpToolResult;
 import com.anthropic.claudecode.eclipse.ui.TerminalTab;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -248,7 +249,7 @@ class ClaudeTerminalModuleTest {
     void anActionItDoesNotHaveIsRefused() {
         Terminal terminal = new Terminal().with("term1", true, true, false);
 
-        McpToolResult result = run(terminal, "listTabs", "term1", null);
+        McpToolResult result = run(terminal, "listHistory", "term1", null);
 
         assertTrue(result.isError());
         assertTrue(text(result).contains("runCommand"));
@@ -360,13 +361,13 @@ class ClaudeTerminalModuleTest {
     }
 
     @Test
-    void thinkingAndTheModeCannotBeSetInATerminalAndNothingIsTyped() {
+    void thinkingAndAModeOtherThanPlanCannotBeSetInATerminalAndNothingIsTyped() {
         Terminal terminal = new Terminal().with("term1", true, true, false);
         JsonObject thinking = call("configureTab", "term1");
         thinking.addProperty("model", "opus");
         thinking.addProperty("thinking", true);
         JsonObject mode = call("configureTab", "term1");
-        mode.addProperty("mode", "plan");
+        mode.addProperty("mode", "acceptEdits");
 
         McpToolResult a = run(terminal, thinking);
         McpToolResult b = run(terminal, mode);
@@ -374,7 +375,60 @@ class ClaudeTerminalModuleTest {
         assertTrue(a.isError());
         assertTrue(b.isError());
         assertTrue(text(a).contains("model") && text(a).contains("effort"), text(a));
+        assertTrue(text(b).contains("plan"), text(b));
         assertTrue(terminal.typed.isEmpty());
+    }
+
+    @Test
+    void planModeIsSetByTypingPlanAfterTheModelAndTheEffort() {
+        Terminal terminal = new Terminal().with("term1", true, true, false);
+        terminal.screen = "> \n  ? for shortcuts";
+        JsonObject plan = call("configureTab", "term1");
+        plan.addProperty("mode", "plan");
+        plan.addProperty("effort", "low");
+
+        McpToolResult result = run(terminal, plan);
+
+        assertFalse(result.isError());
+        assertEquals(List.of("term1 <- /effort low", "term1 <- /plan"), terminal.typed);
+    }
+
+    @Test
+    void aTabAlreadyPlanningIsNotTypedPlanWhichWouldShowThePlanInstead() {
+        Terminal terminal = new Terminal().with("term1", true, true, false);
+        terminal.screen = "> \n  ⏸ plan mode on (shift+tab to cycle)";
+        JsonObject plan = call("configureTab", "term1");
+        plan.addProperty("mode", "plan");
+
+        McpToolResult result = run(terminal, plan);
+
+        assertFalse(result.isError());
+        assertTrue(terminal.typed.isEmpty());
+        assertTrue(json(result).get("alreadyPlanning").getAsBoolean());
+    }
+
+    // ── listTabs ──
+
+    @Test
+    void theTabsAreListedAndNothingIsTyped() {
+        Terminal terminal = new Terminal().with("term1", false, true, false).with("term2", true, true, false, "on");
+
+        McpToolResult result = run(terminal, call("listTabs", null));
+
+        assertFalse(result.isError());
+        JsonArray tabs = json(result).getAsJsonArray("tabs");
+        assertEquals(2, tabs.size());
+        assertEquals("term2", tabs.get(1).getAsJsonObject().get("id").getAsString());
+        assertEquals("on", tabs.get(1).getAsJsonObject().get("remoteControl").getAsString());
+        assertTrue(terminal.typed.isEmpty() && terminal.pressed.isEmpty());
+    }
+
+    @Test
+    void withNoTerminalOpenTheListIsEmpty() {
+        McpToolResult result = run(new Terminal(), call("listTabs", null));
+
+        assertFalse(result.isError());
+        assertEquals(0, json(result).getAsJsonArray("tabs").size());
     }
 
     @Test

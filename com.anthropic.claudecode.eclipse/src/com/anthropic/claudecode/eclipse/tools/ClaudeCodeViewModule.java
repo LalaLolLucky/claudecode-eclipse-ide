@@ -40,14 +40,15 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
 
     private static final List<String> ACTIONS = List.of("listTabs", "newTab", "configureTab", "sendPrompt", "runCommand", "remoteControl", "closeTab", "listHistory", "openSession",
             "readTab", "stopTab", "forkMessage", "rewindCode", "deleteMessage", "listBookmarks", "setBookmark",
-            "archiveSession", "renameSession", "usage", "exportConversation");
+            "archiveSession", "renameSession", "usage", "exportConversation", "selectTab", "answerQuestion",
+            "closeFolder");
 
     /** The actions on a saved conversation, which is checked here before the page is asked. */
     private static final List<String> ON_A_SESSION = List.of("openSession", "archiveSession", "renameSession");
 
     /** What an action may send to the page; anything else in the call stays behind. */
     private static final List<String> PARAMS = List.of("tabId", "folder", "model", "effort", "thinking", "mode", "prompt", "command", "enabled", "remoteControl",
-            "messageId", "replyId", "restoreCode", "preview", "archived", "limit");
+            "messageId", "replyId", "restoreCode", "preview", "archived", "limit", "answers");
 
     /** How long an answer the page has to wait for is waited for here, and how often the page
      *  is asked whether it has come. The page gives up on the CLI first, and says so. */
@@ -183,7 +184,8 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
                 + "action='readTab' returns the conversation the tab with 'tabId' shows, or the tab "
                 + "in front: the last 'limit' of the user's messages and Claude's replies, each "
                 + "with the 'messageId' or 'replyId' other actions take, and whether Claude is "
-                + "still working or the tab waits on an approval or question card. Read it to "
+                + "still working or the tab waits on a card ('waitingOnCard': question, approval or "
+                + "advisor), with a question card's questions and options. Read it to "
                 + "see the answer to a prompt that was sent. "
                 + "action='stopTab' stops what Claude is doing in the tab with 'tabId', like the "
                 + "Stop button, and leaves the tab open. "
@@ -207,6 +209,16 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
                 + "action='usage' returns the account's usage figures as Claude Code reports them. "
                 + "action='exportConversation' returns a tab's whole conversation as plain text, or "
                 + "writes it to 'file'. "
+                + "action='selectTab' brings the tab with 'tabId' to the front of the view, and its "
+                + "folder tab with it. action='answerQuestion' answers the question card the tab with "
+                + "'tabId' waits on, as the user would: 'answers' has one entry per question, in "
+                + "order, each an option's label or words of its own, and for a question that "
+                + "takes several options their labels joined by ', '. 'readTab' shows the "
+                + "questions and their options. Only a question card is answered from here: an "
+                + "approval card (a tool asking to run or to edit) and the advisor's are the "
+                + "user's to answer, and are refused. action='closeFolder' closes the folder tab "
+                + "'folder' with its conversations; it is refused for the only folder open, and "
+                + "while one of its conversations is working or waiting on a card. "
                 + "A call cannot tell which tab it was made from, so take 'tabId' from 'listTabs' "
                 + "or 'newTab'; closing the tab the call came from ends this conversation.";
     }
@@ -215,12 +227,15 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
     public void describeParams(JsonObject props) {
         props.add("tabId", param("string", "claudeCodeView configureTab/sendPrompt/runCommand/remoteControl/closeTab/"
                 + "readTab/stopTab/forkMessage/rewindCode/deleteMessage/listBookmarks/setBookmark/usage/"
-                + "exportConversation: the tab, as shown by 'listTabs', e.g. 'tab2'. Left out, "
+                + "exportConversation/selectTab/answerQuestion: the tab, as shown by 'listTabs', e.g. 'tab2'. Left out, "
                 + "'configureTab', 'readTab', 'listBookmarks', 'usage' and 'exportConversation' take the "
                 + "tab in front; the others require it."));
-        props.add("folder", param("string", "claudeCodeView newTab/listHistory/openSession/archiveSession: the full "
+        props.add("folder", param("string", "claudeCodeView newTab/listHistory/openSession/archiveSession/closeFolder: the full "
                 + "path of the folder the conversation runs in, such as a 'root' from 'listTabs'. Left "
-                + "out, the folder tab in front."));
+                + "out, the folder tab in front; 'closeFolder' requires it."));
+        props.add("answers", ToolSupport.strings("claudeCodeView answerQuestion: one answer per question of "
+                + "the card, in order: an option's label, words of its own, or for a question that takes "
+                + "several options their labels joined by ', '."));
         props.add("sessionId", param("string", "claudeCodeView openSession/archiveSession/renameSession: "
                 + "the conversation, as 'listHistory' shows it."));
         props.add("query", param("string", "claudeCodeView listHistory: show only the conversations "
@@ -290,6 +305,7 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
                 if (refusal != null) return McpToolResult.error(refusal);
             }
             if ("renameSession".equals(action)) nameRename(params, request);
+            if ("answerQuestion".equals(action)) checkAnswers(params);
             if (params.has("files") && !params.get("files").isJsonNull()) request.add("files", filesOf(params));
             if ("exportConversation".equals(action)) exportTo = exportFileOf(params);
         } catch (IllegalArgumentException e) {
@@ -368,6 +384,22 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
                     + "that one belongs to another folder. The user brings its folder tab to the front first.");
         }
         request.addProperty("newTitle", title);
+    }
+
+    /** An 'answerQuestion' call's answers: a list with a string for each question. Which
+     *  question each answers, and whether it fits it, the page says. */
+    private static void checkAnswers(JsonObject params) {
+        JsonElement answers = params.get("answers");
+        boolean strings = answers != null && answers.isJsonArray() && answers.getAsJsonArray().size() > 0;
+        if (strings) {
+            for (JsonElement e : answers.getAsJsonArray()) {
+                strings &= e.isJsonPrimitive() && e.getAsJsonPrimitive().isString();
+            }
+        }
+        if (!strings) {
+            throw new IllegalArgumentException("'answers' is required: a list with one answer per question, "
+                    + "in order. 'readTab' shows the questions.");
+        }
     }
 
     /** The files a call attaches, each checked to be one, as full paths. */

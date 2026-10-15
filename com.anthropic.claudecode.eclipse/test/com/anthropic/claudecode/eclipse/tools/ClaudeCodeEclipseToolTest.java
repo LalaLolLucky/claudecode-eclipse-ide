@@ -578,4 +578,80 @@ class ClaudeCodeEclipseToolTest {
         java.nio.file.Files.delete(file);
         java.nio.file.Files.delete(folder);
     }
+
+    // ── the tab in front, a question card, a folder ──
+
+    @Test
+    void aTabIsBroughtToTheFrontByAskingThePage() {
+        Page page = new Page("{\"ok\":true,\"tab\":{\"id\":\"tab3\",\"active\":true}}");
+        JsonObject call = args("claudeCodeView", "selectTab");
+        call.addProperty("tabId", "tab3");
+
+        McpToolResult result = toolOver(page).execute(call);
+
+        assertFalse(result.isError());
+        assertEquals("selectTab", page.asked.get(0).get("action").getAsString());
+        assertEquals("tab3", page.asked.get(0).get("tabId").getAsString());
+    }
+
+    @Test
+    void theAnswersToAQuestionCardReachThePageAsAListOfStrings() {
+        Page page = new Page("{\"ok\":true,\"answered\":true,\"tab\":{\"id\":\"tab2\"}}");
+        JsonObject call = args("claudeCodeView", "answerQuestion");
+        call.addProperty("tabId", "tab2");
+        JsonArray answers = new JsonArray();
+        answers.add("Yes");
+        answers.add("Tests, Docs");
+        call.add("answers", answers);
+
+        McpToolResult result = toolOver(page).execute(call);
+
+        assertFalse(result.isError());
+        JsonObject asked = page.asked.get(0);
+        assertEquals("answerQuestion", asked.get("action").getAsString());
+        assertEquals(answers, asked.getAsJsonArray("answers"));
+    }
+
+    @Test
+    void answersThatAreNotAListOfStringsAreRefusedWithoutAskingThePage() {
+        Page page = new Page("{\"ok\":true}");
+        JsonObject text = args("claudeCodeView", "answerQuestion");
+        text.addProperty("tabId", "tab2");
+        text.addProperty("answers", "Yes");
+        JsonObject numbers = args("claudeCodeView", "answerQuestion");
+        numbers.addProperty("tabId", "tab2");
+        JsonArray n = new JsonArray();
+        n.add(1);
+        numbers.add("answers", n);
+        JsonObject none = args("claudeCodeView", "answerQuestion");
+        none.addProperty("tabId", "tab2");
+
+        assertTrue(toolOver(page).execute(text).isError());
+        assertTrue(toolOver(page).execute(numbers).isError());
+        assertTrue(toolOver(page).execute(none).isError());
+        assertTrue(page.asked.isEmpty());
+    }
+
+    @Test
+    void aFolderIsClosedByAskingThePageWithItsPath() {
+        Page page = new Page("{\"ok\":true,\"closed\":\"C:\\\\work\\\\api\",\"tabs\":[]}");
+        JsonObject call = args("claudeCodeView", "closeFolder");
+        call.addProperty("folder", "C:\\work\\api");
+
+        McpToolResult result = toolOver(page).execute(call);
+
+        assertFalse(result.isError());
+        assertEquals("closeFolder", page.asked.get(0).get("action").getAsString());
+        assertEquals("C:\\work\\api", page.asked.get(0).get("folder").getAsString());
+    }
+
+    @Test
+    void theSchemaDescribesTheAnswersAsAListOfStrings() {
+        JsonObject answers = new ClaudeCodeEclipseTool().inputSchema().getAsJsonObject("properties")
+                .getAsJsonObject("answers");
+
+        assertEquals("array", answers.get("type").getAsString());
+        assertEquals("string", answers.getAsJsonObject("items").get("type").getAsString());
+        assertTrue(answers.get("description").getAsString().contains("answerQuestion"));
+    }
 }

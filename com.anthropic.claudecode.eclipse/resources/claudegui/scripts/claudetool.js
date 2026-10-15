@@ -4,7 +4,8 @@
    switches Remote Control on or off for one, and sets a tab's model/effort/thinking/
    permission mode; reads a tab's conversation, stops its turn, forks, rewinds or deletes
    at one of its messages, bookmarks a reply, archives or renames a saved conversation,
-   and asks the CLI for the usage figures or the conversation as text. Java calls window.__ccTool(requestJson) and hands the returned JSON
+   and asks the CLI for the usage figures or the conversation as text; brings a tab to the
+   front, answers a tab's question card (never an approval) and closes a folder tab. Java calls window.__ccTool(requestJson) and hands the returned JSON
    back to Claude (ClaudeGuiView#pageTool). */
 
 (function () {
@@ -37,7 +38,27 @@
     const out = describeSettings(t);
     out.remoteControl = remoteControlState(t);
     if (out.remoteControl === 'on') out.remoteControlUrl = t.remoteControlUrl;
+    const card = cardKind(t);
+    if (card) out.waitingOnCard = card;
     return out;
+  }
+  /* Which card a tab waits on: a question (AskUserQuestion), an approval (a tool asking to
+     run or to edit) or the advisor's choice. Null when none. */
+  function cardKind(t) {
+    const card = t && t.pendingCard;
+    if (!card) return null;
+    if (card.classList.contains('question-card')) return 'question';
+    return card.classList.contains('advisor') ? 'advisor' : 'approval';
+  }
+  /* A question card's questions as 'answerQuestion' takes answers to them. */
+  function cardQuestions(t) {
+    const qs = (t.pendingCard && t.pendingCard._questions) || [];
+    return qs.map(q => {
+      const out = { question: q.question || '', options: (q.options || []).map(o => (o && o.label) || '') };
+      if (q.header) out.header = q.header;
+      if (q.multiSelect) out.multiSelect = true;
+      return out;
+    });
   }
   function describeSettings(t) {
     return { id: t.id, title: t.title, active: t === activeTab(), root: rootPathOf(t),
@@ -576,7 +597,8 @@
         }
       });
       const out = { ok: true, tab: describe(t), total: all.length, messages: all.slice(-limit),
-        waitingOnCard: !!t.pendingCard };
+        waitingOnCard: cardKind(t) || false };
+      if (out.waitingOnCard === 'question') out.questions = cardQuestions(t);
       const notes = [];
       if (t.streaming) notes.push('Claude is still working in this tab; its reply so far may be incomplete.');
       if (t.opening) notes.push('The conversation is still being drawn; its older messages are not all here yet.');
@@ -744,6 +766,67 @@
       const t = tabForRead(req);
       if (!t.sessionId) refuse('That tab has no saved conversation yet.');
       return ask(t, 'export_conversation', d => ({ sessionId: t.sessionId, text: String(d.text || '') }));
+    },
+    /* A tab brought to the front, as a click on it does: its folder comes with it. */
+    selectTab: function (req) {
+      const t = tabForChange(req);
+      // With the row hidden nothing shows which folder is in front, or leads back to another.
+      if (rootDirectoriesRowHidden && t.rootId !== activeRootId) {
+        refuse('The folder row is hidden in this Eclipse (preference "Hide the root directories row"), '
+          + "so only a tab of the folder in front is brought forward; that one is in another folder.");
+      }
+      closeMenus();
+      if (t.id !== activeId) switchTab(t.id);
+      return result(t, []);
+    },
+    /* The question card a tab waits on, answered as its own Submit answers it. An approval or
+       the advisor's card is the user's: they decide what Claude may do. */
+    answerQuestion: function (req) {
+      const t = tabForChange(req);
+      const kind = cardKind(t);
+      if (!kind) refuse('That tab is not waiting on a card.');
+      if (kind !== 'question') {
+        refuse('That tab waits on ' + (kind === 'advisor' ? "the advisor's card" : 'an approval card')
+          + ', which only the user answers, in the view or on their other devices.');
+      }
+      if (!Array.isArray(req.answers)) refuse("'answers' must be a list, one answer per question.");
+      const card = t.pendingCard;
+      const questions = cardQuestions(t);
+      // The card's submit starts the next turn in whichever tab the page renders into.
+      const target = rtab;
+      loadRender(t);
+      let refusal;
+      try { refusal = card._answer(req.answers.map(String)); }
+      finally { if (t !== activeTab() && target && target !== t) loadRender(target); }
+      if (refusal) refuse(refusal);
+      return { ok: true, answered: true, questions: questions.map(q => q.question), answers: req.answers, tab: describe(t) };
+    },
+    /* A folder tab closed with its conversations, as its × does, short of the one question
+       the view asks: the last folder is not closed from here. */
+    closeFolder: function (req) {
+      const asked = (typeof req.folder === 'string') ? req.folder.trim() : '';
+      if (!asked) refuse("'folder' is required: the full path of an open folder, a 'root' that 'listTabs' shows.");
+      let root = rootByPath(asked);
+      if (!root) {
+        let info = null;
+        try { info = window._folderInfo ? JSON.parse(_folderInfo(asked) || 'null') : null; } catch (e) {}
+        if (info && info.path) root = rootByPath(info.path);
+      }
+      if (!root) refuse("No folder tab is open for '" + asked + "'. 'listTabs' shows each tab's 'root'.");
+      if (roots.length === 1) {
+        refuse('That is the only folder open, and closing it would close the Claude Code view, which '
+          + 'asks the user first. Open another folder first.');
+      }
+      const own = tabsOfRoot(root.id);
+      const busy = own.find(x => x.streaming || x.pendingCard);
+      if (busy) {
+        refuse("Tab '" + busy.id + "' in that folder is " + (busy.pendingCard ? 'waiting on a card' : 'working')
+          + "; let it finish or stop it (action 'stopTab') first.");
+      }
+      const closedTabs = own.map(x => x.id);
+      closeMenus();
+      closeRoot(root.id);
+      return { ok: true, closed: root.path, closedTabs: closedTabs, tabs: tabs.map(describe) };
     },
     collect: function (req) {
       const entry = waiting.hasOwnProperty(req.token) ? waiting[req.token] : null;

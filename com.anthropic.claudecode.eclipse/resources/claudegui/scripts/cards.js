@@ -343,6 +343,47 @@ window.onAskQuestion = function(tabId, reqId, questionsJson) {
     return st.choice === 'other' ? !!st.other.trim() : st.choice != null;
   }
   function allAnswered() { return state.every((_, i) => isAnswered(i)); }
+  /* The claudeCodeEclipse tool's answerQuestion (claudetool.js): one string per question, an
+     option's label (any case), words of the answerer's own, or for a multi-select question the
+     labels joined by ", " — the form the CLI is given. Filled in as clicks would fill it, then
+     submitted by the same finish() as Submit. A refusal is returned before anything is set. */
+  card._questions = questions;
+  card._answer = function (answers) {
+    if (resolved) return 'That card has already been answered.';
+    if (!Array.isArray(answers) || answers.length !== questions.length) {
+      return 'The card asks ' + questions.length + ' question' + (questions.length === 1 ? '' : 's')
+        + "; 'answers' needs one for each, in order.";
+    }
+    const opts = (q) => (q.options || []).map(o => String((o && o.label) || ''));
+    const find = (q, text) => {
+      const labels = opts(q);
+      let at = labels.indexOf(text);
+      if (at < 0) at = labels.findIndex(l => l.toLowerCase() === text.toLowerCase());
+      return at;
+    };
+    const filled = [];
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i], text = String(answers[i] || '').trim();
+      if (!text) return 'Answer ' + (i + 1) + ' is empty.';
+      const st = { choice: null, other: '', picks: [], otherOn: false };
+      if (q.multiSelect) {
+        const own = [];
+        text.split(', ').map(p => p.trim()).filter(Boolean).forEach(p => {
+          const at = find(q, p);
+          if (at >= 0) { if (st.picks.indexOf(at) < 0) st.picks.push(at); } else own.push(p);
+        });
+        if (own.length) { st.otherOn = true; st.other = own.join(', '); }
+        st.picks.sort((a, b) => a - b);
+      } else {
+        const at = find(q, text);
+        if (at >= 0) st.choice = at; else { st.choice = 'other'; st.other = text; }
+      }
+      filled.push(st);
+    }
+    filled.forEach((st, i) => { state[i] = st; });
+    finish();
+    return resolved ? null : 'The card did not take those answers.';
+  };
   function finish() {
     if (resolved || !allAnswered()) return; resolved = true;
     unregisterCardTimeout(reqId);
