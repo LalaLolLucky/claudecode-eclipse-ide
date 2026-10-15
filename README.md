@@ -171,11 +171,12 @@ Claude has access to the following MCP tools, which it invokes automatically:
 | `callHierarchy` † | Show what calls a Java method, or what it calls, as a tree several levels deep |
 | `classpath` † | Show a Java project's build path — source folders, projects, libraries and containers — and its problems |
 | `generateJava` † | Generate getters and setters, a constructor from fields, or stubs overriding inherited methods |
+| `cIndex` ‡ | C and C++ through CDT's index: where a symbol is defined, declared and used, which functions call it, what a file includes and what includes it, and how a macro expands |
 | `coverage` † ‡ | Run a launch configuration under code coverage (EclEmma) and read the result: per project and package, or a source file's covered, partly covered and missed lines |
 
 † Requires the Java Development Tools (JDT). The plugin never hard-depends on JDT — these tools are simply absent from the tool list when it isn't installed, and everything else works without it.
 
-‡ Present only when the plug-in it drives is installed: Eclipse's File Search for `workspaceSearch`, the Plug-in Development Environment (PDE) for `targetPlatform`, Maven integration (m2e) for `mavenUpdate`, and EclEmma (Java Code Coverage) for `coverage`.
+‡ Present only when the plug-in it drives is installed: Eclipse's File Search for `workspaceSearch`, the Plug-in Development Environment (PDE) for `targetPlatform`, Maven integration (m2e) for `mavenUpdate`, EclEmma (Java Code Coverage) for `coverage`, and the C/C++ Development Tools (CDT) for `cIndex`.
 
 In the Claude Terminal these tools are available while **Enable MCP tools integration** is ticked in the preferences, which it is by default.
 

@@ -133,6 +133,15 @@ public class McpToolRegistry {
                 Activator.logError("File Search present but the workspaceSearch tool could not be created; skipping", e);
             }
         }
+        // cIndex reads CDT's index: org.eclipse.cdt.core is an optional Require-Bundle, so its
+        // class is loaded only behind this guard.
+        if (ToolSupport.installed("org.eclipse.cdt.core")) {
+            try {
+                register(new com.anthropic.claudecode.eclipse.tools.cdt.CIndexTool());
+            } catch (LinkageError | RuntimeException e) {
+                Activator.logError("CDT present but the cIndex tool could not be created; skipping", e);
+            }
+        }
         if (ToolSupport.installed(TargetPlatformTool.PDE)) register(new TargetPlatformTool());
         if (ToolSupport.installed(MavenUpdateTool.M2E)) register(new MavenUpdateTool());
     }
