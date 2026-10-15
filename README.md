@@ -158,6 +158,7 @@ Claude has access to the following MCP tools, which it invokes automatically:
 | `mavenUpdate` ‡ | Update Maven projects from their `pom.xml`, as **Maven → Update Project** does |
 | `eclipseShowView` | Open or close a view such as Problems, Console or Git Staging, or list the views this Eclipse has |
 | `eclipseOpenPerspective` | Switch to or close a perspective such as Java, Debug or Git, or list the perspectives this Eclipse has |
+| `eclipseCustomizePerspective` | Do what **Window → Perspective → Customize Perspective** does — show or hide toolbar and menu items, action sets and the shortcuts under New, Open Perspective and Show View — and hide or show the main toolbar |
 | `eclipseDialog` | List the dialogs that are open, in this Eclipse or another Eclipse instance, and press a button in one by its label |
 | `claudeCodeEclipse` | Drive the plugin's own views. In the Claude Code view: list, open, set up, prompt and close conversation tabs — under any folder already trusted — run slash commands, reopen past conversations and switch Remote Control; read a tab's conversation, stop its turn, attach files to a prompt, fork, rewind or delete at a message, bookmark replies, archive or rename a saved conversation, and get the usage figures or the conversation as text. In the Claude Terminal: open and close tabs, send a prompt or a slash command, set the model and effort, switch Remote Control, read what the terminal shows and press keys in it |
 | `findReferences` † | Find every reference to a Java type or member |
@@ -194,6 +195,8 @@ Go to **Window → Preferences → Claude Code** to configure:
 | Enable Thinking by default | On | New conversations start with extended thinking on |
 | Allow bypass permissions mode | Off | Makes Bypass permissions available as a permission mode. Recommended only for sandboxes with no internet access |
 | Exclusively use terminal | Off | Launches Claude in the Claude Terminal instead of the Claude Code view, which is closed and hidden along with its commands |
+| Initial Permission Mode | *(unset)* | The permission mode new conversations start in; unset leaves it to the Claude Code CLI. Bypass permissions is listed only while it is allowed above |
+| Archive Inactive Sessions | 14 days | Archives a conversation after this long with no activity (Never, 1, 2, 7 or 14 days). Open, running, waiting or unread conversations are never archived automatically |
 
 **Claude Terminal view configuration:**
 
@@ -213,6 +216,7 @@ Go to **Window → Preferences → Claude Code** to configure:
 | Start a tool's input, output and diff cards | Showing a few lines | Hidden (only the tool line; its arrow shows them), collapsed to one line, a few lines, or everything. Bash commands, file edits, search results, agents and web tools can each have their own start; the rest follow this one. Each card's own buttons and the arrow move it between the views from there |
 | Show a timestamp above your own messages | Off | A small local-time line above each message you sent, in live conversations and in history loaded from disk |
 | Hide the root directories row | Off | Removes the working-folder picker, its collapsed stand-in and its toolbar toggle — for anyone who only ever works in one folder |
+| Hide messages from before a compaction | On | Hides everything above a conversation's last compaction; unticked, it is kept under one collapsed line |
 
 The Claude Terminal's colors and font are under **Colors and Fonts** instead — see the notes under [Getting Started](#getting-started).
 
