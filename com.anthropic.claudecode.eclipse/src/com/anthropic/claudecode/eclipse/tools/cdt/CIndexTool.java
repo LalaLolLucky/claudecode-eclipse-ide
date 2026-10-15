@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 
 import org.eclipse.cdt.core.CCorePlugin;
-import org.eclipse.cdt.core.dom.ast.IASTFileLocation;
 import org.eclipse.cdt.core.dom.ast.IASTTranslationUnit;
 import org.eclipse.cdt.core.dom.ast.IFunction;
 import org.eclipse.cdt.core.dom.rewrite.MacroExpansionExplorer;
@@ -56,6 +55,9 @@ public class CIndexTool implements McpTool {
 	/** The most names listed for one symbol, and include levels followed. */
 	private static final int MAX_NAMES = 500;
 	private static final int MAX_DEPTH = 10;
+
+	/** How long the indexer is waited for before the index is read as it stands. */
+	private static final int INDEX_WAIT_MS = 60_000;
 
 	@Override
 	public String toolName() {
@@ -150,12 +152,50 @@ public class CIndexTool implements McpTool {
 		return project;
 	}
 
-	private static IIndex indexFor(ICProject project) throws CoreException {
-		return CCorePlugin.getIndexManager().getIndex(project, IIndexManager.ADD_DEPENDENCIES | IIndexManager.ADD_DEPENDENT);
+	/**
+	 * The project's index, with {@code file} in it when CDT can index it: what the indexer is
+	 * doing is waited for, a while, and a file the index does not hold has its project indexed
+	 * again (Index &gt; Rebuild), which a project imported or set up a moment ago needs (seen live:
+	 * an index made before the project had its .cproject stayed empty).
+	 */
+	private static IIndex indexFor(ICProject project, IFile file) throws CoreException, InterruptedException {
+		IIndexManager manager = CCorePlugin.getIndexManager();
+		if (!manager.isProjectIndexed(project)) manager.reindex(project);
+		manager.joinIndexer(INDEX_WAIT_MS, new NullProgressMonitor());
+		IIndex index = manager.getIndex(project, IIndexManager.ADD_DEPENDENCIES | IIndexManager.ADD_DEPENDENT);
+		boolean held;
+		index.acquireReadLock();
+		try {
+			held = index.getFiles(IndexLocationFactory.getWorkspaceIFL(file)).length > 0;
+		} finally {
+			index.releaseReadLock();
+		}
+		if (held) return index;
+		manager.reindex(project);
+		manager.joinIndexer(INDEX_WAIT_MS, new NullProgressMonitor());
+		return manager.getIndex(project, IIndexManager.ADD_DEPENDENCIES | IIndexManager.ADD_DEPENDENT);
 	}
 
-	private static IIndex workspaceIndex() throws CoreException {
-		return CCorePlugin.getIndexManager().getIndex(CoreModel.getDefault().getCModel().getCProjects());
+	/** Every C/C++ project's index; one whose index holds no file at all is indexed again first. */
+	private static IIndex workspaceIndex() throws CoreException, InterruptedException {
+		IIndexManager manager = CCorePlugin.getIndexManager();
+		ICProject[] projects = CoreModel.getDefault().getCModel().getCProjects();
+		manager.joinIndexer(INDEX_WAIT_MS, new NullProgressMonitor());
+		boolean again = false;
+		for (ICProject p : projects) {
+			IIndex own = manager.getIndex(p);
+			own.acquireReadLock();
+			try {
+				if (!manager.isProjectIndexed(p) || own.getAllFiles().length == 0) {
+					manager.reindex(p);
+					again = true;
+				}
+			} finally {
+				own.releaseReadLock();
+			}
+		}
+		if (again) manager.joinIndexer(INDEX_WAIT_MS, new NullProgressMonitor());
+		return manager.getIndex(projects);
 	}
 
 	private static String text(IFile file) throws Exception {
@@ -190,7 +230,7 @@ public class CIndexTool implements McpTool {
 			index = workspaceIndex();
 		} else {
 			file = fileOf(params);
-			index = indexFor(projectOf(file));
+			index = indexFor(projectOf(file), file);
 			text = text(file);
 		}
 		index.acquireReadLock();
@@ -212,16 +252,17 @@ public class CIndexTool implements McpTool {
 
 			JsonObject out = new JsonObject();
 			JsonArray symbols = new JsonArray();
+			Texts texts = new Texts();
 			for (IIndexBinding binding : bindings) {
 				JsonObject s = new JsonObject();
 				s.addProperty("symbol", String.join("::", binding.getQualifiedName()));
 				s.addProperty("kind", kindOf(binding));
 				if (callers) {
-					s.add("callers", callersOf(index, binding));
+					s.add("callers", callersOf(index, binding, texts));
 				} else {
-					s.add("definitions", places(index.findDefinitions(binding)));
-					s.add("declarations", places(index.findDeclarations(binding)));
-					s.add("references", places(index.findReferences(binding)));
+					s.add("definitions", places(index.findDefinitions(binding), texts));
+					s.add("declarations", places(index.findDeclarations(binding), texts));
+					s.add("references", places(index.findReferences(binding), texts));
 				}
 				symbols.add(s);
 			}
@@ -259,20 +300,48 @@ public class CIndexTool implements McpTool {
 		return simple.isEmpty() ? "symbol" : Character.toLowerCase(simple.charAt(0)) + simple.substring(1);
 	}
 
-	private static JsonArray places(IIndexName[] names) throws CoreException {
+	private static JsonArray places(IIndexName[] names, Texts texts) throws CoreException {
 		JsonArray out = new JsonArray();
 		for (IIndexName name : names) {
 			if (out.size() >= MAX_NAMES) break;
-			out.add(place(name.getFileLocation(), name.getFile().getLocation()));
+			out.add(place(name, texts));
 		}
 		return out;
 	}
 
-	private static JsonObject place(IASTFileLocation at, IIndexFileLocation file) {
+	/** A name's file, line and column. The index keeps a name's offset but not its line (its
+	 *  file location says line 0, seen live), so the line is counted in the file's text. */
+	private static JsonObject place(IIndexName name, Texts texts) throws CoreException {
+		IIndexFileLocation file = name.getFile().getLocation();
 		JsonObject j = new JsonObject();
 		j.addProperty("file", pathOf(file));
-		if (at != null) j.addProperty("line", at.getStartingLineNumber());
+		String text = texts.of(file);
+		if (text != null && name.getNodeOffset() >= 0 && name.getNodeOffset() <= text.length()) {
+			int[] at = SourcePosition.lineAndColumn(text, name.getNodeOffset());
+			j.addProperty("line", at[0]);
+			j.addProperty("column", at[1]);
+		}
 		return j;
+	}
+
+	/** The files' texts a call has read, each read once. */
+	private static final class Texts {
+		private final Map<String, String> read = new LinkedHashMap<>();
+
+		String of(IIndexFileLocation location) {
+			return read.computeIfAbsent(location.getURI().toString(), k -> {
+				try {
+					java.nio.file.Path path = java.nio.file.Paths.get(location.getURI());
+					try {
+						return java.nio.file.Files.readString(path);
+					} catch (java.nio.charset.CharacterCodingException notUtf8) {
+						return java.nio.file.Files.readString(path, java.nio.charset.StandardCharsets.ISO_8859_1);
+					}
+				} catch (Exception | Error unreadable) {
+					return null;
+				}
+			});
+		}
 	}
 
 	private static String pathOf(IIndexFileLocation location) {
@@ -282,7 +351,7 @@ public class CIndexTool implements McpTool {
 	}
 
 	/** The functions whose definitions hold a reference to {@code binding}, each with the lines. */
-	private static JsonArray callersOf(IIndex index, IIndexBinding binding) throws CoreException {
+	private static JsonArray callersOf(IIndex index, IIndexBinding binding, Texts texts) throws CoreException {
 		Map<String, JsonObject> byCaller = new LinkedHashMap<>();
 		for (IIndexName reference : index.findReferences(binding)) {
 			IIndexName enclosing = reference.getEnclosingDefinition();
@@ -292,7 +361,7 @@ public class CIndexTool implements McpTool {
 				JsonObject j = new JsonObject();
 				j.addProperty("caller", k);
 				try {
-					if (enclosing != null) j.add("definedAt", place(enclosing.getFileLocation(), enclosing.getFile().getLocation()));
+					if (enclosing != null) j.add("definedAt", place(enclosing, texts));
 				} catch (CoreException e) {
 					// left out
 				}
@@ -300,7 +369,7 @@ public class CIndexTool implements McpTool {
 				return j;
 			});
 			JsonArray calls = entry.getAsJsonArray("calls");
-			if (calls.size() < MAX_NAMES) calls.add(place(reference.getFileLocation(), reference.getFile().getLocation()));
+			if (calls.size() < MAX_NAMES) calls.add(place(reference, texts));
 			if (byCaller.size() >= MAX_NAMES) break;
 		}
 		JsonArray out = new JsonArray();
@@ -315,7 +384,7 @@ public class CIndexTool implements McpTool {
 		Integer depth = intOf(params, "depth");
 		int levels = depth == null ? 1 : depth;
 		if (levels < 1 || levels > MAX_DEPTH) throw new Refusal("'depth' must be from 1 to " + MAX_DEPTH + ".");
-		IIndex index = indexFor(projectOf(file));
+		IIndex index = indexFor(projectOf(file), file);
 		index.acquireReadLock();
 		try {
 			IIndexFile[] indexed = index.getFiles(IndexLocationFactory.getWorkspaceIFL(file));
@@ -359,7 +428,7 @@ public class CIndexTool implements McpTool {
 		if (!(element instanceof ITranslationUnit unit)) throw new Refusal(file.getFullPath() + " is not a C/C++ source or header file.");
 		String text = text(file);
 		int[] word = identifierOf(params, text);
-		IIndex index = indexFor(project);
+		IIndex index = indexFor(project, file);
 		index.acquireReadLock();
 		try {
 			IASTTranslationUnit ast = unit.getAST(index, ITranslationUnit.AST_SKIP_INDEXED_HEADERS);
