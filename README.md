@@ -106,7 +106,7 @@ Go to **Window → Show View → Other → Claude Code** and open the views you 
 | `Ctrl+F` | Find in Conversation, in the Claude Code view |
 | `Ctrl+D` | Start or stop dictation, in the Claude Code view (when speech-to-text is enabled) |
 
-These are also available from the **Claude Code** menu in the menu bar and from the right-click context menu in any text editor. A project's context menu carries **Open Claude Here**, holding **Claude Code** and **Claude Terminal**, and **Show In ▸ Claude Code** opens the selected folder as a directory tab.
+These are also available from the **Claude Code** menu in the menu bar and from the right-click context menu in any text editor. A project's context menu carries **Open Claude Here**, holding **Claude Code** and **Claude Terminal**, and **Show In ▸ Claude Code** opens the selected folder as a directory tab. The **Problems** and **Console** views' context menus carry **Send to Claude Terminal** and **Send to Claude Code**: the selected problems, each as its file at its line with its message, or the selected console text (the caret's line when nothing is selected), put at Claude's prompt to send with your question.
 
 ### Chat Controls
 

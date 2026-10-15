@@ -4122,6 +4122,13 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         }
     }
 
+    /** Puts text into the composer of the conversation in front, where the caret is, for the
+     *  user to send with whatever they write around it ("Send to Claude Code" in the Problems
+     *  and Console views). UI thread. */
+    public void addToComposer(String text) {
+        executeJS("window.addToComposer && window.addToComposer('" + esc(text) + "')");
+    }
+
     /**
      * Recognition hints for the transcriber: the working folder's name and the
      * current git branch. Both are routinely spoken aloud while dictating and

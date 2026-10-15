@@ -96,6 +96,27 @@
             name="Find in Conversation"
             description="Search the active Claude Code conversation"
             categoryId="com.anthropic.claudecode.eclipse.commands.category"/>
+      <!-- "Send to Claude Terminal" / "Send to Claude Code" in the Problems and Console views. -->
+      <command
+            id="com.anthropic.claudecode.eclipse.commands.sendProblemsToTerminal"
+            name="Send to Claude Terminal"
+            description="Put the selected problems at the Claude Terminal's prompt"
+            categoryId="com.anthropic.claudecode.eclipse.commands.category"/>
+      <command
+            id="com.anthropic.claudecode.eclipse.commands.sendProblemsToCode"
+            name="Send to Claude Code"
+            description="Put the selected problems into the Claude Code composer"
+            categoryId="com.anthropic.claudecode.eclipse.commands.category"/>
+      <command
+            id="com.anthropic.claudecode.eclipse.commands.sendConsoleToTerminal"
+            name="Send to Claude Terminal"
+            description="Put the selected console text at the Claude Terminal's prompt"
+            categoryId="com.anthropic.claudecode.eclipse.commands.category"/>
+      <command
+            id="com.anthropic.claudecode.eclipse.commands.sendConsoleToCode"
+            name="Send to Claude Code"
+            description="Put the selected console text into the Claude Code composer"
+            categoryId="com.anthropic.claudecode.eclipse.commands.category"/>
    </extension>
 
    <!-- Active only while a card is awaiting an answer, so the binding below cannot
@@ -153,6 +174,19 @@
       <handler
             commandId="com.anthropic.claudecode.eclipse.commands.findInConversation"
             class="com.anthropic.claudecode.eclipse.ui.handlers.FindInConversationHandler"/>
+      <!-- The text after the colon is the view the handler sends to (IExecutableExtension). -->
+      <handler
+            commandId="com.anthropic.claudecode.eclipse.commands.sendProblemsToTerminal"
+            class="com.anthropic.claudecode.eclipse.ui.handlers.SendProblemsHandler:terminal"/>
+      <handler
+            commandId="com.anthropic.claudecode.eclipse.commands.sendProblemsToCode"
+            class="com.anthropic.claudecode.eclipse.ui.handlers.SendProblemsHandler:code"/>
+      <handler
+            commandId="com.anthropic.claudecode.eclipse.commands.sendConsoleToTerminal"
+            class="com.anthropic.claudecode.eclipse.ui.handlers.SendConsoleHandler:terminal"/>
+      <handler
+            commandId="com.anthropic.claudecode.eclipse.commands.sendConsoleToCode"
+            class="com.anthropic.claudecode.eclipse.ui.handlers.SendConsoleHandler:code"/>
    </extension>
 
    <!-- Key Bindings -->
@@ -289,6 +323,77 @@
          </menu>
       </menuContribution>
 
+      <!-- Problems view: the selected problems, each as its file at its line with its message. -->
+      <menuContribution locationURI="popup:org.eclipse.ui.views.ProblemView?after=additions">
+         <command
+               commandId="com.anthropic.claudecode.eclipse.commands.sendProblemsToTerminal"
+               icon="icons/claude-16.png"
+               label="Send to Claude Terminal"
+               style="push"/>
+         <command
+               commandId="com.anthropic.claudecode.eclipse.commands.sendProblemsToCode"
+               icon="icons/claude-16.png"
+               label="Send to Claude Code"
+               style="push">
+            <visibleWhen checkEnabled="false">
+               <with variable="com.anthropic.claudecode.eclipse.codeViewEnabled">
+                  <equals value="true"/>
+               </with>
+            </visibleWhen>
+         </command>
+      </menuContribution>
+
+      <!-- Console view: the selected text, or the caret's line. A console page's menu is named
+           after its console type ("<type>.#ContextMenu", TextConsolePage#createControl): the
+           launches' own consoles have one, a console without a type is plain "#ContextMenu". -->
+      <menuContribution locationURI="popup:org.eclipse.debug.ui.ProcessConsoleType.#ContextMenu?after=additions">
+         <command
+               commandId="com.anthropic.claudecode.eclipse.commands.sendConsoleToTerminal"
+               icon="icons/claude-16.png"
+               label="Send to Claude Terminal"
+               style="push"/>
+         <command
+               commandId="com.anthropic.claudecode.eclipse.commands.sendConsoleToCode"
+               icon="icons/claude-16.png"
+               label="Send to Claude Code"
+               style="push">
+            <visibleWhen checkEnabled="false">
+               <with variable="com.anthropic.claudecode.eclipse.codeViewEnabled">
+                  <equals value="true"/>
+               </with>
+            </visibleWhen>
+         </command>
+      </menuContribution>
+      <menuContribution locationURI="popup:#ContextMenu?after=additions">
+         <command
+               commandId="com.anthropic.claudecode.eclipse.commands.sendConsoleToTerminal"
+               icon="icons/claude-16.png"
+               label="Send to Claude Terminal"
+               style="push">
+            <visibleWhen checkEnabled="false">
+               <with variable="activePartId">
+                  <equals value="org.eclipse.ui.console.ConsoleView"/>
+               </with>
+            </visibleWhen>
+         </command>
+         <command
+               commandId="com.anthropic.claudecode.eclipse.commands.sendConsoleToCode"
+               icon="icons/claude-16.png"
+               label="Send to Claude Code"
+               style="push">
+            <visibleWhen checkEnabled="false">
+               <and>
+                  <with variable="activePartId">
+                     <equals value="org.eclipse.ui.console.ConsoleView"/>
+                  </with>
+                  <with variable="com.anthropic.claudecode.eclipse.codeViewEnabled">
+                     <equals value="true"/>
+                  </with>
+               </and>
+            </visibleWhen>
+         </command>
+      </menuContribution>
+
       <!-- Toolbar -->
       <menuContribution locationURI="toolbar:org.eclipse.ui.main.toolbar?after=additions">
          <toolbar id="com.anthropic.claudecode.eclipse.toolbar">
@@ -370,6 +475,14 @@
             activityId="com.anthropic.claudecode.eclipse.activity.codeView"
             isEqualityPattern="true"
             pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.commands.dismissCard"/>
+      <activityPatternBinding
+            activityId="com.anthropic.claudecode.eclipse.activity.codeView"
+            isEqualityPattern="true"
+            pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.commands.sendProblemsToCode"/>
+      <activityPatternBinding
+            activityId="com.anthropic.claudecode.eclipse.activity.codeView"
+            isEqualityPattern="true"
+            pattern="com.anthropic.claudecode.eclipse/com.anthropic.claudecode.eclipse.commands.sendConsoleToCode"/>
    </extension>
 
    <!-- Publishes the debugMode and codeViewEnabled source variables used by the

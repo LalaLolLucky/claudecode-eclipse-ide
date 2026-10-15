@@ -237,6 +237,24 @@ function insertMentionTrigger(text) {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+/* Text put into the composer from outside the page ("Send to Claude Code" in the Problems and
+   Console views, ClaudeGuiView#addToComposer): where the caret is, on lines of its own when
+   the draft already has words around it, and left there to be sent with them. */
+window.addToComposer = function (text) {
+  if (typeof text !== 'string' || !text.trim()) return;
+  closeMenus();
+  const v = input.value;
+  const s = input.selectionStart, e = input.selectionEnd;
+  const before = v.substring(0, s), after = v.substring(e);
+  const lead = before && !/\n$/.test(before) ? '\n' : '';
+  const trail = after && !/^\n/.test(after) ? '\n' : '';
+  input.value = before + lead + text + trail + after;
+  const caret = (before + lead + text).length;
+  input.focus();
+  input.setSelectionRange(caret, caret);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+};
+
 /* The + menu. Browse the web is offered only with a claude.ai sign-in. */
 function openPlusMenu(anchor) {
   const web = document.getElementById('plus-browse');
