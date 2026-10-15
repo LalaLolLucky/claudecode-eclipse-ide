@@ -13,13 +13,18 @@
    session.rs's reconstructed agentLog field for a reloaded one, so both look the same
    here regardless of which populated them. Same modal-overlay idiom as
    #rewind-overlay/#account-overlay (scrim + centered card) — opened via the /agents slash
-   command (slash.js); no toolbar entry point yet. */
+   command (slash.js); no toolbar entry point yet.
+   Below the agents, the tab's background tasks (shells above all), from the CLI's own list
+   (chat.rs relays system/background_tasks_changed); click one for its view:
+     task       — how long it has run, what it has written so far (a shell's output, asked
+                 of the CLI with get_task_output while the view is open) and a Stop button. */
 
 const agentsOverlayEl = document.getElementById('agents-overlay');
 const agentsWinEl = document.getElementById('agents-win');
 
-let agentsView = 'list';       // 'list' | 'detail' | 'transcript'
+let agentsView = 'list';       // 'list' | 'detail' | 'transcript' | 'task'
 let agentsSelectedId = null;   // the agent's own tool_use id (.tool-line's data-tuid)
+let agentsSelectedTask = null; // the background task's id, in the 'task' view
 
 /** "2m 38s" / "48s" — matches the reference VSCode Agent map's compact duration format. */
 function formatAgentDuration(ms) {
@@ -108,6 +113,20 @@ function collectAgents() {
 }
 
 function renderAgentsWin() {
+  if (agentsView === 'task') {
+    const t = activeTab();
+    const task = bgTaskOf(t, agentsSelectedTask);
+    if (task) {
+      // Brought up to date where it stands while it is already showing, so the output
+      // keeps its scroll position and the Stop button its state between the ticks.
+      if (bgView && bgView.taskId === task.taskId && agentsWinEl.contains(bgView.meta)) updateTaskDetail(t, task);
+      else { agentsWinEl.classList.remove('ap-transcript-mode'); agentsWinEl.innerHTML = ''; renderTaskDetail(t, task); }
+      return;
+    }
+    agentsView = 'list';       // a task this tab no longer knows — back to the map
+  }
+  stopTaskOutputPoll();
+  bgView = null;
   agentsWinEl.classList.remove('ap-transcript-mode');
   agentsWinEl.innerHTML = '';
   const agents = collectAgents();
@@ -138,7 +157,7 @@ function renderAgentsList(agents) {
       : 'No agents in this conversation yet.';
   agentsWinEl.appendChild(sub);
 
-  if (!agents.length) return;
+  if (!agents.length) { renderBackgroundTasks(); return; }
   const list = document.createElement('div'); list.className = 'ap-list';
   // Most recent first — the one just kicked off is what you're watching.
   agents.slice().reverse().forEach(a => {
@@ -160,7 +179,254 @@ function renderAgentsList(agents) {
     list.appendChild(row);
   });
   agentsWinEl.appendChild(list);
+  renderBackgroundTasks();
 }
+
+/* ===================== Background tasks ===================== */
+
+/** What each kind of background task is called where it has no description of its own. */
+const BG_TASK_KINDS = {
+  local_agent: 'subagent', local_workflow: 'workflow', local_bash: 'shell', monitor_mcp: 'monitor',
+  monitor_ws: 'monitor', mcp_task: 'MCP task', in_process_teammate: 'teammate', dream: 'dream',
+  auto_mode_scan: 'auto-mode scan', local_memory_import: 'memory import', remote_agent: 'cloud session',
+};
+const BG_ENDED_KEPT = 20;          // ended tasks remembered per tab, for their own view
+const BG_OUTPUT_POLL_MS = 1000;    // how often a running shell's output is asked for
+const BG_STOP_WAIT_MS = 5000;      // how long a task may stay listed after Stop before it is said to have failed
+
+function bgKindName(task) { return BG_TASK_KINDS[task.taskType] || 'task'; }
+function bgTitle(task) { return task.description || bgKindName(task); }
+/** "shell · 12s": its kind, and how long it has run once that is a second or more. */
+function bgMeta(task, now) {
+  const ran = task.startedAt ? (task.endedAt || now) - task.startedAt : 0;
+  return ran >= 1000 ? bgKindName(task) + ' · ' + formatAgentDuration(ran) : bgKindName(task);
+}
+
+/** The tab's whole list of background tasks, as the CLI gave it this time. A task gone from
+ *  it has ended; it is remembered a while so its own view can still say how. */
+function applyBackgroundTasks(list, t) {
+  if (!t) return;
+  const before = t.bgTasks || new Map();
+  const now = new Map();
+  (Array.isArray(list) ? list : []).forEach(x => {
+    if (!x || !x.taskId) return;
+    const had = before.get(x.taskId);
+    now.set(x.taskId, { taskId: x.taskId, taskType: x.taskType || '', description: x.description || '',
+        startedAt: had ? had.startedAt : Date.now(), stopping: had ? had.stopping : 0 });
+  });
+  before.forEach((task, id) => {
+    if (now.has(id)) return;
+    if (!t.bgEnded) t.bgEnded = new Map();
+    t.bgEnded.set(id, Object.assign({}, task, { endedAt: Date.now(), stopping: 0 }));
+    if (t.bgEnded.size > BG_ENDED_KEPT) t.bgEnded.delete(t.bgEnded.keys().next().value);
+  });
+  t.bgTasks = now;
+  if (window.renderAgentsPanel) window.renderAgentsPanel();
+}
+function bgTasksOf(t) { return t && t.bgTasks ? [...t.bgTasks.values()] : []; }
+function bgTaskOf(t, id) {
+  if (!t || !id) return null;
+  return (t.bgTasks && t.bgTasks.get(id)) || (t.bgEnded && t.bgEnded.get(id)) || null;
+}
+/** How an ended task ended, from the CLI's own task_notification for it (chat.rs relays it
+ *  to the log of the tool call that started it, with the task's id from task_started). */
+function bgOutcome(task) {
+  for (const log of agentLogs.values()) {
+    if (log.taskId !== task.taskId) continue;
+    if (log.finishStatus === 'stopped' || log.finishStatus === 'killed') return 'Stopped';
+    if (log.finishStatus === 'failed') return 'Failed';
+    if (log.finishStatus) return 'Finished';
+  }
+  return 'Ended';
+}
+function bgDotClass(task, running) {
+  if (running) return 'spin';
+  const how = bgOutcome(task);
+  return how === 'Stopped' ? 'stopped' : how === 'Failed' ? 'red' : 'done';
+}
+
+/** The list under the agents: one row per task running in this tab. */
+function renderBackgroundTasks() {
+  const tasks = bgTasksOf(activeTab());
+  if (!tasks.length) return;
+  const head = document.createElement('div'); head.className = 'ap-sub ap-tasks-head';
+  head.textContent = tasks.length + ' background task' + (tasks.length === 1 ? '' : 's') + ' · click a task for details';
+  agentsWinEl.appendChild(head);
+  const list = document.createElement('div'); list.className = 'ap-list ap-tasks';
+  const now = Date.now();
+  tasks.forEach(task => {
+    const row = document.createElement('div'); row.className = 'ap-row ap-task-row';
+    row.dataset.taskType = task.taskType;
+    row.title = bgTitle(task);
+    row.onclick = () => { agentsView = 'task'; agentsSelectedTask = task.taskId; renderAgentsWin(); };
+    const dot = document.createElement('span'); dot.className = 'dot spin';
+    const body = document.createElement('div'); body.className = 'ap-body';
+    const label = document.createElement('span'); label.className = 'ap-label'; label.textContent = bgTitle(task);
+    const meta = document.createElement('span'); meta.className = 'ap-step'; meta.textContent = bgMeta(task, now);
+    body.appendChild(label); body.appendChild(meta);
+    row.appendChild(dot); row.appendChild(body);
+    list.appendChild(row);
+  });
+  agentsWinEl.appendChild(list);
+}
+
+/** The parts of the task view that change while it shows, kept to bring them up to date. */
+let bgView = null;
+let bgPoll = null;
+
+function renderTaskDetail(t, task) {
+  const running = !!(t.bgTasks && t.bgTasks.has(task.taskId));
+  const head = document.createElement('div'); head.className = 'ap-head ap-detail-head';
+  const back = document.createElement('span'); back.className = 'ap-back'; back.innerHTML = ICONS.CHEVRON;
+  back.onclick = () => { agentsView = 'list'; renderAgentsWin(); };
+  const dot = document.createElement('span');
+  const title = document.createElement('span'); title.className = 'ap-title ap-detail-title'; title.textContent = bgTitle(task);
+  const x = document.createElement('span'); x.className = 'ap-x'; x.innerHTML = ICONS.X;
+  x.onclick = () => closeAgentsPanel();
+  head.appendChild(back); head.appendChild(dot); head.appendChild(title); head.appendChild(x);
+  agentsWinEl.appendChild(head);
+
+  const body = document.createElement('div'); body.className = 'ap-detail-body';
+  agentsWinEl.appendChild(body);
+  const meta = document.createElement('div'); meta.className = 'ap-meta';
+  body.appendChild(meta);
+
+  let output = null;
+  if (task.taskType === 'local_bash') {
+    output = document.createElement('div'); output.className = 'ap-fold open ap-output-fold';
+    const fh = document.createElement('div'); fh.className = 'ap-fold-head';
+    fh.innerHTML = '<span class="chev">' + ICONS.CHEVRON + '</span><span>Output</span>';
+    const fb = document.createElement('div'); fb.className = 'ap-fold-body';
+    fh.onclick = () => { output.classList.toggle('open'); if (output.classList.contains('open')) startTaskOutputPoll(t, task.taskId); };
+    output.appendChild(fh); output.appendChild(fb);
+    body.appendChild(output);
+  }
+
+  const btnRow = document.createElement('div'); btnRow.className = 'ap-btn-row';
+  const stop = document.createElement('button'); stop.type = 'button'; stop.className = 'ap-stop-btn';
+  stop.onclick = () => {
+    const live = t.bgTasks && t.bgTasks.get(task.taskId);
+    if (!live || !window._stopAgentTask) return;
+    live.stopping = Date.now();
+    window._stopAgentTask(t.id, task.taskId);
+    updateTaskDetail(t, live);
+    // Still listed once the CLI has had time to end it: it could not be. (Each new list
+    // makes new entries, so it is looked up again by its id.)
+    setTimeout(() => {
+      const still = t.bgTasks && t.bgTasks.get(task.taskId);
+      if (still && still.stopping > 0) { still.stopping = -1; if (agentsOverlayEl.classList.contains('open')) renderAgentsWin(); }
+    }, BG_STOP_WAIT_MS);
+  };
+  btnRow.appendChild(stop);
+  body.appendChild(btnRow);
+  const failure = document.createElement('div'); failure.className = 'ap-meta ap-failure';
+  failure.textContent = 'The task could not be stopped. It may have finished already.';
+  body.appendChild(failure);
+
+  bgView = { taskId: task.taskId, dot, meta, output, btnRow, stop, failure, stick: true, shown: null };
+  updateTaskDetail(t, task);
+  if (running && output) startTaskOutputPoll(t, task.taskId);
+  else if (output) startTaskOutputPoll(t, task.taskId, true);
+}
+
+function updateTaskDetail(t, task) {
+  const v = bgView; if (!v) return;
+  const running = !!(t.bgTasks && t.bgTasks.has(task.taskId));
+  const stopping = running && task.stopping > 0;
+  v.dot.className = 'dot ' + (stopping ? 'spin' : bgDotClass(task, running));
+  const status = stopping ? 'Stopping…' : running ? 'Running' : bgOutcome(task);
+  v.meta.textContent = status + ' · ' + bgMeta(task, Date.now());
+  v.btnRow.style.display = running ? '' : 'none';
+  v.stop.disabled = stopping;
+  v.stop.textContent = stopping ? 'Stopping…' : 'Stop';
+  v.failure.style.display = running && task.stopping === -1 ? '' : 'none';
+  if (v.output) drawTaskOutput(t, task, running);
+}
+
+/** A shell's output as the CLI keeps it: when only its end is sent, the cut first line goes;
+ *  colour codes go; a line a program kept rewriting (a progress bar) shows what it ended on. */
+function bgOutputText(output, truncated) {
+  let s = String(output || '');
+  if (truncated) {
+    const nl = s.indexOf('\n');
+    s = (nl !== -1 && nl < s.length - 1) ? s.slice(nl + 1) : s.replace(/^�+/, '');
+  }
+  s = s.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '');
+  return s.split('\n').map(line => {
+    const l = line.endsWith('\r') ? line.slice(0, -1) : line;
+    return l.slice(l.lastIndexOf('\r') + 1);
+  }).join('\n');
+}
+function bgBytes(n) {
+  const kb = n / 1024;
+  if (kb < 1) return n + ' bytes';
+  const fmt = (v, u) => v.toFixed(1).replace(/\.0$/, '') + u;
+  if (kb < 1024) return fmt(kb, 'KB');
+  const mb = kb / 1024;
+  return mb < 1024 ? fmt(mb, 'MB') : fmt(mb / 1024, 'GB');
+}
+function drawTaskOutput(t, task, running) {
+  const v = bgView;
+  const fb = v.output.querySelector('.ap-fold-body');
+  const got = t.bgOutput && t.bgOutput.get(task.taskId);
+  const key = got ? (got.error ? 'error' : got.text + '|' + got.truncated + '|' + got.totalBytes) : 'none';
+  if (v.shown === key + '|' + running) return;    // nothing new: leave the scroll where it is
+  v.shown = key + '|' + running;
+  const had = fb.querySelector('pre.ap-output');
+  if (had && got && !got.error && got.text !== '') {
+    // More of the same output: written into the box already there, which keeps where the
+    // reader has scrolled to.
+    const top = had.scrollTop;
+    had.textContent = got.text;
+    had.scrollTop = v.stick ? had.scrollHeight : top;
+    const note = fb.querySelector('.ap-meta');
+    if (note) note.remove();
+    if (got.truncated) fb.appendChild(apNote('Showing the end of ' + bgBytes(got.totalBytes) + ' of output.'));
+    return;
+  }
+  fb.innerHTML = '';
+  if (!got) return;
+  if (got.error) { fb.appendChild(apNote('Output is not available.')); return; }
+  if (got.text === '') { fb.appendChild(apNote(running ? 'No output yet.' : 'No output.')); return; }
+  const pre = document.createElement('pre'); pre.className = 'ap-prompt ap-output'; pre.tabIndex = 0;
+  pre.textContent = got.text;
+  // Follows the end like a terminal, until scrolled up; back at the end, it follows again.
+  pre.onscroll = () => { v.stick = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 4; };
+  fb.appendChild(pre);
+  if (v.stick) pre.scrollTop = pre.scrollHeight;
+  if (got.truncated) fb.appendChild(apNote('Showing the end of ' + bgBytes(got.totalBytes) + ' of output.'));
+}
+function apNote(text) { const d = document.createElement('div'); d.className = 'ap-meta'; d.textContent = text; return d; }
+
+/** Asks the CLI for the shell's output now, and again each second while it runs and its view
+ *  is open with Output unfolded. `once`: an ended task's, asked for one time. */
+function startTaskOutputPoll(t, taskId, once) {
+  stopTaskOutputPoll();
+  const ask = () => {
+    bgPoll = null;
+    if (!bgView || bgView.taskId !== taskId || !bgView.output || !bgView.output.classList.contains('open')) return;
+    if (typeof cliAsk !== 'function') return;
+    cliAsk(t, 'get_task_output', { task_id: taskId }).then((r) => {
+      if (!t.bgOutput) t.bgOutput = new Map();
+      t.bgOutput.set(taskId, { text: bgOutputText(r && r.output, !!(r && r.truncated)),
+          totalBytes: (r && r.total_bytes) || 0, truncated: !!(r && r.truncated) });
+    }, () => {
+      if (!t.bgOutput) t.bgOutput = new Map();
+      const had = t.bgOutput.get(taskId);
+      if (!had || had.error) t.bgOutput.set(taskId, { error: true });   // keep what was shown before
+    }).then(() => {
+      const task = bgTaskOf(t, taskId);
+      if (!task || !bgView || bgView.taskId !== taskId) return;
+      updateTaskDetail(t, task);
+      const running = !!(t.bgTasks && t.bgTasks.has(taskId));
+      if (running && !once) bgPoll = setTimeout(ask, BG_OUTPUT_POLL_MS);
+      // Ended between two asks: its last words are asked for once more.
+      else if (!once) bgPoll = setTimeout(() => startTaskOutputPoll(t, taskId, true), 0);
+    });
+  };
+  ask();
+}
+function stopTaskOutputPoll() { if (bgPoll) { clearTimeout(bgPoll); bgPoll = null; } }
 
 /** Shared by detail/transcript: back arrow (CHEVRON rotated 180deg via CSS) + status dot +
  *  title + close. `onBack` differs per view (detail → list, transcript → detail). */
@@ -363,7 +629,7 @@ window.updateAgentsBtn = updateAgentsBtn;
 // an actual stopwatch, same as any other live timer, for as long as something is running.
 let agentsTicker = null;
 function agentsHasRunning() {
-  return collectAgents().some(agentIsActive);
+  return collectAgents().some(agentIsActive) || bgTasksOf(activeTab()).length > 0;
 }
 function startAgentsTicker() {
   stopAgentsTicker();
@@ -386,6 +652,8 @@ function closeAgentsPanel() {
   agentsOverlayEl.classList.remove('open');
   document.removeEventListener('keydown', onAgentsKey, true);
   stopAgentsTicker();
+  stopTaskOutputPoll();
+  bgView = null;
 }
 function toggleAgentsPanel() {
   if (agentsOverlayEl.classList.contains('open')) closeAgentsPanel(); else openAgentsPanel();
@@ -396,7 +664,7 @@ function onAgentsKey(e) {
   // Escape steps back a level before it closes the whole popup — same expectation as
   // any drill-down UI (a modal's own back button, a browser's back gesture).
   if (agentsView === 'transcript') { agentsView = 'detail'; renderAgentsWin(); }
-  else if (agentsView === 'detail') { agentsView = 'list'; renderAgentsWin(); }
+  else if (agentsView === 'detail' || agentsView === 'task') { agentsView = 'list'; renderAgentsWin(); }
   else closeAgentsPanel();
 }
 // Same idiom as rewind.js: clicking the scrim itself (not the card) closes the popup.

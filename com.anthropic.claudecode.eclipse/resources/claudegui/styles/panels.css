@@ -566,6 +566,12 @@ body.teleporting #composer { display: none; }
   background: transparent; color: var(--red); font-size: 12.5px; font-weight: 600; cursor: pointer; }
 #agents-win .ap-stop-btn:hover { background: var(--red); color: var(--on-accent); }
 #agents-win .ap-stop-btn:disabled { opacity: .6; cursor: default; background: transparent; color: var(--red); }
+/* Background tasks under the agents (agents.js renderBackgroundTasks / renderTaskDetail). */
+#agents-win .ap-tasks-head { margin-top: 14px; }
+/* A shell's output scrolls by itself, so it can follow the end like a terminal. */
+#agents-win .ap-output-fold.open .ap-fold-body { max-height: none; overflow: visible; }
+#agents-win .ap-output { max-height: 36vh; overflow: auto; white-space: pre; font-family: 'Cascadia Code','Consolas',monospace; }
+#agents-win .ap-failure { color: var(--red); }
 /* Open transcript: a real scrollable body (unlike .ap-list, which caps itself to the
    compact card's own height) reusing chat.css's own .tool-line/.a-item styling verbatim —
    items appended here (chat.js's buildAgentLogItemEl) ARE those exact classes. */

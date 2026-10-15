@@ -24,8 +24,8 @@ window.onToolEnd       = (tabId, j) => withTab(tabId, (t) => { applyToolResult(j
 /* A running subagent's own current step (chat.rs never gives its OWN tool calls a
    top-level onToolStart — that would interleave a bogus line into the main
    transcript) — agents.js reads this to show what a running Agent is doing right now. */
-window.onAgentActivity = (tabId, j) => withTab(tabId, () => {
-  if (typeof applyAgentActivity === 'function') applyAgentActivity(j);
+window.onAgentActivity = (tabId, j) => withTab(tabId, (t) => {
+  if (typeof applyAgentActivity === 'function') applyAgentActivity(j, t);
 });
 window.onSystemMessage = () => {};   /* backend system/init noise — ignored */
 /* A note from the plugin itself, not the CLI (e.g. the FreeBSD setup guide sent to

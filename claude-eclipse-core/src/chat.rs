@@ -2836,6 +2836,30 @@ fn process_event(
     process_event_value(&event, java_vm, callbacks, cursors, tokens);
 }
 
+/// What the page is told when the CLI's list of background tasks changes
+/// (`system/background_tasks_changed`): `{"kind":"backgroundTasks","tasks":[…]}`,
+/// each task `{taskId, taskType, description}`. The whole list every time, so an
+/// empty one means nothing runs any more. Subagents are left out: the Agent map
+/// lists those from their own tool lines. `None` when the event carries no list.
+fn background_tasks_payload(event: &serde_json::Value) -> Option<serde_json::Value> {
+    let tasks: Vec<serde_json::Value> = event["tasks"]
+        .as_array()?
+        .iter()
+        .filter_map(|task| {
+            let id = task["task_id"].as_str().filter(|id| !id.is_empty())?;
+            let kind = task["task_type"].as_str().unwrap_or("");
+            (kind != "local_agent").then(|| {
+                serde_json::json!({
+                    "taskId": id,
+                    "taskType": kind,
+                    "description": task["description"].as_str().unwrap_or(""),
+                })
+            })
+        })
+        .collect();
+    Some(serde_json::json!({ "kind": "backgroundTasks", "tasks": tasks }))
+}
+
 /// Pre-parsed variant shared by the legacy per-turn reader and the persistent
 /// reader (which needs the Value first to route control/result events).
 fn process_event_value(
@@ -2911,6 +2935,13 @@ fn process_event_value(
                         "kind": "taskId",
                         "taskId": task_id,
                     });
+                    fire_string(java_vm, callbacks, "onAgentActivity", &payload.to_string());
+                }
+            } else if event["subtype"].as_str() == Some("background_tasks_changed") {
+                // What runs in the background — shells above all — for the Agent map's
+                // list of background tasks. Rides the agents' relay; the page tells it
+                // apart by its kind, since it belongs to no one agent.
+                if let Some(payload) = background_tasks_payload(event) {
                     fire_string(java_vm, callbacks, "onAgentActivity", &payload.to_string());
                 }
             }
@@ -3862,5 +3893,57 @@ mod ultracode_tests {
         let id = line["request_id"].as_str().unwrap();
         assert!(id.starts_with(ULTRACODE_PREFIX), "{id}");
         assert!(!id.starts_with(super::SETTINGS_PREFIX), "not taken for the Remote Control poll's: {id}");
+    }
+}
+
+#[cfg(test)]
+mod background_tasks_tests {
+    use super::background_tasks_payload;
+    use serde_json::json;
+
+    /// The event as CLI 2.1.295 sent it for `ping` run with run_in_background, under
+    /// the chat view's own flags (probed 2026-10-15).
+    fn shell_started() -> serde_json::Value {
+        json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"bmy09tvmj","run_id":"0mv99ls0g-775f6db5","task_type":"local_bash","description":"Run 30-count ping to localhost in background"}],"uuid":"8e8aa1ae","session_id":"c1fbb6f5"})
+    }
+
+    #[test]
+    fn a_background_shell_reaches_the_page_with_its_id_kind_and_description() {
+        assert_eq!(
+            background_tasks_payload(&shell_started()),
+            Some(json!({"kind":"backgroundTasks","tasks":[
+                {"taskId":"bmy09tvmj","taskType":"local_bash","description":"Run 30-count ping to localhost in background"}
+            ]}))
+        );
+    }
+
+    #[test]
+    fn an_empty_list_is_passed_on_so_the_page_clears_its_own() {
+        let ended = json!({"type":"system","subtype":"background_tasks_changed","tasks":[]});
+        assert_eq!(background_tasks_payload(&ended), Some(json!({"kind":"backgroundTasks","tasks":[]})));
+    }
+
+    #[test]
+    fn subagents_are_left_to_the_agent_lines_and_other_kinds_are_kept() {
+        let mixed = json!({"subtype":"background_tasks_changed","tasks":[
+            {"task_id":"a1","task_type":"local_agent","description":"Explore"},
+            {"task_id":"w1","task_type":"local_workflow","description":"Review"},
+            {"task_id":"m1","task_type":"monitor_mcp"}
+        ]});
+        assert_eq!(
+            background_tasks_payload(&mixed),
+            Some(json!({"kind":"backgroundTasks","tasks":[
+                {"taskId":"w1","taskType":"local_workflow","description":"Review"},
+                {"taskId":"m1","taskType":"monitor_mcp","description":""}
+            ]}))
+        );
+    }
+
+    #[test]
+    fn a_task_without_an_id_is_skipped_and_an_event_without_a_list_says_nothing() {
+        let odd = json!({"subtype":"background_tasks_changed","tasks":[{"task_type":"local_bash"},{"task_id":"","task_type":"local_bash"},7]});
+        assert_eq!(background_tasks_payload(&odd), Some(json!({"kind":"backgroundTasks","tasks":[]})));
+        assert_eq!(background_tasks_payload(&json!({"subtype":"background_tasks_changed"})), None);
+        assert_eq!(background_tasks_payload(&json!({"subtype":"background_tasks_changed","tasks":{}})), None);
     }
 }

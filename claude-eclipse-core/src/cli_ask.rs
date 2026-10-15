@@ -99,6 +99,9 @@ fn allowed(request: &serde_json::Value) -> bool {
         "claude_authenticate" => shaped(request, &[("loginWithClaudeAi", Value::is_boolean)]),
         "claude_oauth_wait_for_completion" => shaped(request, &[]),
         "claude_oauth_callback" => shaped(request, &[("authorizationCode", Value::is_string), ("state", Value::is_string)]),
+        // The Agent map's background task: what it has written so far. Only reads, but
+        // takes the task's id, and nothing beside it.
+        "get_task_output" => shaped(request, &[("task_id", |id| id.as_str().is_some_and(|id| !id.is_empty()))]),
         _ => false,
     }
 }
@@ -686,6 +689,19 @@ mod tests {
             json!({"subtype":"apply_flag_settings","settings":{"switchModelsOnFlag":false,"permissions":{"defaultMode":"bypassPermissions"}}}),
             json!({"subtype":"apply_flag_settings","settings":[]}),
             json!({"subtype":"apply_flag_settings"}),
+        ] {
+            assert!(!sendable(refused.clone()), "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_background_task_s_output_is_asked_for_by_its_id_alone() {
+        assert!(sendable(json!({"subtype":"get_task_output","task_id":"bmy09tvmj"})));
+        for refused in [
+            json!({"subtype":"get_task_output"}),
+            json!({"subtype":"get_task_output","task_id":""}),
+            json!({"subtype":"get_task_output","task_id":7}),
+            json!({"subtype":"get_task_output","task_id":"b1","path":"C:/x"}),
         ] {
             assert!(!sendable(refused.clone()), "{refused}");
         }

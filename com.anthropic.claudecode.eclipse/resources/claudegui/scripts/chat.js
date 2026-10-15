@@ -906,9 +906,15 @@ function ensureAgentLog(id) {
  *  delta-accumulation for the top-level stream); 'tool_start'/'tool_end' are a step in the
  *  subagent's own tool use, matched by ITS OWN tool_use id (info.id) — distinct from
  *  parentId, which is the AGENT's id; 'tokens' carries cumulative usage + model, piggybacked
- *  on whichever message just completed rather than its own event. */
-function applyAgentActivity(json) {
+ *  on whichever message just completed rather than its own event. 'backgroundTasks' is the
+ *  tab's whole list of background tasks (agents.js), which belongs to no one agent and so
+ *  has no parentId: it is taken first. */
+function applyAgentActivity(json, t) {
   let info; try { info = JSON.parse(json); } catch (e) { return; }
+  if (info && info.kind === 'backgroundTasks') {
+    if (typeof applyBackgroundTasks === 'function') applyBackgroundTasks(info.tasks, t || activeTab());
+    return;
+  }
   if (!info || !info.parentId) return;
   const log = ensureAgentLog(info.parentId);
   if (info.kind === 'tokens') {
