@@ -8,6 +8,7 @@
 			<unit id="org.eclipse.jdt.feature.group" version="0.0.0"/>
 			<unit id="org.eclipse.cdt.feature.group" version="0.0.0"/>
 			<unit id="org.eclipse.terminal.feature.feature.group" version="0.0.0"/>
+			<unit id="org.eclipse.eclemma.feature.feature.group" version="0.0.0"/>
 		</location>
 		<location includeMode="planner" includeAllPlatforms="false" includeSource="false" type="InstallableUnit">
 			<!-- pydev.org's own site proxies to a GitHub Releases asset via a

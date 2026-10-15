@@ -183,6 +183,16 @@ public class McpToolRegistry {
             }
         }
 
+        // coverage drives EclEmma (org.eclipse.eclemma.core) and reads JaCoCo's figures
+        // (org.jacoco.core), both optional and checked on their own.
+        if (Platform.getBundle("org.eclipse.eclemma.core") != null && Platform.getBundle("org.jacoco.core") != null) {
+            try {
+                register(new com.anthropic.claudecode.eclipse.tools.jdt.CoverageTool());
+            } catch (LinkageError | RuntimeException e) {
+                Activator.logError("EclEmma present but the coverage tool could not be created; skipping", e);
+            }
+        }
+
         // runTests additionally needs the JUnit + launching tooling, which can be absent even
         // when jdt.core is present (e.g. a JDT install without the JUnit feature).
         if (Platform.getBundle("org.eclipse.jdt.junit.core") == null
