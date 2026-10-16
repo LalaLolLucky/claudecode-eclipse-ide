@@ -50,6 +50,9 @@ function agentDurationMs(a) {
  *  signal left for a background agent is the absence of endedAt, only ever set by
  *  the real completion/stop signal (chat.rs's task_notification handling). */
 function agentIsActive(agent) {
+  // The CLI's own word that it ended wins over its line's dot: the result of the call that
+  // started it comes separately, and may not have come yet.
+  if (agent.log.finishStatus) return false;
   if (agent.status === 'running') return true;
   if (agent.status === 'error') return false;
   // The CLI told us it started and has not told us it ended, so it is going, whatever its
@@ -111,6 +114,13 @@ const AGENTS_PILL_TITLE = {
   idle: 'Click to open the agent map',
 };
 
+/** An agent has ended, so whatever request of its was recorded is over: dropped, so that none
+ *  can outlive it (a card taken down for another reason never says so, and the agent would
+ *  read as waiting on it). */
+function dropAgentAsks(taskId, t) {
+  if (!t || !t.agentAsks || !taskId) return;
+  [...t.agentAsks].forEach(([id, ask]) => { if (ask.taskId === taskId) t.agentAsks.delete(id); });
+}
 /** The tab in front is told an agent is, or no longer is, held up on a permission request
  *  (chat.js, applyAgentActivity). Kept by request id, as the requests are what come and go. */
 function applyAgentPermission(info, t) {

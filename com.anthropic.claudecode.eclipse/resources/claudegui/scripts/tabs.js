@@ -704,7 +704,9 @@ function clearTab(t) {
   }
   if (rtab === t) { curTurn = null; curBody = null; curText = ''; curThink = null; curThinkText = ''; workingEl = null; }
   else t._r = null;
-  // drop this tab's own pending card, if any — /clear replaces its conversation
+  // drop this tab's own pending card, if any — /clear replaces its conversation — and the
+  // requests that were waiting behind it, which belong to the conversation it replaces
+  t.cardQueue = null;
   if (front) clearBottomCard(t); else t.pendingCard = null;
   // A conversation restored from the last Eclipse session and not shown yet would be
   // rebuilt into the emptied pane the first time the tab is shown (see switchTab).

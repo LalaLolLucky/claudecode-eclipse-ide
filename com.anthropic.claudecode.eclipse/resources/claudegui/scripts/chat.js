@@ -957,6 +957,7 @@ function applyAgentActivity(json, t) {
     // "completed" vs "stopped" (the user hit Stop agent) — agents.js's detail view
     // shows this instead of always saying "Finished".
     if (info.status) log.finishStatus = info.status;
+    if (typeof dropAgentAsks === 'function') dropAgentAsks(log.taskId, t || activeTab());
     log.endedAt = (typeof info.durationMs === 'number' && log.startedAt)
         ? log.startedAt + info.durationMs
         : Date.now();

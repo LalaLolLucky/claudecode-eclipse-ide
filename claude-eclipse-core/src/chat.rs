@@ -75,7 +75,7 @@ struct ChatState {
     /// cards be taken down *individually*; without it the only options are
     /// leaving every stale card on screen or clearing all of them, and a turn
     /// with parallel tool calls has several open at once.
-    open_cards: std::collections::HashSet<String>,
+    open_cards: std::collections::HashMap<String, CardOwner>,
     /// Requests withdrawn by the CLI while their card was still up. The waiting
     /// thread checks this before writing its `control_response`: the CLI has
     /// stopped listening for that id, so sending one is noise at best.
@@ -715,7 +715,7 @@ impl ChatManager {
                 rc_carry: None,
                 bridge_session_id: None,
                 workspace_root: String::new(),
-                open_cards: std::collections::HashSet::new(),
+                open_cards: std::collections::HashMap::new(),
                 cancelled_cards: std::collections::HashSet::new(),
             })),
             callbacks: Arc::new(Mutex::new(None)),
@@ -2122,8 +2122,9 @@ fn reader_loop(
                 // control_cancel_request above — the CLI does not promise a
                 // withdrawal for every ending (a turn that dies on a hard
                 // failure takes its prompts with it), and a card nothing can
-                // answer must not outlive the turn that raised it.
-                cancel_open_cards(&state, &java_vm, &callbacks);
+                // answer must not outlive the turn that raised it. Not a background
+                // agent's: it outlives the turn, and its request is still waited on.
+                cancel_open_cards(&state, &java_vm, &callbacks, CardsToCancel::OwnOnly);
                 // Derive the session-specific status-bar data (model, context %,
                 // cost) from this turn's usage and fire it to the GUI status bar.
                 // Account-global rate limits come from the shared store, not here.
@@ -2338,7 +2339,7 @@ fn reader_loop(
     // its control_response has nowhere to go. Do this before the early return:
     // an intentional kill (respawn, reset, dispose) leaves cards behind just as
     // readily as a crash does, and the replacement process will not adopt them.
-    cancel_open_cards(&state, &java_vm, &callbacks);
+    cancel_open_cards(&state, &java_vm, &callbacks, CardsToCancel::All);
     if !crashed {
         // Intentional teardown: the initiator already updated state.proc/awaiting,
         // and a replacement turn (if any) owns the stream. Stay silent — do NOT
@@ -2558,23 +2559,58 @@ fn inbound_message_text(
 ///
 /// Silent for an id we never raised a card for — the CLI cancels its own
 /// requests for reasons that have nothing to do with us.
+///
+/// A card is only taken down here, never answered: the page is told it is gone, and the
+/// Agent map is told its agent is no longer held up on it (`released`).
 fn cancel_card(
     request_id: &str,
     state: &Arc<Mutex<ChatState>>,
     java_vm: &Arc<jni::JavaVM>,
     callbacks: &Arc<jni::objects::GlobalRef>,
 ) {
-    {
+    let owner = {
         let mut s = state.lock().unwrap();
-        if !s.open_cards.remove(request_id) {
+        let Some(owner) = s.open_cards.remove(request_id) else {
             return;
-        }
+        };
         s.cancelled_cards.insert(request_id.to_string());
-    }
+        owner
+    };
     if crate::is_debug() {
         crate::elog!("[chat] card {} cancelled (answered elsewhere or turn ended)", request_id);
     }
     fire_string(java_vm, callbacks, "onCardCancel", request_id);
+    // The waiting thread is only let go once Java has answered for it, and it is the one that
+    // would say the agent is no longer held up: said here as well, so a withdrawn card never
+    // leaves its agent waiting on it.
+    if owner.agent {
+        let released = serde_json::json!({ "kind": "agentPermission", "requestId": request_id, "waiting": false });
+        fire_string(java_vm, callbacks, "onAgentActivity", &released.to_string());
+    }
+}
+
+/// Whose request a card is up for: a subagent's, or the conversation's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CardOwner {
+    /// A subagent made it (the request names one in `agent_id`).
+    agent: bool,
+}
+
+/// Which of the open cards a cancel takes down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CardsToCancel {
+    /// All of them: the process they were raised by is gone, so none can be answered.
+    All,
+    /// The conversation's own only. A turn's end moots what the turn raised, but a background
+    /// agent goes on after it: its request is still the CLI's to wait on, and answering it
+    /// late works (checked against a live CLI, which ran the command when it was allowed
+    /// seconds after the turn's result).
+    OwnOnly,
+}
+impl CardsToCancel {
+    fn takes(self, owner: CardOwner) -> bool {
+        self == CardsToCancel::All || !owner.agent
+    }
 }
 
 /// Cancels every card still up for this conversation. See the call sites for
@@ -2584,13 +2620,14 @@ fn cancel_open_cards(
     state: &Arc<Mutex<ChatState>>,
     java_vm: &Arc<jni::JavaVM>,
     callbacks: &Arc<jni::objects::GlobalRef>,
+    which: CardsToCancel,
 ) {
     let ids: Vec<String> = {
         let s = state.lock().unwrap();
         if s.open_cards.is_empty() {
             return; // the overwhelmingly common case — don't touch anything
         }
-        s.open_cards.iter().cloned().collect()
+        s.open_cards.iter().filter(|(_, owner)| which.takes(**owner)).map(|(id, _)| id.clone()).collect()
     };
     for id in ids {
         cancel_card(&id, state, java_vm, callbacks);
@@ -2624,7 +2661,8 @@ fn handle_control_request(
     // Registered BEFORE the card is raised: the withdrawal can arrive while the
     // card is still being drawn (the phone is quicker than a human), and a
     // cancel for an id not yet on the books would be dropped as unknown.
-    state.lock().unwrap().open_cards.insert(request_id.clone());
+    let owner = CardOwner { agent: request["agent_id"].as_str().is_some_and(|id| !id.is_empty()) };
+    state.lock().unwrap().open_cards.insert(request_id.clone(), owner);
     // A subagent held up on this: the Agent map says so while the card is up.
     if let Some(waiting) = agent_permission_payload(&request_id, request, true) {
         fire_string(java_vm, callbacks, "onAgentActivity", &waiting.to_string());
@@ -4012,5 +4050,27 @@ mod agent_permission_tests {
         assert_eq!(agent_permission_payload("req-2", &main, false), None);
         let blank = json!({"subtype":"can_use_tool","tool_name":"Bash","agent_id":""});
         assert_eq!(agent_permission_payload("req-3", &blank, true), None, "an empty id names no agent");
+    }
+}
+
+#[cfg(test)]
+mod card_cancel_tests {
+    use super::{CardOwner, CardsToCancel};
+
+    const MAIN: CardOwner = CardOwner { agent: false };
+    const AGENT: CardOwner = CardOwner { agent: true };
+
+    #[test]
+    fn a_turns_end_takes_down_the_conversations_own_cards_and_leaves_a_background_agents() {
+        // The CLI sends the result of the turn that launched a background agent in the same
+        // instant as that agent's request, and the request is answered fine after it.
+        assert!(CardsToCancel::OwnOnly.takes(MAIN));
+        assert!(!CardsToCancel::OwnOnly.takes(AGENT));
+    }
+
+    #[test]
+    fn a_process_that_is_gone_takes_every_card_with_it() {
+        assert!(CardsToCancel::All.takes(MAIN));
+        assert!(CardsToCancel::All.takes(AGENT));
     }
 }
