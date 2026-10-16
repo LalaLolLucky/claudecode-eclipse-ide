@@ -4,7 +4,25 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.19] — 2026-10-14 *(current)*
+## [3.2.20] — 2026-10-16 *(current)*
+
+### Added
+- The Agent map (`/tasks`) lists background tasks such as shells, with their output and a Stop button.
+- `claudeCodeEclipse`: bring a tab to the front, answer a tab's question card, close a folder tab; in the Claude Terminal, list the tabs and switch plan mode on.
+- **Send to Claude Terminal** and **Send to Claude Code** in the Problems and Console views' context menus.
+- `coverage` tool: run a launch configuration under EclEmma and read its coverage, per package or line by line.
+- `cIndex` tool: C and C++ references, callers, includes and macro expansion from CDT's index.
+- `pydevCode` tool: Python definitions and references through PyDev.
+
+### Changed
+- The model chooser lists every model your installed Claude Code offers, as VS Code does, older ones such as Opus 4.8 included, with Claude Code's own descriptions.
+
+### Fixed
+- The model chooser no longer shows models without their version (such as "Opus" for Opus 5.5), which happened on the first start of the day and on macOS.
+
+---
+
+## [3.2.19] — 2026-10-14
 
 ### Fixed
 - With Debug Mode on, an Eclipse started by a launcher that never reads its output (such as PDE Tools' "Launch New Workspace") no longer breaks Remote Control, model switching or the slash-command list, and prompts in a tab keep going through.
