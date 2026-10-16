@@ -67,6 +67,8 @@ function offersChanged(root) {
   if (cmdMenu.loaderShown && cmdMenuIsOpen()) cmdMenuRender(true);
   // What each model can do came with the offers: Ultracode follows it.
   if (typeof ultracodeFollowsModel === 'function') ultracodeFollowsModel();
+  // …and which models there are: the model chooser is built from them.
+  if (typeof folderModelsHeard === 'function') folderModelsHeard();
   if (typeof slashDialogOffersChanged === 'function') slashDialogOffersChanged();
 }
 

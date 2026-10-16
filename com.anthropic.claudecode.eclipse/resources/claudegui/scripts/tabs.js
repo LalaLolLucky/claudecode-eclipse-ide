@@ -336,6 +336,8 @@ function placeRestoredTab(t, rs, readerMoved) {
    read. That is exactly what issue #114 was: a [PREFS-SAVE] of defaults under the
    session id, immediately followed by the [PREFS-LOAD] that read them back. */
 function applyTabSettings(t) {
+  // The model chooser's rows are this tab's folder's (rebuildModels).
+  if (typeof rebuildModels === 'function') rebuildModels();
   if (t.model !== undefined) { curModel = t.model; updateModelLabel(); }
   // Thinking BEFORE effort: the effort cap is a function of the thinking flag, so
   // restoring in the other order would clamp against the previous tab's state.

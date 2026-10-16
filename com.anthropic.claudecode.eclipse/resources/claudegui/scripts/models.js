@@ -2,9 +2,9 @@
    prefs, thinking toggle, account window, actions-menu slash list builder. */
 
 /* ---- model chooser (claude --model) ---- */
-/* Fallback list until the dynamic /v1/models list arrives (onAvailableModels).
-   The real chooser is built from the account's actually-available models. */
-let MODELS = [
+/* The account's models: Java pushes the curated /v1/models list (onAvailableModels). Until
+   it does, or when it cannot be had, this built-in list stands in. */
+let ACCOUNT_MODELS = [
   { id: '',           label: 'Default (recommended)', desc: 'Latest model · efficient for routine tasks' },
   { id: 'fable',      label: 'Fable',                 desc: 'Latest flagship model' },
   { id: 'opus',       label: 'Opus',                  desc: 'Most capable — best for complex tasks' },
@@ -12,17 +12,17 @@ let MODELS = [
   { id: 'sonnet[1m]', label: 'Sonnet (1M context)',   desc: '1M-token context · draws from usage credits' },
   { id: 'haiku',      label: 'Haiku',                 desc: 'Fastest for quick answers' }
 ];
+/* The chooser's rows, which everything asking what models there are reads. Built by
+   rebuildModels: the installed Claude Code's own list for the active tab's folder once it
+   has given one, else the account's, with the plug-in's --model added either way. */
+let MODELS = ACCOUNT_MODELS.map(m => Object.assign({}, m));
 /* Java pushes the account's real, curated model list here. */
 window.onAvailableModels = function(json) {
   let list;
   try { list = JSON.parse(json); } catch (e) { return; }
   if (!Array.isArray(list) || !list.length) return;
-  MODELS = list;
-  applyCliModelLimits();   // this list is the ACCOUNT's; clamp it to the binary's
-  // Re-add a custom --model from plugin prefs if it isn't already offered.
-  if (customModel && !MODELS.some(m => m.id === customModel)) {
-    MODELS.splice(1, 0, { id: customModel, label: customModelLabel(customModel), desc: 'From your plugin settings' });
-  }
+  ACCOUNT_MODELS = list;
+  rebuildModels();
   // If the current selection vanished, fall back to Default (keep the tab in sync).
   // ALIASES ARE EXEMPT. This push is asynchronous (ClaudeGuiView#pushAvailableModels
   // fires it from the account fetch and again from the binary scan), so it routinely
@@ -44,11 +44,9 @@ let curModel = '';      // '' = Default
 let customModel = '';
 function initModelConfig() {
   try { const c = JSON.parse(window._modelConfig ? window._modelConfig() : '{}'); customModel = (c && c.customModel) || ''; } catch (e) {}
-  if (customModel) {
-    // surface a --model from the plugin's preference args, selected by default
-    MODELS.splice(1, 0, { id: customModel, label: customModelLabel(customModel), desc: 'From your plugin settings' });
-    curModel = customModel;
-  }
+  // surface a --model from the plugin's preference args, selected by default
+  if (customModel) curModel = customModel;
+  rebuildModels();
   updateModelLabel();
 }
 /* Reliable async push of the configured --model (from prefs), sent by Java alongside
@@ -58,15 +56,59 @@ function initModelConfig() {
 window.onCustomModel = function(id) {
   if (!id || customModel === id) return;
   customModel = id;
-  if (!MODELS.some(m => m.id === id))
-    MODELS.splice(1, 0, { id: id, label: customModelLabel(id), desc: 'From your plugin settings' });
+  rebuildModels();
   tabs.forEach(t => { if (t && !t.model) t.model = id; });
   if (!curModel) curModel = id;
   updateModelLabel();
   if (typeof notifyStatusSelection === 'function') notifyStatusSelection();
 };
+/* Builds MODELS. The installed Claude Code's list is the one VS Code's chooser shows: every
+   model it offers, in its order, under its own names and descriptions — the aliases with
+   the model each resolves to (resolvedModel), and older models by their full ids. It comes
+   with what the folder offers (its `initialize` answer, kept per folder by cmdmenu.js), so
+   it is the active tab's folder's, and rebuilt when that answer lands or the tab changes.
+   Before it, the account's list stands in. Rows are copies, so applyCliModelLimits can
+   rewrite them without touching the lists they came from. */
+function rebuildModels() {
+  const o = (typeof offersFor === 'function') ? offersFor(activeTab()) : null;
+  const cli = (o && Array.isArray(o.models))
+    ? o.models.filter(m => m && typeof m.value === 'string' && m.value) : [];
+  MODELS = cli.length ? cli.map(cliModelRow) : ACCOUNT_MODELS.map(m => Object.assign({}, m));
+  if (cli.length) keepOneMillionRow();
+  if (customModel && !MODELS.some(m => m.id === customModel))
+    MODELS.splice(1, 0, { id: customModel, label: customModelLabel(customModel), desc: 'From your plugin settings' });
+  applyCliModelLimits();
+}
+/* One of the CLI's models as a chooser row. `cli` marks it as the CLI's word on what it
+   runs, which applyCliModelLimits leaves alone. An alias the account has a newer model for
+   says so, as applyCliModelLimits says it of the account's list. */
+function cliModelRow(m) {
+  const id = m.value === 'default' ? '' : m.value;
+  const row = { id: id, label: m.displayName || m.value, desc: m.description || '', cli: true,
+                fullId: (id && typeof m.resolvedModel === 'string') ? m.resolvedModel : '' };
+  const acct = (id && !/^claude-/.test(id)) ? ACCOUNT_MODELS.find(a => a.id === id) : null;
+  if (acct && acct.fullId && row.fullId && normalizeModelId(acct.fullId) !== normalizeModelId(row.fullId)) {
+    row.accountLatest = acct.fullId;
+    row.desc = 'Newest ' + id.replace(/\[1m\]$/, '') + ' your Claude Code supports · update for '
+             + prettyModelId(acct.fullId);
+  }
+  return row;
+}
+/* The CLI lists no 1M row for some accounts (a Pro one, 2026-10) while the account's list
+   has one. That row is kept, after the CLI's Sonnet and under its name for the model the
+   row runs, with the account row's description. */
+function keepOneMillionRow() {
+  if (MODELS.some(m => m.id === 'sonnet[1m]')) return;
+  const acct = ACCOUNT_MODELS.find(a => a.id === 'sonnet[1m]');
+  const i = MODELS.findIndex(m => m.id === 'sonnet');
+  if (!acct || i < 0) return;
+  const base = MODELS[i];
+  MODELS.splice(i + 1, 0, { id: 'sonnet[1m]', label: base.label + ' (1M context)', desc: acct.desc,
+                            fullId: base.fullId, cli: true });
+}
 function modelLabelFor(id) {
-  const m = MODELS.find(x => x.id === id);
+  // The account's list as well: a tab can hold a model the CLI's list has no row for.
+  const m = MODELS.find(x => x.id === id) || ACCOUNT_MODELS.find(x => x.id === id);
   if (m) return m.label.replace(' (recommended)', '');
   // A resumed session may carry a full model id (e.g. claude-opus-4-8) with no
   // chooser entry — show it prettified rather than the raw id.
@@ -85,6 +127,15 @@ function prettyModelId(id) {
 function customModelLabel(id) {
   return prettyModelId(id) + (isOneMillion(id) ? ' (1M context)' : '');
 }
+/** The folder's offers were heard (cmdmenu.js#offersChanged), and with them the CLI's
+ *  model list: the rows are built again, and what shows a model drawn again. */
+function folderModelsHeard() {
+  rebuildModels();
+  updateModelLabel();
+  const menu = document.getElementById('model-menu');
+  if (menu && menu.classList.contains('open')) renderModelList();
+  if (typeof notifyStatusSelection === 'function') notifyStatusSelection();
+}
 function updateModelLabel() {
   const el = document.getElementById('cur-model');
   if (el) el.textContent = '(' + modelLabelFor(curModel) + ')';
@@ -94,6 +145,11 @@ function openModelChooser(e) {
   if (e) e.stopPropagation();
   closeMenus();
   renderModelList();
+  // The CLI's model list comes with the folder's offers (rebuildModels); a stale or
+  // missing answer is asked for again, and the rows are rebuilt when it lands.
+  if (typeof requestOffers === 'function') requestOffers(activeTab());
+  // The rows themselves: when they are the built-in list, Java fetches the account's again.
+  try { if (window._refreshModels) _refreshModels(); } catch (e) {}
   const menu = document.getElementById('model-menu');
   const anchor = document.getElementById('slash-btn');
   menu.classList.add('open');
@@ -281,7 +337,7 @@ window.onCliModels = function(json) {
     cliModelIds = {};
     d.all.forEach(id => { cliModelIds[id] = 1; cliModelIds[normalizeModelId(id)] = 1; });
   }
-  applyCliModelLimits();
+  rebuildModels();
   updateModelLabel();
   const menu = document.getElementById('model-menu');
   if (menu && menu.classList.contains('open')) renderModelList();
@@ -297,6 +353,7 @@ function applyCliModelLimits() {
   if (!cliModels) return;
   MODELS.forEach(m => {
     if (!m.id) return;                            // Default — the CLI's own pick
+    if (m.cli) return;                            // the CLI's own row: it runs what it says
     if (/^claude-/.test(m.id)) {                  // a concrete id (pinned --model)
       // Nothing to relabel: you named one exact model. But the CLI won't
       // substitute for a model it doesn't have — it just fails on send — so flag
