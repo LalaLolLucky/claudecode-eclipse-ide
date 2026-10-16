@@ -43,6 +43,21 @@ function sealReply(el, text) {
   el.addEventListener('mouseenter', () => lateReplyId(el));
   paintReplyMark(el, null);
 }
+/* The reply's time, on a line of its own above the reply (not part of it), at the right,
+   when the setting for it is on and the reply's time is known (el._replyAt, ms): from the
+   transcript for a reopened conversation, the moment it finished for one streamed now.
+   Replaces an earlier line, as the transcript's own time replaces the moment the page
+   noted. Needs the reply to be in its turn already. */
+function stampReply(el) {
+  if (el._tsRow) { el._tsRow.remove(); el._tsRow = null; }
+  const label = makeTimeLabel(el._replyAt);
+  if (!label || !el.parentNode) return;
+  const row = document.createElement('div'); row.className = 'msg-ts-row';
+  row.appendChild(label);
+  el.parentNode.insertBefore(row, el);
+  el._tsRow = row;
+  regroupDays(el.closest('.pane'));   // no pane yet while a conversation is drawn: drawHistoryPart regroups once it is in
+}
 /* A reply still without its transcript line when the pointer reaches it — the CLI had
    not written the line when its turn ended — asks once more, so its bookmark button is
    there to be clicked. Once per reply: one the transcript never holds must not cost a
@@ -90,7 +105,7 @@ function backfillReplyIds(t) {
     if (i < 0) return;
     el.dataset.rid = free[i].id;
     const at = Date.parse(free[i].at || '');
-    if (!isNaN(at)) el._replyAt = at;
+    if (!isNaN(at)) { el._replyAt = at; stampReply(el); }
     free.splice(i, 1);
   });
 }
@@ -100,7 +115,11 @@ function backfillReplyIds(t) {
 function refreshReplies(t) {
   if (!t || !t.pane) return;
   t.pane.querySelectorAll('.a-item').forEach(el => {
-    if (el._replyText && !el.classList.contains('reply')) sealReply(el, el._replyText);
+    if (el._replyText && !el.classList.contains('reply')) {
+      el._replyAt = el._replyAt || Date.now();   // it has just finished
+      sealReply(el, el._replyText);
+      stampReply(el);
+    }
   });
   backfillReplyIds(t);
   t.pane.querySelectorAll('.a-item.reply').forEach(el => paintReplyMark(el, t));

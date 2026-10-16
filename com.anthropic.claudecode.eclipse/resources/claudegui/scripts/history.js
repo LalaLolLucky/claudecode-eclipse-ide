@@ -528,13 +528,14 @@ function appendTextStatic(turn, text, id, at) {
   const el = document.createElement('div'); el.className = 'a-item';
   el.innerHTML = '<span class="dot"></span><span class="a-body"></span>';
   el.querySelector('.a-body').innerHTML = renderMarkdown(text);
-  if (typeof sealReply === 'function') sealReply(el, text);   // one of Claude's replies: copy and bookmark under it
-  if (id && el.classList.contains('reply')) {
-    el.dataset.rid = id;
+  if (id) {
     const when = Date.parse(at || '');
-    if (!isNaN(when)) el._replyAt = when;
+    if (!isNaN(when)) el._replyAt = when;   // the time line above the reply is made once it is in its turn
   }
+  if (typeof sealReply === 'function') sealReply(el, text);   // one of Claude's replies: copy and bookmark under it
+  if (id && el.classList.contains('reply')) el.dataset.rid = id;
   turn.appendChild(el);
+  if (el.classList.contains('reply') && typeof stampReply === 'function') stampReply(el);
 }
 /* The line a reopened conversation ends with when its next message will cost more than
    usual: the prompt cache no longer holds it. The core writes the sentence from the
@@ -866,6 +867,7 @@ function placeHistoryPart(t, box, ref, after, before) {
   const part = document.createDocumentFragment();
   while (box.firstChild) part.appendChild(box.firstChild);
   t.pane.insertBefore(part, ref);
+  regroupDays(t.pane);
   ensurePreCompactHead(t.pane, false);
 }
 /**

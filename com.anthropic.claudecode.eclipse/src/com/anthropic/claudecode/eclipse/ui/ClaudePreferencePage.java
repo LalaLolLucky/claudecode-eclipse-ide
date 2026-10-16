@@ -377,7 +377,7 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
 
         addCodeViewOption(new BooleanFieldEditor(
                 Constants.PREF_HISTORY_SHOW_TIMESTAMPS,
-                "Show a timestamp above your own messages",
+                "Show the time above your messages and Claude's replies",
                 getFieldEditorParent()));
 
         addCodeViewOption(new BooleanFieldEditor(
