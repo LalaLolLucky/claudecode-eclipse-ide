@@ -52,19 +52,73 @@ function agentDurationMs(a) {
 function agentIsActive(agent) {
   if (agent.status === 'running') return true;
   if (agent.status === 'error') return false;
-  return !!(agent.log.input && agent.log.input.run_in_background && !agent.log.endedAt);
+  // The CLI told us it started and has not told us it ended, so it is going, whatever its
+  // line's dot says: a later tool call greens the dot of every one before it (chat.js,
+  // markToolsDone), which several agents started together all run into. One that is not in
+  // the background cannot outlast the turn that started it, so it is going only while that runs.
+  if (agent.log.taskId && !agent.log.endedAt) {
+    if (agentIsBackgrounded(agent) !== false) return true;
+    const t = activeTab();
+    return !!(t && t.streaming);
+  }
+  return agentIsBackgrounded(agent) === true && !agent.log.endedAt;
 }
-/** 'done'|'red'|'spin' dot class, correcting for the same early-ack quirk agentIsActive
- *  accounts for — shared by the list row and the detail head so the two never disagree. */
-function agentDotClass(agent) {
-  // Checked before agentIsActive: once the "finished" signal has actually arrived
-  // (see applyAgentActivity), whether the user stopped it or it completed on its own
-  // is known regardless of whatever the DOM dot's own (possibly still-early-ack)
-  // status says — a stop gets its own distinct color, not lumped in with either a
-  // genuine failure (red) or a clean finish (grey).
-  if (agent.log.finishStatus === 'stopped') return 'stopped';
-  if (agentIsActive(agent)) return 'spin';
-  return agent.status === 'error' ? 'red' : 'done';
+/* An agent is in one of five states, as in the VS Code extension's Agent map. */
+const AGENT_STATUS_LABEL = { working: 'Working', waiting: 'Waiting for your permission',
+                             finished: 'Finished', failed: 'Failed', stopped: 'Stopped' };
+/** The dot class of each state. The extension colours a stopped agent as it does a failed one. */
+const AGENT_STATUS_DOT = { working: 'spin', waiting: 'wait', finished: 'done', failed: 'red', stopped: 'red' };
+
+/** The permission request of the tab in front that this agent is held up on, if there is one.
+ *  The CLI names the agent a request comes from by its task id (chat.rs, agentPermission). */
+function agentWaitingAsk(agent) {
+  const t = activeTab();
+  const id = agent.log && agent.log.taskId;
+  if (!t || !t.agentAsks || !id) return undefined;
+  for (const ask of t.agentAsks.values()) if (ask.taskId === id) return ask;
+  return undefined;
+}
+/** 'working' | 'waiting' | 'finished' | 'failed' | 'stopped'.
+ *  The "finished" signal, once it has arrived (see applyAgentActivity), says how the agent
+ *  ended whatever the DOM dot's own, possibly still-early-ack, state says. */
+function agentStatus(agent) {
+  const how = agent.log.finishStatus;
+  if (how === 'stopped' || how === 'killed') return 'stopped';
+  if (how === 'failed') return 'failed';
+  if (agentIsActive(agent)) return agentWaitingAsk(agent) ? 'waiting' : 'working';
+  return agent.status === 'error' ? 'failed' : 'finished';
+}
+/** The dot class of an agent — shared by the list row, the detail head and the tool calls. */
+function agentDotClass(agent) { return AGENT_STATUS_DOT[agentStatus(agent)]; }
+
+/** What the composer's agents pill shows for all of them, as the extension's does: waiting
+ *  when any agent is held up on a permission, else running while any works, else failed
+ *  when one failed, else idle. */
+function agentsOverallState(agents) {
+  let running = false, failed = false;
+  for (const a of agents) {
+    const st = agentStatus(a);
+    if (st === 'waiting') return 'waiting';
+    if (st === 'working') running = true;
+    else if (st === 'failed') failed = true;
+  }
+  return running ? 'running' : failed ? 'failed' : 'idle';
+}
+const AGENTS_PILL_TITLE = {
+  waiting: 'An agent is waiting for your permission · Click to open the agent map',
+  running: 'Agents are working · Click to open the agent map',
+  failed: 'An agent failed · Click to open the agent map',
+  idle: 'Click to open the agent map',
+};
+
+/** The tab in front is told an agent is, or no longer is, held up on a permission request
+ *  (chat.js, applyAgentActivity). Kept by request id, as the requests are what come and go. */
+function applyAgentPermission(info, t) {
+  if (!t || !info || !info.requestId) return;
+  if (!t.agentAsks) t.agentAsks = new Map();
+  if (info.waiting) t.agentAsks.set(info.requestId, { taskId: info.taskId || '', toolName: info.toolName || '', toolUseId: info.toolUseId || '' });
+  else t.agentAsks.delete(info.requestId);
+  if (window.renderAgentsPanel) window.renderAgentsPanel();
 }
 /** The agent's own final answer, in its own words — otherwise never shown anywhere: the
  *  top-level model reads it as context and relays it in ITS OWN words in the main chat
@@ -97,6 +151,8 @@ function collectAgents() {
   const agents = [];
   pane.querySelectorAll('.tool-line').forEach(line => {
     if (!AGENT_KEYS.has(line.dataset.tname)) return;
+    // One in an agent's own inline log is a call that agent made; addNestedAgents lists it.
+    if (line.closest('.agent-log')) return;
     const dot = line.querySelector('.dot');
     const status = dot && dot.classList.contains('done') ? 'done'
         : dot && dot.classList.contains('red') ? 'error' : 'running';
@@ -107,9 +163,43 @@ function collectAgents() {
     const id = line.dataset.tuid || '';
     const log = (id && agentLogs.get(id))
         || { items: [], tokens: 0, model: '', startedAt: 0, endedAt: 0, input: {} };
-    agents.push({ id, type, description, status, log });
+    const agent = { id, type, description, status, log, parentId: '', depth: 0 };
+    agents.push(agent);
+    addNestedAgents(agent, agents, new Set([id]));
   });
   return agents;
+}
+/** The agents an agent started itself, found in its own log: a subagent's Agent call is one of
+ *  its tool calls, not a line of the main transcript, so the transcript scan above never sees
+ *  it. Each is read from that call (what it was told, and how it ended) and from the log the
+ *  CLI's own task events made for it, which a reopened conversation does not have. Listed
+ *  after the one that started it, one step further in. */
+function addNestedAgents(parent, agents, seen) {
+  parent.log.items.forEach(it => {
+    if (it.kind !== 'tool' || !it.id || seen.has(it.id) || !AGENT_KEYS.has(String(it.name || '').toLowerCase())) return;
+    seen.add(it.id);
+    const input = it.input && typeof it.input === 'object' ? it.input : {};
+    let log = agentLogs.get(it.id);
+    if (log) {
+      if (!log.input || !Object.keys(log.input).length) log.input = input;
+    } else {
+      // Not registered: a reopened conversation has no log of its own for it, and one made
+      // here would start counting its duration from now.
+      log = { items: [], tokens: 0, model: '', startedAt: 0, endedAt: 0, input, taskId: '', finishStatus: '' };
+    }
+    const status = it.status === 'done' ? 'done' : it.status === 'interrupted' ? 'error' : 'running';
+    const nested = { id: it.id, type: input.subagent_type || '', description: input.description || 'Agent',
+                     status, log, parentId: parent.id, depth: parent.depth + 1 };
+    agents.push(nested);
+    addNestedAgents(nested, agents, seen);
+  });
+}
+/** The agents in the order the list shows them: the newest of those the conversation started
+ *  first, each followed by the ones it started in turn. */
+function agentsInListOrder(agents) {
+  const groups = [];
+  agents.forEach(a => { if (a.depth === 0) groups.push([a]); else if (groups.length) groups[groups.length - 1].push(a); });
+  return groups.reverse().reduce((all, g) => all.concat(g), []);
 }
 
 function renderAgentsWin() {
@@ -160,8 +250,10 @@ function renderAgentsList(agents) {
   if (!agents.length) { renderBackgroundTasks(); return; }
   const list = document.createElement('div'); list.className = 'ap-list';
   // Most recent first — the one just kicked off is what you're watching.
-  agents.slice().reverse().forEach(a => {
+  agentsInListOrder(agents).forEach(a => {
     const row = document.createElement('div'); row.className = 'ap-row';
+    if (a.depth) row.style.marginLeft = (a.depth * 16) + 'px';   // under the agent that started it
+    row.dataset.agentStatus = agentStatus(a);
     row.onclick = () => { agentsView = 'detail'; agentsSelectedId = a.id; renderAgentsWin(); };
     const dot = document.createElement('span');
     dot.className = 'dot ' + agentDotClass(a);
@@ -242,7 +334,7 @@ function bgOutcome(task) {
 function bgDotClass(task, running) {
   if (running) return 'spin';
   const how = bgOutcome(task);
-  return how === 'Stopped' ? 'stopped' : how === 'Failed' ? 'red' : 'done';
+  return how === 'Stopped' || how === 'Failed' ? 'red' : 'done';
 }
 
 /** The list under the agents: one row per task running in this tab. */
@@ -459,6 +551,103 @@ function makeApFold(label, buildBody) {
   return wrap;
 }
 
+/** The last part of a path, whichever way its separators lean. */
+function agentBaseName(p) { return String(p || '').split(/[\\/]/).pop(); }
+/** What a tool call in an agent's "Tool calls" list says, as the extension words it: the
+ *  tool's name, and after it what it was doing, one line. `{name, detail}`; detail is ''
+ *  when the call has nothing more to say. Read from the call's own input, which is all an
+ *  agent's log keeps of it. */
+function agentToolHeader(rawName, rawInput) {
+  const input = rawInput && typeof rawInput === 'object' ? rawInput : {};
+  const raw = String(rawName || '');
+  const mcp = raw.indexOf('mcp__') === 0;
+  const key = (mcp ? raw.split('__').pop() : raw).toLowerCase();
+  const label = toolLabel(rawName);
+  const named = (name, detail) => ({ name: name, detail: detail || '' });
+  const file = (p) => agentBaseName(p);
+  switch (key) {
+    case 'bash':
+      return named(label, input.description);
+    case 'read': {
+      const from = Number(input.offset), count = Number(input.limit);
+      let range = '';
+      if (input.offset !== undefined && input.limit !== undefined) range = ' (lines ' + (from + 1) + '-' + (from + count) + ')';
+      else if (input.offset !== undefined) range = ' (from line ' + (from + 1) + ')';
+      const f = file(input.file_path);
+      return named(label, f ? f + range : '');
+    }
+    case 'edit': case 'multiedit': case 'write':
+      return named(label, file(input.file_path));
+    case 'notebookedit': {
+      const f = file(input.notebook_path);
+      return named('Edit Notebook Cell', f ? f + (input.cell_id ? ':' + input.cell_id : '') : '');
+    }
+    case 'grep': {
+      const scope = [];
+      if (input.path) scope.push('in ' + input.path);
+      if (input.glob) scope.push('glob: ' + input.glob);
+      if (input.type) scope.push('type: ' + input.type);
+      return named('Grep', '"' + (input.pattern || '') + '"' + (scope.length ? ' (' + scope.join(', ') + ')' : ''));
+    }
+    case 'glob':
+      return named('Glob', 'pattern: "' + (input.pattern || '') + '"');
+    case 'webfetch':
+      return named('Web Fetch', input.url);
+    case 'websearch':
+      return named('Web Search', input.query);
+    case 'agent': case 'task':
+      return named('Agent:', input.description);
+    case 'todowrite':
+      return named('Update Todos', '');
+    case 'toolsearch':
+      return named('Search tools', '"' + (input.query || '…') + '"');
+    case 'skill':
+      return named(String(input.skill || '').replace(/^\//, '') || label, input.skill ? 'skill' : '');
+    case 'askuserquestion':
+      return named(Array.isArray(input.questions) && input.questions.length === 1 ? 'Question' : 'Questions', '');
+    case 'taskoutput':
+      return named(label, input.task_id ? 'task: "' + input.task_id + '"' : '');
+    default:
+      return named(label, '');
+  }
+}
+
+/** The agent's type: what the CLI said at its start, else what its Agent call asked for. */
+function agentTypeOf(agent) {
+  return agent.log.subagentType || agent.type || (agent.log.input && agent.log.input.subagent_type) || '';
+}
+/** Whether it runs in the background: the CLI's own word at its start, else what its call
+ *  asked for. undefined when neither says, and then the line says neither. */
+function agentIsBackgrounded(agent) {
+  if (typeof agent.log.isBackgrounded === 'boolean') return agent.log.isBackgrounded;
+  const input = agent.log.input;
+  if (input && typeof input.run_in_background === 'boolean') return input.run_in_background;
+  return undefined;
+}
+/** The model it ran on, under the name the model chooser gives it, not the raw id. */
+function agentModelLabel(agent) {
+  const id = agent.log.model || (agent.log.input && agent.log.input.model) || '';
+  return id ? modelLabelFor(id) : '';
+}
+/** The line under the head that says what a working or waiting agent is up to, as the
+ *  extension's does: "Waiting for your permission to run Bash. Answer it in the session's
+ *  permission card.", or "Now" and the call it is in the middle of. null for any other state. */
+function agentActivityLine(agent, status) {
+  if (status !== 'waiting' && status !== 'working') return null;
+  const el = document.createElement('div'); el.className = 'ap-meta ap-activity';
+  if (status === 'waiting') {
+    const ask = agentWaitingAsk(agent);
+    el.textContent = 'Waiting for your permission' + (ask && ask.toolName ? ' to run ' + ask.toolName : '')
+        + ". Answer it in the session's permission card.";
+    return el;
+  }
+  const open = agent.log.items.filter(it => it.kind === 'tool' && it.status === undefined).pop();
+  if (!open) return null;
+  const h = agentToolHeader(open.name, open.input);
+  el.textContent = 'Now ' + h.name + (h.detail ? ' ' + h.detail : '');
+  return el;
+}
+
 function renderAgentDetail(agent) {
   agentsWinEl.appendChild(makeApDetailHead(agent, () => { agentsView = 'list'; renderAgentsWin(); }));
 
@@ -470,23 +659,27 @@ function renderAgentDetail(agent) {
   const body = document.createElement('div'); body.className = 'ap-detail-body';
   agentsWinEl.appendChild(body);
 
-  const statusWord = agent.log.finishStatus === 'stopped' ? 'Stopped'
-      : agentIsActive(agent) ? 'Running'
-      : agent.status === 'error' ? 'Failed' : 'Finished';
-  const parts = [statusWord];
-  if (agent.type) parts.push(agent.type);
-  if (agent.log.model) parts.push(agent.log.model);
-  if (agent.log.input && agent.log.input.run_in_background) parts.push('background');
+  const status = agentStatus(agent);
+  const parts = [AGENT_STATUS_LABEL[status]];
+  const type = agentTypeOf(agent);
+  if (type) parts.push(type);
+  const model = agentModelLabel(agent);
+  if (model) parts.push(model);
+  const bg = agentIsBackgrounded(agent);
+  if (bg !== undefined) parts.push(bg ? 'background' : 'foreground');
   const meta = document.createElement('div'); meta.className = 'ap-meta'; meta.textContent = parts.join(' · ');
   body.appendChild(meta);
 
-  // Always "the main agent": this session's Agent map only tracks TOP-level Agent calls —
-  // one launched BY a running subagent (agent-of-agent) is currently surfaced as generic
-  // activity under its parent instead of getting its own top-level card, so every card
-  // that reaches this popup at all was, by construction, spawned by the top-level turn.
+  // Who started it: the agent whose own tool call it was, or the main agent when it is a
+  // call of the conversation itself.
+  const parent = agent.parentId ? collectAgents().find(a => a.id === agent.parentId) : null;
   const spawned = document.createElement('div'); spawned.className = 'ap-meta';
-  spawned.textContent = 'Spawned by the main agent';
+  spawned.textContent = 'Spawned by ' + (parent ? parent.description : 'the main agent');
   body.appendChild(spawned);
+
+  // What it is doing now: held up on a permission, or the call it is in the middle of.
+  const doing = agentActivityLine(agent, status);
+  if (doing) body.appendChild(doing);
 
   const time = document.createElement('div'); time.className = 'ap-meta';
   time.textContent = formatAgentDuration(agentDurationMs(agent)) + ' · ' + formatAgentTokens(agent.log.tokens);
@@ -526,12 +719,26 @@ function renderAgentDetail(agent) {
       foldBody.appendChild(empty);
       return;
     }
+    const live = agentIsActive(agent);
     toolCalls.forEach(it => {
       const row = document.createElement('div'); row.className = 'ap-row ap-toolrow';
+      // Running only while the agent is and the call has no result yet, as in the extension:
+      // a finished call has no marker, and one a finished agent never heard back on is not
+      // "running". A failed call keeps its red dot, which says more than the extension does.
       const dot = document.createElement('span');
-      dot.className = 'dot ' + (it.status === 'done' ? 'done' : it.status === 'interrupted' ? 'red' : 'spin');
-      const label = document.createElement('span'); label.className = 'ap-label'; label.textContent = toolLabel(it.name);
-      row.appendChild(dot); row.appendChild(label);
+      const ask = agentWaitingAsk(agent);
+      if (it.status === 'interrupted') dot.className = 'dot red';
+      else if (it.status === undefined && ask && ask.toolUseId === it.id) dot.className = 'dot wait';
+      else if (it.status === undefined && live) dot.className = 'dot spin';
+      else dot.className = 'ap-dot-space';
+      const h = agentToolHeader(it.name, it.input);
+      const name = document.createElement('span'); name.className = 'ap-tname'; name.textContent = h.name;
+      row.appendChild(dot); row.appendChild(name);
+      if (h.detail) {
+        const detail = document.createElement('span'); detail.className = 'ap-tdetail'; detail.textContent = h.detail;
+        row.appendChild(detail);
+      }
+      row.title = h.detail ? h.name + ' ' + h.detail : h.name;
       foldBody.appendChild(row);
     });
   }));
@@ -616,7 +823,9 @@ function updateAgentsBtn() {
   if (count) count.textContent = text;
   if (agents.length) {
     const dot = document.getElementById('agents-dot');
-    if (dot) dot.classList.toggle('running', agents.some(agentIsActive));
+    const state = agentsOverallState(agents);
+    if (dot) dot.dataset.state = state;
+    btn.title = AGENTS_PILL_TITLE[state];
   }
   if (changed && typeof fitComposerBar === 'function') fitComposerBar();
 }

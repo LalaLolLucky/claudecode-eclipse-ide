@@ -514,23 +514,32 @@ body.teleporting #composer { display: none; }
    cards — cancels the .ap-row card look above rather than needing a separate class. */
 #agents-win .ap-toolrow { cursor: default; padding: 5px 4px; border: none; background: none; margin-bottom: 0; }
 #agents-win .ap-toolrow:hover, #agents-win .ap-toolrow:active { background: none; }
+/* A tool call reads like the extension's: the tool's name, then what it was doing in a
+   softer colour, on one line cut with an ellipsis (the whole of it is the row's tooltip).
+   A finished call has no marker, so the spacer keeps its name where a running one's is. */
+#agents-win .ap-activity { color: var(--fg-dim); }
+#agents-win .ap-toolrow { gap: 8px; }
+#agents-win .ap-toolrow .ap-tname { flex: 0 0 auto; font-size: 12.5px; color: var(--fg); }
+#agents-win .ap-toolrow .ap-tdetail { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--fg-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#agents-win .ap-dot-space { flex: 0 0 auto; width: 7px; height: 7px; }
 /* chat.css's .dot/.dot.done/.dot.red/.dot.spin rules are scoped to ".a-item .dot" (absolutely
    positioned within a tool line) — a bare .dot outside one gets none of that, so this row's
    dot is its own small standalone set rather than trying to reuse the scoped one. */
 /* Running = green (spinning ring, still conveys "in progress"), finished = grey (its
    work is over, nothing more to say), stopped = Claude's own accent color, so a
    deliberate user stop reads distinctly from either "finished on its own" state. */
-#agents-win .ap-row .dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--fg-faint); }
-#agents-win .ap-row .dot.done { background: var(--fg-faint); }
-#agents-win .ap-row .dot.red { background: var(--red); }
-#agents-win .ap-row .dot.stopped { background: var(--accent); }
-#agents-win .ap-row .dot.spin { background: transparent; border: 2px solid var(--green);
+#agents-win .ap-row .dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-idle); }
+#agents-win .ap-row .dot.done { background: var(--st-idle); }
+#agents-win .ap-row .dot.red { background: var(--st-failed); }
+#agents-win .ap-row .dot.wait { background: var(--st-waiting); }
+#agents-win .ap-row .dot.spin { background: transparent; border: 2px solid var(--st-working);
   border-top-color: transparent; width: 9px; height: 9px; animation: spin .8s linear infinite; }
-#agents-win .ap-detail-head .dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--fg-faint); }
-#agents-win .ap-detail-head .dot.done { background: var(--fg-faint); }
-#agents-win .ap-detail-head .dot.red { background: var(--red); }
-#agents-win .ap-detail-head .dot.stopped { background: var(--accent); }
-#agents-win .ap-detail-head .dot.spin { background: transparent; border: 2px solid var(--green);
+#agents-win .ap-detail-head .dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-idle); }
+#agents-win .ap-detail-head .dot.done { background: var(--st-idle); }
+#agents-win .ap-detail-head .dot.red { background: var(--st-failed); }
+#agents-win .ap-detail-head .dot.wait { background: var(--st-waiting); }
+#agents-win .ap-detail-head .dot.spin { background: transparent; border: 2px solid var(--st-working);
   border-top-color: transparent; width: 9px; height: 9px; animation: spin .8s linear infinite; }
 /* min-width:0 is required for the ellipsis rules below to actually clamp inside a flex
    row instead of forcing the row wider — a flex item's default min-width is its content's,

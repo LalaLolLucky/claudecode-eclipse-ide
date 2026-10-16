@@ -715,7 +715,7 @@ function clearTab(t) {
   // (spawns without --resume) instead of continuing the one just cleared.
   if (window._disposeTab) window._disposeTab(t.id);
   // Its background tasks ran in that process and went with it (agents.js).
-  t.bgTasks = null; t.bgEnded = null; t.bgOutput = null;
+  t.bgTasks = null; t.bgEnded = null; t.bgOutput = null; t.agentAsks = null;
   t.sessionId = '';
   t.titled = false; t.userTitled = false;
   t.title = 'Claude Code';

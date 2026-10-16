@@ -421,7 +421,7 @@ function discardAssistant() {
 const TOOL_LABELS = {
   read:'Read', write:'Write', edit:'Edit', multiedit:'Edit', notebookedit:'Edit',
   opendiff:'Edit', closealldifftabs:'Edit', savedocument:'Save', openfile:'Open',
-  bash:'Bash', bashoutput:'BashOutput', killshell:'KillShell',
+  bash:'Bash', bashoutput:'BashOutput', killshell:'KillShell',powershell:'PowerShell',
   // Each of these used to collapse into one generic 'Search' bucket — you couldn't tell
   // a Grep from a WebSearch from a JDT FindReferences without reading the input. Now
   // distinct, matching VSCode's own per-tool labels.
@@ -429,7 +429,7 @@ const TOOL_LABELS = {
   findreferences:'FindReferences', gettypehierarchy:'GetTypeHierarchy', getsymbolinfo:'GetSymbolInfo',
   webfetch:'Fetch', agent:'Agent', task:'Agent', skill:'Skill', workflow:'Workflow',
   todowrite:'Planning', exitplanmode:"Claude's Plan",
-  askuserquestion:'Asking', runtests:'Testing',
+  askuserquestion:'Questions', runtests:'Testing',
   getdiagnostics:'Checking', checkdocumentdirty:'Checking',
   getcurrentselection:'Reading', getlatestselection:'Reading',
   getopeneditors:'Reading', getworkspacefolders:'Reading', approvalprompt:'Permission'
@@ -896,7 +896,7 @@ function ensureAgentLog(id) {
   // touches this agent's log FIRST (a live activity update, a reload's reconstructed
   // data) still gives a real, ticking number instead of a permanent "0s" if it doesn't.
   if (!log) {
-    log = { items: [], tokens: 0, model: '', startedAt: Date.now(), endedAt: 0, input: {}, taskId: '', finishStatus: '' };
+    log = { items: [], tokens: 0, model: '', startedAt: Date.now(), endedAt: 0, input: {}, taskId: '', finishStatus: '', subagentType: '', isBackgrounded: undefined };
     agentLogs.set(id, log);
   }
   return log;
@@ -913,6 +913,12 @@ function applyAgentActivity(json, t) {
   let info; try { info = JSON.parse(json); } catch (e) { return; }
   if (info && info.kind === 'backgroundTasks') {
     if (typeof applyBackgroundTasks === 'function') applyBackgroundTasks(info.tasks, t || activeTab());
+    return;
+  }
+  // A subagent held up on a permission request, or no longer: it belongs to no agent's
+  // tool_use id (the CLI names the agent by its task id), so it is taken before them too.
+  if (info && info.kind === 'agentPermission') {
+    if (typeof applyAgentPermission === 'function') applyAgentPermission(info, t || activeTab());
     return;
   }
   if (!info || !info.parentId) return;
@@ -960,6 +966,10 @@ function applyAgentActivity(json, t) {
     // it's the only thing "Stop agent" (agents.js) can actually send a stop_task
     // control_request against.
     log.taskId = info.taskId;
+    // What kind of agent it is, and whether it runs in the background, as the CLI says at
+    // its start; an older CLI says neither, and the log keeps what it had.
+    if (info.subagentType) log.subagentType = info.subagentType;
+    if (typeof info.isBackgrounded === 'boolean') log.isBackgrounded = info.isBackgrounded;
   }
   if (window.renderAgentsPanel) window.renderAgentsPanel();
 }

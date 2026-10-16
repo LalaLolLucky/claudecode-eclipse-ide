@@ -390,8 +390,13 @@ body { min-width: 150px; }
   border-radius: 999px; background: var(--bg-chip); color: var(--fg-soft); cursor: pointer; font-size: 11px;
   white-space: nowrap; flex-shrink: 0; }   /* one line or none: a wrapped count hides the overflow fitComposerBar measures */
 .agents-pill:hover { background: var(--bg-hover); color: var(--fg); }
-.agents-pill .agents-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-faint); flex-shrink: 0; }
-.agents-pill .agents-dot.running { background: var(--accent); }
+/* The dot is the Agent map's own status colours (tokens.css), by the state agents.js sets on it:
+   a ring that turns while an agent works, a solid blue one while one waits on a permission. */
+.agents-pill .agents-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--st-idle); flex-shrink: 0; }
+.agents-pill .agents-dot[data-state="running"] { box-sizing: border-box; width: 8px; height: 8px; background: transparent;
+  border: 2px solid var(--st-working); border-top-color: transparent; animation: spin .8s linear infinite; }
+.agents-pill .agents-dot[data-state="waiting"] { background: var(--st-waiting); }
+.agents-pill .agents-dot[data-state="failed"] { background: var(--st-failed); }
 /* narrow-width collapse (fitComposerBar): words hide, icons stay, nothing leaves the div.
    The mode label may NEVER wrap — it is either one line or hidden entirely. */
 #modes-lbl { white-space: nowrap; }

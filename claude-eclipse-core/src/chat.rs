@@ -2625,6 +2625,11 @@ fn handle_control_request(
     // card is still being drawn (the phone is quicker than a human), and a
     // cancel for an id not yet on the books would be dropped as unknown.
     state.lock().unwrap().open_cards.insert(request_id.clone());
+    // A subagent held up on this: the Agent map says so while the card is up.
+    if let Some(waiting) = agent_permission_payload(&request_id, request, true) {
+        fire_string(java_vm, callbacks, "onAgentActivity", &waiting.to_string());
+    }
+    let released = agent_permission_payload(&request_id, request, false);
 
     let proc = Arc::clone(proc);
     let state = Arc::clone(state);
@@ -2635,6 +2640,10 @@ fn handle_control_request(
         .spawn(move || {
             let response = decide_can_use_tool(&request_id, &tool_name, &input,
                                                &suggestions, &vm, &cb);
+            // Answered here or withdrawn, the agent is no longer waiting on it.
+            if let Some(released) = released {
+                fire_string(&vm, &cb, "onAgentActivity", &released.to_string());
+            }
             // Whoever ends this card first wins. If the request was withdrawn
             // while we waited, the CLI has already acted on somebody else's
             // answer — replying now would be answering a question nobody asked.
@@ -2836,6 +2845,26 @@ fn process_event(
     process_event_value(&event, java_vm, callbacks, cursors, tokens);
 }
 
+/// What the page is told when a subagent is held up on a permission request, and when it no
+/// longer is: `{"kind":"agentPermission","requestId","waiting":true,"taskId","toolName","toolUseId"}`, then
+/// `{"kind":"agentPermission","requestId","waiting":false}`. The CLI names the agent a request
+/// comes from in `agent_id`, which is that agent's `task_id`; a request of the main
+/// conversation has none and says nothing here. The Agent map shows the agent as waiting
+/// for as long as a request of its own is open.
+fn agent_permission_payload(request_id: &str, request: &serde_json::Value, waiting: bool) -> Option<serde_json::Value> {
+    let task_id = request["agent_id"].as_str().filter(|id| !id.is_empty())?;
+    Some(if waiting {
+        serde_json::json!({
+            "kind": "agentPermission", "requestId": request_id, "waiting": true,
+            "taskId": task_id, "toolName": request["tool_name"].as_str().unwrap_or(""),
+            // The call it is held up on, so the agent's list of tool calls can mark that one.
+            "toolUseId": request["tool_use_id"].as_str().unwrap_or(""),
+        })
+    } else {
+        serde_json::json!({ "kind": "agentPermission", "requestId": request_id, "waiting": false })
+    })
+}
+
 /// What the page is told when the CLI's list of background tasks changes
 /// (`system/background_tasks_changed`): `{"kind":"backgroundTasks","tasks":[…]}`,
 /// each task `{taskId, taskType, description}`. The whole list every time, so an
@@ -2934,6 +2963,10 @@ fn process_event_value(
                         "parentId": tool_use_id,
                         "kind": "taskId",
                         "taskId": task_id,
+                        // What the CLI says this agent is, which the Agent map shows; absent
+                        // from an older CLI's event, and then the page goes without.
+                        "subagentType": event["subagent_type"].as_str(),
+                        "isBackgrounded": event["is_backgrounded"].as_bool(),
                     });
                     fire_string(java_vm, callbacks, "onAgentActivity", &payload.to_string());
                 }
@@ -3945,5 +3978,39 @@ mod background_tasks_tests {
         assert_eq!(background_tasks_payload(&odd), Some(json!({"kind":"backgroundTasks","tasks":[]})));
         assert_eq!(background_tasks_payload(&json!({"subtype":"background_tasks_changed"})), None);
         assert_eq!(background_tasks_payload(&json!({"subtype":"background_tasks_changed","tasks":{}})), None);
+    }
+}
+
+#[cfg(test)]
+mod agent_permission_tests {
+    use super::agent_permission_payload;
+    use serde_json::json;
+
+    // The request the CLI really sent for a Bash call made inside a subagent.
+    fn subagent_request() -> serde_json::Value {
+        json!({"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash",
+               "input":{"command":"python3 -c \"print(1)\""},"tool_use_id":"toolu_01","agent_id":"af06e86ed6d68a279"})
+    }
+
+    #[test]
+    fn a_request_made_inside_a_subagent_names_that_agent() {
+        let p = agent_permission_payload("req-1", &subagent_request(), true).unwrap();
+        assert_eq!(p, json!({"kind":"agentPermission","requestId":"req-1","waiting":true,
+                              "taskId":"af06e86ed6d68a279","toolName":"Bash","toolUseId":"toolu_01"}));
+    }
+
+    #[test]
+    fn the_end_of_the_request_is_told_by_its_id_alone() {
+        let p = agent_permission_payload("req-1", &subagent_request(), false).unwrap();
+        assert_eq!(p, json!({"kind":"agentPermission","requestId":"req-1","waiting":false}));
+    }
+
+    #[test]
+    fn a_request_of_the_main_conversation_says_nothing() {
+        let main = json!({"subtype":"can_use_tool","tool_name":"Bash","input":{},"tool_use_id":"toolu_02"});
+        assert_eq!(agent_permission_payload("req-2", &main, true), None);
+        assert_eq!(agent_permission_payload("req-2", &main, false), None);
+        let blank = json!({"subtype":"can_use_tool","tool_name":"Bash","agent_id":""});
+        assert_eq!(agent_permission_payload("req-3", &blank, true), None, "an empty id names no agent");
     }
 }

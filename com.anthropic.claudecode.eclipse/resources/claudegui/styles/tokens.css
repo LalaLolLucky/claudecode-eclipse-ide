@@ -33,6 +33,12 @@
   --bm-selected: #515053;     /* the picked row in the Bookmarks panel */
   --sel-hover: #3a93bf;
   --green: #4eb87a;           /* action dots */
+  /* An agent's state, in the pill and in the Agent map: the VS Code extension's own colours
+     (--app-status-busy, --app-status-pending), so the two are one set. */
+  --st-working: #89d185;
+  --st-waiting: #3b82f6;
+  --st-failed: var(--red);
+  --st-idle: var(--fg-faint);
   --green-bg: rgba(78,184,122,.16);
   --red-bg: rgba(220,90,90,.14);
   --red: #dc5a5a;             /* del rail / red dots / delete actions */
@@ -111,6 +117,10 @@
   --bm-selected: #d6d6d6;
   --sel-hover: #0b7fd4;
   --green: #2e9e5b;
+  --st-working: #2f9e44;
+  --st-waiting: #2563eb;
+  --st-failed: var(--red);
+  --st-idle: var(--fg-faint);
   --green-bg: rgba(46,158,91,.14);
   --red-bg: rgba(200,60,60,.12);
   --red: #c83c3c;
