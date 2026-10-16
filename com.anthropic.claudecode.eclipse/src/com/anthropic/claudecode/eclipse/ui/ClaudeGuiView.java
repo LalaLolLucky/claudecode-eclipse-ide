@@ -164,6 +164,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private SimpleFunction mcpConfigFn;
     @SuppressWarnings("unused") private SimpleFunction cliFn;
     @SuppressWarnings("unused") private SimpleFunction commandsFn;
+    @SuppressWarnings("unused") private SimpleFunction refreshModelsFn;
     @SuppressWarnings("unused") private SimpleFunction ideFn;
     @SuppressWarnings("unused") private SimpleFunction cliEditFn;
     @SuppressWarnings("unused") private SimpleFunction reloadTabFn;
@@ -294,6 +295,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private org.eclipse.jface.bindings.IBindingManagerListener bindingChangeListener;
     @SuppressWarnings("unused") private SimpleFunction statusSelectionFn;
     private volatile String availableModelsJson;   // curated model list from /v1/models, pushed to the webview
+    private volatile boolean modelsWorthRetrying;  // …it is the built-in list, and asking again could get the account's
+    private volatile boolean modelsFetching;       // a fetch of that list is under way
+    private volatile long modelsFetchedAt;         // when the last one ended (ms)
     private volatile String cliVersionJson;        // {installed,latest,updateAvailable} for the update banner
     private volatile String setupGuideMd = "";     // FreeBSD setup guide (Markdown) while claude is missing
     private volatile String cliModelsJson;         // newest model per family the INSTALLED binary can run
@@ -1225,6 +1229,18 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             }, "claude-cli-commands").start();
             return null;
         });
+        // The model chooser opened. When the last fetch of the account's models got only the
+        // built-in list for a reason that can pass (offline at startup, the API failing), it
+        // is tried again: no sooner than MODELS_RETRY_MS after it, and one at a time. Not for
+        // a login that is missing or refused (ModelCatalog#worthRetrying).
+        refreshModelsFn = new SimpleFunction(browser, "_refreshModels", a -> {
+            if (modelsWorthRetrying && !modelsFetching
+                    && System.currentTimeMillis() - modelsFetchedAt >= MODELS_RETRY_MS) {
+                ClaudeCodeView.debug("[models] the chooser opened on the built-in list; asking again");
+                fetchAvailableModels();
+            }
+            return null;
+        });
         // A change one of those dialogs makes is saved by the CLI's own edit subcommand, run in
         // the tab's folder. Blocking, so off the UI thread; the outcome comes back on the same
         // channel as the dialog requests, under the page's token.
@@ -1689,10 +1705,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         ensureServerAsync();
         startContextPolling();
         // Fetch the account's actually-available models (dynamic chooser).
-        ModelCatalog.fetchCuratedAsync(json -> {
-            availableModelsJson = json;
-            Display.getDefault().asyncExec(this::pushAvailableModels);
-        });
+        fetchAvailableModels();
         // The model list above says what the ACCOUNT may use; this says what the
         // INSTALLED CLI is. A CLI older than a model release can't run it (aliases
         // silently resolve to an older model), so surface the update instead.
@@ -2202,6 +2215,23 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             // fall through to the safe default
         }
         return true;   // default to dark, preserving the original look
+    }
+
+    /** How long after a fetch that got only the built-in list the next one may start
+     *  ({@code _refreshModels}, asked each time the model chooser opens). */
+    private static final long MODELS_RETRY_MS = 30_000;
+
+    /** Fetches the account's models for the chooser (ModelCatalog, off the UI thread) and
+     *  pushes them once the page is there. */
+    private void fetchAvailableModels() {
+        modelsFetching = true;
+        ModelCatalog.fetchCuratedAsync(claudeCmdPref(), fetched -> {
+            availableModelsJson = fetched.json();
+            modelsWorthRetrying = fetched.worthRetrying();
+            modelsFetchedAt = System.currentTimeMillis();
+            modelsFetching = false;
+            Display.getDefault().asyncExec(this::pushAvailableModels);
+        });
     }
 
     /** Pushes the fetched model list to the webview once both are ready. */

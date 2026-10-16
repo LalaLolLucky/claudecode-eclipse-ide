@@ -1,3 +1,4 @@
+mod account_models;
 mod archive;
 mod bookmarks;
 mod bridge;
@@ -1872,6 +1873,25 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_hasClaud
         web_history::has_claude_ai_login() as jboolean
     }));
     finish_export(&mut env, "hasClaudeAiLogin", result, jni::sys::JNI_FALSE)
+}
+
+/// The account's models (GET /v1/models) for the model chooser, as
+/// `{"ok":true,"data":[{"id","display_name"}…]}` or `{"ok":false,"state","error"}`.
+///
+/// **Blocking** — the same credential path and round trip as `webSessionList`;
+/// Java must call it off the UI thread. The token stays inside Rust.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_accountModels(
+    mut env: JNIEnv,
+    _class: JClass,
+    claude_cmd: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let cmd: String = jstr(&mut env, &claude_cmd);
+        let json = account_models::fetch(&cmd);
+        jout(&mut env, json, r#"{"ok":false,"state":"error","error":"no answer"}"#)
+    }));
+    finish_export(&mut env, "accountModels", result, std::ptr::null_mut())
 }
 
 // ===========================================================================

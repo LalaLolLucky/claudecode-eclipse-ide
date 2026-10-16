@@ -11,7 +11,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 
+import com.anthropic.claudecode.eclipse.NativeCore;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -22,10 +24,15 @@ import com.google.gson.JsonParser;
  * Haiku) — the CLI aliases (e.g. {@code opus}) already resolve to the latest, so
  * those are used as the {@code --model} values.
  *
- * <p>Auth is the OAuth token the CLI already stores in
- * {@code ~/.claude/.credentials.json}; the call is read-only. Everything runs off
- * the UI thread and degrades to a sensible built-in list on any failure (offline,
- * expired token, etc.), so the chooser always works.
+ * <p>The call is the Rust core's ({@link NativeCore#accountModels}): it reads the OAuth
+ * token where the CLI keeps it — {@code ~/.claude/.credentials.json}, the Keychain on
+ * macOS, under {@code CLAUDE_CONFIG_DIR} when that is set — has the CLI renew a token
+ * past its life, and hands back each model's id and name, never the token. A native
+ * library from before that call falls back to reading the credentials file here, as
+ * this class did before. Everything runs off the UI thread and degrades to a sensible
+ * built-in list on any failure (offline, signed out, etc.), so the chooser always works;
+ * {@link Fetched#builtIn} says when it did, so the view can ask again, and Debug mode
+ * logs why.
  */
 public final class ModelCatalog {
 
@@ -35,6 +42,15 @@ public final class ModelCatalog {
 
     /** Families we surface, in display order. */
     private static final String[] FAMILY_ORDER = { "fable", "opus", "sonnet", "haiku" };
+
+    /** What one fetch came to: the chooser's list as JSON, whether that is the built-in
+     *  list standing in for the account's, and whether asking again could get the
+     *  account's ({@link #worthRetrying}). */
+    public record Fetched(String json, boolean builtIn, boolean worthRetrying) {}
+
+    /** The account's models as the API lists them, or {@code null} with the core's
+     *  {@code state} ({@code signed-out}, {@code expired}, {@code error}) and why. */
+    record Answer(JsonArray data, String state, String why) {}
 
     private static String descFor(String family) {
         switch (family) {
@@ -46,23 +62,69 @@ public final class ModelCatalog {
         }
     }
 
-    /** Runs the fetch+curation on a background thread, then delivers the model-list
-     *  JSON (never null) to {@code cb}. */
-    public static void fetchCuratedAsync(Consumer<String> cb) {
+    /** Runs the fetch+curation on a background thread, then delivers what it came to
+     *  (never null, its list never null) to {@code cb}. */
+    public static void fetchCuratedAsync(String claudeCmd, Consumer<Fetched> cb) {
         Thread t = new Thread(() -> {
-            String json;
-            try { json = fetchAndCurate(); }
-            catch (Throwable ex) { json = fallbackJson(); }
-            if (json == null || json.isBlank()) json = fallbackJson();
-            try { cb.accept(json); } catch (Throwable ignored) {}
+            Fetched fetched;
+            try { fetched = fetchAndCurate(claudeCmd); }
+            catch (Throwable ex) { fetched = builtIn("error", "the fetch failed: " + ex); }
+            try { cb.accept(fetched); } catch (Throwable ignored) {}
         }, "claude-models-fetch");
         t.setDaemon(true);
         t.start();
     }
 
-    private static String fetchAndCurate() throws Exception {
+    private static Fetched fetchAndCurate(String claudeCmd) throws Exception {
+        Answer answer;
+        try {
+            answer = answerOf(NativeCore.accountModels(claudeCmd));
+        } catch (LinkageError olderLibrary) {
+            ClaudeCodeView.debug("[models] the native library has no accountModels; reading the credentials file here");
+            answer = fetchFromJava();
+        }
+        if (answer.data() == null) return builtIn(answer.state(), answer.why());
+        String json = curate(answer.data());
+        if (json == null) return builtIn("empty", "the account's list named no model");
+        ClaudeCodeView.debug("[models] the account's list: " + answer.data().size() + " models");
+        return new Fetched(json, false, false);
+    }
+
+    private static Fetched builtIn(String state, String why) {
+        ClaudeCodeView.debug("[models] the built-in list, because " + state + ": " + why);
+        return new Fetched(fallbackJson(), true, worthRetrying(state));
+    }
+
+    /** Whether a fetch that ended in {@code state} could come out differently if asked
+     *  again: only an {@code error} (the network, the API, a timeout). A login that is
+     *  {@code signed-out} or {@code expired} does not come right by asking — the core has
+     *  already had the CLI renew it once — and each ask would start the CLI again, and on
+     *  macOS read the Keychain again, which can put a prompt in front of the user. */
+    static boolean worthRetrying(String state) {
+        return "error".equals(state);
+    }
+
+    /** Reads the core's answer ({@link NativeCore#accountModels}). */
+    static Answer answerOf(String answer) {
+        JsonObject o;
+        try {
+            o = JsonParser.parseString(answer == null ? "" : answer).getAsJsonObject();
+        } catch (RuntimeException e) {
+            return new Answer(null, "error", "the core's answer could not be read");
+        }
+        JsonElement ok = o.get("ok");
+        if (ok != null && ok.isJsonPrimitive() && ok.getAsBoolean() && o.has("data") && o.get("data").isJsonArray())
+            return new Answer(o.getAsJsonArray("data"), null, null);
+        String state = str(o, "state");
+        return new Answer(null, state != null ? state : "error", String.valueOf(str(o, "error")));
+    }
+
+    /** The account's models fetched here, for a native library from before
+     *  {@link NativeCore#accountModels}: the credentials file only, so no Keychain. */
+    private static Answer fetchFromJava() throws Exception {
         String token = readOAuthToken();
-        if (token == null || token.isEmpty()) return fallbackJson();
+        if (token == null || token.isEmpty())
+            return new Answer(null, "signed-out", "no token in ~/.claude/.credentials.json");
 
         HttpURLConnection conn = (HttpURLConnection) URI.create(MODELS_URL).toURL().openConnection();
         conn.setRequestMethod("GET");
@@ -71,16 +133,19 @@ public final class ModelCatalog {
         conn.setRequestProperty("Authorization", "Bearer " + token);
         conn.setRequestProperty("anthropic-version", "2023-06-01");
         int code = conn.getResponseCode();
-        if (code != 200) return fallbackJson();
+        if (code == 401 || code == 403) return new Answer(null, "expired", "HTTP " + code);
+        if (code != 200) return new Answer(null, "error", "HTTP " + code);
 
         String body;
         try (InputStream in = conn.getInputStream()) {
             body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
-        JsonObject root = JsonParser.parseString(body).getAsJsonObject();
-        JsonArray data = root.getAsJsonArray("data");
-        if (data == null) return fallbackJson();
+        JsonArray data = JsonParser.parseString(body).getAsJsonObject().getAsJsonArray("data");
+        return data == null ? new Answer(null, "error", "the answer was not a model list") : new Answer(data, null, null);
+    }
 
+    /** The chooser's list for the account's models, or {@code null} when they name none. */
+    static String curate(JsonArray data) {
         // Pick the latest model per family by numeric version comparison.
         Map<String, Best> best = new LinkedHashMap<>();
         for (var el : data) {
@@ -127,7 +192,7 @@ public final class ModelCatalog {
                         "1M-token context · draws from usage credits", b.id));
             }
         }
-        return ordered.isEmpty() ? fallbackJson() : out.toString();
+        return ordered.isEmpty() ? null : out.toString();
     }
 
     /** "Claude Opus 4.8" → "Opus 4.8". */
@@ -152,7 +217,7 @@ public final class ModelCatalog {
     }
 
     /** Built-in list used when the API is unreachable — Fable enabled (it is available). */
-    private static String fallbackJson() {
+    static String fallbackJson() {
         JsonArray out = new JsonArray();
         out.add(model("", "Default (recommended)", "Latest model · efficient for routine tasks"));
         out.add(model("fable", "Fable", descFor("fable")));

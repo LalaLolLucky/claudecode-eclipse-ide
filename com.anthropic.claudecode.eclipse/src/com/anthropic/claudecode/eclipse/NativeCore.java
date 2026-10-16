@@ -972,6 +972,23 @@ public final class NativeCore {
      */
     public static native String webSessionList(String claudeCmd, boolean forceRefresh);
 
+    /**
+     * The account's models ({@code GET /v1/models}), for the Claude Code view's model
+     * chooser, as {@code {"ok":true,"data":[{id,display_name}]}} or
+     * {@code {"ok":false,state,error}}, where {@code state} is {@code signed-out},
+     * {@code expired} or {@code error}.
+     *
+     * <p>Spent through the same credential path as {@link #webSessionList}: the token is
+     * read where the CLI keeps it (the Keychain on macOS), a stale one is renewed by the
+     * CLI, and it never crosses this boundary.
+     *
+     * <p><b>Blocking</b> — call it off the UI thread.
+     *
+     * @param claudeCmd the configured {@code claude} command, used only if a refresh is
+     *     needed.
+     */
+    public static native String accountModels(String claudeCmd);
+
     // ── Teleport (continuing a claude.ai session here) ───────────────────────
 
     /**
