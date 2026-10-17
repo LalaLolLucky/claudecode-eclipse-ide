@@ -443,7 +443,9 @@ input.addEventListener('keydown', (e) => {
   // Enter always sends: mid-stream it QUEUES the message (VSCode behavior —
   // claude answers queued messages in succession over the persistent process).
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
-  else if (e.key === 'Escape' && activeStreaming()) { e.preventDefault(); doCancel(); }
+  // Not when this same press has just closed a card (carddock.js escPress): the composer
+  // keeps the focus under a card, so the card's Esc reached it too and stopped the turn.
+  else if (e.key === 'Escape' && activeStreaming() && !escPress.dismissed) { e.preventDefault(); doCancel(); }
 });
 
 send.addEventListener('click', () => { if (activeStreaming()) doCancel(); else doSend(); });
