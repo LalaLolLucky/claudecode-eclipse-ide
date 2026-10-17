@@ -94,6 +94,10 @@ function queueCardRequest(owner, reqId, show, kind) {
   if (!owner || !owner.pendingCard) return false;
   if (!owner.cardQueue) owner.cardQueue = [];
   owner.cardQueue.push({ reqId: reqId, show: show, kind: kind || '' });   // kind: what claudetool.js reports
+  // Claude has stopped to wait on the user, behind a card that is not its own (the advisor's,
+  // most often): the working indicator its tool line brought up would say it is still at work.
+  // Its own card hides it when it comes up; clearBottomCard brings it back if none does.
+  if (owner === rtab) hideWorking();
   return true;
 }
 /** A request still waiting for its turn has been answered elsewhere, or has timed out: it is
