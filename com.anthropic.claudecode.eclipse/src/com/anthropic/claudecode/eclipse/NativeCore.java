@@ -539,17 +539,18 @@ public final class NativeCore {
         /**
          * Persistent mode only: claude is blocked waiting for a permission
          * decision. Called on a dedicated Rust thread — may block until the user
-         * decides. {@code rememberLabel} is the CLI-derived label for the middle
-         * "remember this decision" option (empty = no such option). Return
-         * "allow" (once), "allowRemember" (allow + echo the CLI's scoped rule),
-         * "deny", or "deny&lt;message&gt;" (reject with a "do this instead" note).
+         * decides. {@code metaJson} is what the CLI says besides the input: its
+         * suggested "remember this decision" updates, why it asks, how it wants it asked.
+         * Returns the decision as JSON, see {@code permission_response} in chat.rs:
+         * {@code {"d":"allow"|"allowRemember"|"allowAuto"|"allowManual"|"deny",
+         * "input":{…}?, "dest":"…"?, "msg":"…"?, "interrupt":bool?}}.
          *
          * <p>{@code requestId} is the CLI's own id for this request. Keep it: it
          * is the only handle on a card that has to be taken back down again, and
          * {@link #onCardCancel} names the card that way.
          */
         default String onPermissionRequest(String requestId, String toolName,
-                                           String inputJson, String rememberLabel) { return "deny"; }
+                                           String inputJson, String metaJson) { return "deny"; }
         /**
          * Persistent mode only: claude asked a multiple-choice question
          * (built-in AskUserQuestion). Receives the questions array JSON; returns

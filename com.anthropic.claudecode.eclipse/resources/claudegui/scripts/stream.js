@@ -286,17 +286,6 @@ window.onTheme = (mode, tabBg, tabBgActive) => {
   if (tabBgActive) root.setProperty('--tab-bg-active', tabBgActive); else root.removeProperty('--tab-bg-active');
 };
 
-/* A "User answered:" card left in the flow (at the decision point) when the user
-   types an instruction instead of accepting/rejecting. */
-function addAnswered(text, pane) {
-  pane = pane || streamPane() || (activeTab() ? activeTab().pane : null);
-  if (!pane) return;
-  const turn = document.createElement('div'); turn.className = 'turn';
-  const card = document.createElement('div'); card.className = 'answered';
-  const h = document.createElement('div'); h.className = 'ans-head'; h.textContent = 'User answered:';
-  const b = document.createElement('div'); b.className = 'ans-body'; b.textContent = text;
-  card.appendChild(h); card.appendChild(b); turn.appendChild(card); pane.appendChild(turn);
-}
 /* Which of a question's options an answer names, and what is left over (an "Other" answer).
    A single-select answer is one label. A multi-select one is the ticked labels joined by ", ",
    then perhaps the typed text, so labels are taken off the front one at a time, the longest that

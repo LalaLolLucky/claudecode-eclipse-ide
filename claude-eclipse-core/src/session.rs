@@ -1462,13 +1462,16 @@ fn attached_file_path(text: &str) -> Option<&str> {
 /// GUI shows one line, and real results run to 100+ lines.
 const ERROR_SUMMARY_MAX: usize = 160;
 
+/// The CLI's own words for a tool the user refused on its card. The GUI shows them whole, as
+/// the VS Code extension does: a refusal that came with the reader's reason reads "Reason: …"
+/// under the tool's name, and a plain one is the tool's output.
+const USER_REFUSAL_PREFIX: &str = "The user doesn't want to proceed";
+
 /// Prefixes that mark a result as the USER'S OWN decision rather than a tool
-/// failure. The CLI reports "declined", "rejected" and "answered instead" through
-/// the same `is_error` channel a genuine failure uses, but the GUI already shows
-/// those through its decision cards — repeating the sentence under the tool row
-/// would be noise. Verified against 111 real `is_error` results: 23 are these.
-const DECISION_PREFIXES: [&str; 4] = [
-    "The user doesn't want to proceed",
+/// failure, made some way other than a permission card (a declined Eclipse prompt or
+/// question). The CLI reports them through the same `is_error` channel a genuine failure
+/// uses, but the GUI already shows those through its own cards, so they are left out.
+const DECISION_PREFIXES: [&str; 3] = [
     "The user declined",
     "The user dismissed",
     "[User typed]:",
@@ -1478,7 +1481,8 @@ const DECISION_PREFIXES: [&str; 4] = [
 /// or `None` when nothing should be shown.
 ///
 /// Returns `None` for the user's own decisions (see [`DECISION_PREFIXES`]) so a
-/// declined tool keeps its red dot and stays quiet.
+/// declined tool keeps its red dot and stays quiet. A refusal on a permission card is
+/// returned whole ([`USER_REFUSAL_PREFIX`]), for the GUI to lay out.
 ///
 /// A bare `Exit code N` first line is joined to the next real line: three
 /// quarters of genuine failures lead with it, and the number alone says nothing
@@ -1488,6 +1492,9 @@ pub(crate) fn tool_error_summary(raw: &str) -> Option<String> {
     let mut t = raw.trim();
     if t.is_empty() {
         return None;
+    }
+    if t.starts_with(USER_REFUSAL_PREFIX) {
+        return Some(t.to_string());
     }
     if DECISION_PREFIXES.iter().any(|p| t.starts_with(p)) {
         return None;
@@ -3207,7 +3214,10 @@ mod tests {
 
         // The user's own decisions are NOT failures: the GUI already shows those
         // through its decision cards, so the tool row stays quiet (red dot only).
-        assert_eq!(sum("The user doesn't want to proceed with this tool use. The tool use was rejected"), None);
+        // A refusal on a permission card is the GUI's to show, whole and not condensed.
+        let refusal = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user provided the following reason for the rejection: too risky
+really";
+        assert_eq!(sum(refusal), Some(refusal.into()));
         assert_eq!(sum("The user declined this action in Eclipse."), None);
         assert_eq!(sum("The user dismissed the prompt."), None);
         assert_eq!(sum("[User typed]: okay do it differently"), None);
@@ -3233,8 +3243,8 @@ mod tests {
     }
 
     /// A failed tool must carry WHY it failed onto its render item, so a reopened
-    /// conversation reads the same as it did live. A tool the user declined gets
-    /// the red dot but no text; a successful one carries its full output as
+    /// conversation reads the same as it did live. A tool the user refused on its card
+    /// carries the CLI's whole message; a successful one carries its full output as
     /// resultText instead (a DIFFERENT field — see result_text vs
     /// result_success_text above — so makeToolLine can render it as an OUT box
     /// rather than the muted one-line error note).
@@ -3265,10 +3275,10 @@ mod tests {
         let want: serde_json::Value = serde_json::from_str(r#"[
             {"t":"user","content":"go","ts":"2026-09-04T01:00:00.000Z"},
             {"t":"tool","name":"Read","input":{"file_path":"C:\\nope.java"},"model":"claude-opus-4-8","id":"toolu_a","status":"interrupted","errorText":"File does not exist. Note: your current working directory is C:\\ws"},
-            {"t":"tool","name":"Edit","input":{"file_path":"C:\\x.java"},"model":"claude-opus-4-8","id":"toolu_b","status":"interrupted"},
+            {"t":"tool","name":"Edit","input":{"file_path":"C:\\x.java"},"model":"claude-opus-4-8","id":"toolu_b","status":"interrupted","errorText":"The user doesn't want to proceed with this tool use. The tool use was rejected"},
             {"t":"tool","name":"Read","input":{"file_path":"C:\\ok.java"},"model":"claude-opus-4-8","id":"toolu_c","status":"done","resultText":"contents"}
         ]"#).unwrap();
-        assert_eq!(got, want, "failed tools carry their reason; declined ones stay quiet; successful ones carry their output");
+        assert_eq!(got, want, "failed tools carry their reason, a refusal its whole message; successful ones carry their output");
     }
 
     /// A subagent's own nested transcript lives in its own dedicated file, never

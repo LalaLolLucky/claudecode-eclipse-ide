@@ -519,6 +519,8 @@
 /* Why a tool failed. Clamped to ONE line here as well as in the summariser: real
    results run to 100+ lines, and the transcript stays scannable only if a failure
    costs exactly one row. */
+.tool-sub.reason { color: var(--fg-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-sub.reason b { color: var(--fg); }
 .tool-sub.err { color: var(--red); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* inline code chip */

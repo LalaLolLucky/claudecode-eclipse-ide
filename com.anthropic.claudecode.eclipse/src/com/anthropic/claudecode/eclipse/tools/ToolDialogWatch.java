@@ -42,7 +42,7 @@ public final class ToolDialogWatch {
 
     /** Tools that wait on the user by design, and the tool that answers dialogs. */
     private static final Set<String> EXEMPT =
-            Set.of("approvalPrompt", "askUserQuestion", "openDiff", "eclipseDialog");
+            Set.of("askUserQuestion", "openDiff", "eclipseDialog");
 
     private static final long POLL_MS = 400;
     /** No dialog check before this: nearly every call is back by then. */
