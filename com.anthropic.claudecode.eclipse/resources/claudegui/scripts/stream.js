@@ -323,26 +323,26 @@ function pickedFromAnswer(q, answer) {
   }
   return { picked, other: rest };
 }
-/* The overview left in the conversation once questions are answered: every question with all
-   its options, the chosen ones marked, under a "Questions — Answered · N questions" header that
-   folds the list away. `answers` is the answer text by question text, as the CLI records it.
-   `outcome` is 'declined' (dismissed) or 'timeout' for questions nobody answered: the same card,
-   under a red dot and "Declined" / "Timed out", with every option left unselected.
-   Drawn live from the card's own state and again when a conversation is reopened. */
-function addQuestionsAnswered(questions, answers, pane, outcome) {
-  pane = pane || streamPane() || (activeTab() ? activeTab().pane : null);
-  if (!pane) return;
+/* The output of an AskUserQuestion call, as the call's own tool output: under its "Questions" line,
+   every question with all its options, the chosen ones marked, in a card (start mode from the Preferences) headed "Answered · N
+   questions" that folds the list away. `answers` is the answer text by question text, as the CLI
+   records it. `outcome` is 'declined' (dismissed) or 'timeout' for questions nobody answered: the
+   same box headed "Declined" / "Timed out", every option left unselected (the call's own dot is
+   red then). Drawn live from the card's own state and again when a conversation is reopened.
+   Returns false when there is no line to put it under. */
+function renderQuestionsOutput(line, questions, answers, outcome) {
+  if (!line || !questions || !questions.length) return false;
+  const stale = line.querySelector(':scope > .q-overview'); if (stale) stale.remove();
   const unanswered = outcome === 'declined' || outcome === 'timeout';
-  const turn = document.createElement('div'); turn.className = 'turn';
-  const box = document.createElement('div'); box.className = 'a-item q-overview' + (unanswered ? ' unanswered' : '');
-  box.appendChild(Object.assign(document.createElement('span'), { className: unanswered ? 'dot red' : 'dot done' }));
+  const box = newCard(document.createElement('div'), startModeFor('askuserquestion'));   // a card like the other outputs: the Preferences' start mode, the line's arrow
+  box.className = 'q-overview' + (unanswered ? ' unanswered' : '');
   const head = document.createElement('div'); head.className = 'qo-head';
-  head.appendChild(Object.assign(document.createElement('div'), { className: 'qo-title', textContent: 'Questions' }));
   const sub = document.createElement('div'); sub.className = 'qo-sub';
   sub.appendChild(document.createTextNode((outcome === 'declined' ? 'Declined' : outcome === 'timeout' ? 'Timed out' : 'Answered') + ' \u00b7 ' + questions.length + (questions.length === 1 ? ' question' : ' questions')));
   const chev = document.createElement('span'); chev.className = 'chev'; chev.innerHTML = ICONS.CHEVRON;
   sub.appendChild(chev); head.appendChild(sub);
-  head.onclick = () => box.classList.toggle('collapsed');
+  // The header folds the list to it and opens it again, as any card's own controls change that card alone.
+  head.onclick = () => userSetCardMode(box, box.dataset.mode === 'collapsed' ? (box._openMode || 'preview') : 'collapsed');
   box.appendChild(head);
   const body = document.createElement('div'); body.className = 'qo-body';
   questions.forEach(q => {
@@ -361,19 +361,12 @@ function addQuestionsAnswered(questions, answers, pane, outcome) {
     if (got.other) row('Other', got.other, true);
   });
   box.appendChild(body);
-  turn.appendChild(box); pane.appendChild(turn);
+  line.appendChild(box);
+  ensureCardChevron(line);   // the line was settled before it had a card: the arrow that hides and shows it
+  syncLineChevron(line);
+  return true;
 }
-/* The "Asking" line of the call that asked a set of questions, which the overview of their answers
-   makes redundant: both say the call happened and that it finished, and the overview says more.
-   Taken out only when there IS an overview — a dismissed or timed-out question has none, and
-   that line, with its red dot, is all it leaves. A turn left with nothing in it goes with it. */
-function dropAskingLine(line) {
-  if (!line || !line.parentNode) return;
-  const turn = line.parentNode;
-  line.remove();
-  if (!turn.classList || !turn.classList.contains('turn')) return;
-  if (!turn.querySelector('.a-item') && turn.parentNode) turn.remove(); else relinkTurn(turn);
-}
+/* The "Questions" line of the call that asked a set of questions: where their output goes. */
 function lastAskingLine(turn) {
   if (!turn) return null;
   const lines = [].slice.call(turn.querySelectorAll(':scope > .tool-line')).filter(l => l.dataset.tname === 'askuserquestion');
@@ -382,6 +375,14 @@ function lastAskingLine(turn) {
 /* After the user answers a card, end the current assistant turn so Claude's
    follow-up response streams into a NEW turn BELOW the answer card — not into the
    turn that was open above it (which would push the answer card to the bottom). */
+/* After a question is answered, dismissed or timed out: Claude's reply goes on in the SAME turn,
+   under the call's output, so the rail runs on through it. (The output is inside the call's line,
+   not a turn of its own, so nothing needs a new turn below it.) */
+function resumeAfterQuestions() {
+  finalizeThink();
+  curBody = null; curText = '';
+  showWorking();
+}
 function startFreshTurn() {
   finalizeThink();
   curTurn = null; curBody = null; curText = '';

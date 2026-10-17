@@ -762,14 +762,12 @@ function drawHistoryPart(t, id, items, parts, from, to, foldAt, modelBefore) {
       if (isCompactCmd) flushCompact();
     } else if (ty === 'answered') {
       flushCompact();
-      const asking = lastAskingLine(aTurn);   // the call that asked, in the turn this answer closes
-      aTurn = null;
-      // With the questions (the result line's, or a declined call's own), the overview, which stands in
-      // for the "Asking" line; without (an older line), just the words under that line.
+      const asking = lastAskingLine(aTurn);   // the call that asked: the reply that follows goes on in its turn
+      // The questions (the result line's, or a declined call's own) as that call's output under
+      // its "Questions" line. An older line that recorded none leaves the call's line alone.
       if (Array.isArray(it.questions) && it.questions.length && (it.answers || it.declined)) {
-        dropAskingLine(asking);
-        addQuestionsAnswered(it.questions, it.answers, box, it.declined ? 'declined' : undefined);
-      } else addAnswered(it.text || '', box);
+        renderQuestionsOutput(asking, it.questions, it.answers, it.declined ? 'declined' : undefined);
+      }
     } else if (ty === 'error') {
       // A backend error (rate limit, 529 overload, …). Live it is the muted
       // "⚠ …" line onError paints — a reload rebuilds exactly that, never an

@@ -116,6 +116,7 @@ public final class Constants {
         { "search", "Search results (Grep, Glob, …)" },
         { "agent", "Agents (Agent, Task)" },
         { "web", "Web (WebFetch, WebSearch)" },
+        { "questions", "Questions (AskUserQuestion)" },
     };
     public static final String TOOL_CARDS_HIDDEN = "hidden";
     public static final String TOOL_CARDS_COLLAPSED = "collapsed";

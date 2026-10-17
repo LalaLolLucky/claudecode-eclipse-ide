@@ -512,6 +512,24 @@ function toolLabel(name) {
   const words = n.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Working';
 }
+/** The MCP server a tool belongs to, as a reader would say it, from its "mcp__<server>__<tool>"
+ *  name, or '' for a tool that is not an MCP one. A plugin's server is named
+ *  "plugin_<plugin>_<server>" and a claude.ai connector's "claude_ai_<name>": those prefixes are
+ *  dropped, a plugin that names its server after itself ("plugin_github_github") reads once, and
+ *  what is left is capitalised word by word ("superpowers_chrome" → "Superpowers Chrome"). */
+function mcpServerName(name) {
+  const raw = String(name || '');
+  if (raw.indexOf('mcp__') !== 0) return '';
+  let server = raw.split('__')[1] || '';
+  if (server.indexOf('plugin_') === 0) {
+    server = server.slice('plugin_'.length);
+    const half = server.length / 2 - 0.5;
+    if (server.charAt(half) === '_' && server.slice(0, half) === server.slice(half + 1)) server = server.slice(0, half);
+  } else if (server.indexOf('claude_ai_') === 0) {
+    server = server.slice('claude_ai_'.length);
+  }
+  return server.split('_').filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
 /* Build a tool line (+ inline diff inside the same .a-item so the connector spans it).
    Shared by live streaming (addToolLine, no status → gray) and history reconstruction
    (status "done"/"interrupted" from the transcript → green/red, so a reloaded convo
@@ -535,15 +553,28 @@ function toolLabel(name) {
 function planOutcomeText(rejected) {
   return rejected ? 'Stayed in plan mode' : 'User approved the plan';
 }
-/* The muted one-liner under a failed tool ("⚠ File does not exist…"). Shared by the
-   live path (onToolEnd) and the reload path (makeToolLine) so a conversation renders
-   the same either way — the two disagreeing is the bug this fixes. Idempotent: a
-   second result for the same tool replaces the line instead of stacking another. */
+/* Why a tool failed, as the tool's OUT row like any other result: the whole text, in the
+   same card as its IN row when it has one, capped to a preview with Show all / View full
+   output when it is long. Plain text whatever the tool (not renderToolOutput, which turns a
+   search's output into a result list and leaves some tools' out). Shared by the live path
+   (onToolEnd) and the reload path (makeToolLine) so a conversation renders the same either
+   way. Idempotent: a second result for the same tool replaces the row instead of stacking
+   another. A failure is never started hidden, whatever the reader's settings say of
+   output: the reason is all there is to read of it. */
 function setToolError(line, text) {
   if (!line || !text) return;
-  let sub = line.querySelector(':scope > .tool-sub.err');
-  if (!sub) { sub = document.createElement('div'); sub.className = 'tool-sub err'; line.appendChild(sub); }
-  sub.textContent = '⚠ ' + text;
+  const stale = line.querySelector('.io-item.out, .result-list.out');
+  if (stale) stale.remove();
+  let block = line._ioBlock;
+  if (!block || !line.contains(block)) {
+    block = document.createElement('div'); block.className = 'io-block';
+    line.appendChild(block);
+    line._ioBlock = block;
+  }
+  const mode = startModeFor(line.dataset.tname || '');
+  const out = appendIoRow(block, 'OUT', text, mode === 'hidden' ? 'preview' : mode);
+  out.classList.add('out', 'err');
+  joinHiddenLine(line, out);
 }
 /** Copies `text` via the native SWT clipboard bridge when available (same priority
  *  order as contextmenu.js's ccCopy), flashing the button that triggered it. */
@@ -609,11 +640,12 @@ function toolCardType(key) {
   if (key === 'write' || key === 'edit' || key === 'multiedit' || key === 'notebookedit') return 'edits';
   if (RESULT_LIST_TOOLS.has(key)) return 'search';
   if (key === 'webfetch' || key === 'websearch') return 'web';
+  if (key === 'askuserquestion') return 'questions';
   return '';
 }
 function startModeFor(key) { return cardStartByType[toolCardType(key)] || cardStartDefault; }
 /** Selects the line's cards that have something to collapse. */
-const CARD_SELECTOR = ':scope > .io-block > .io-item, :scope > .result-list, :scope > .code-block.edit';
+const CARD_SELECTOR = ':scope > .io-block > .io-item, :scope > .result-list, :scope > .code-block.edit, :scope > .q-overview';
 /** Gives a freshly built card its start mode. _shownMode is the view the arrow brings it back
  *  to after hiding it; _openMode the one "Show" opens a one-line card to. */
 function newCard(card, startMode) {
@@ -1113,6 +1145,13 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
   // generic label, not the raw name; AskUserQuestion is "Question" for one, as VS Code counts it
   line.querySelector('.tname').textContent = key === 'askuserquestion' && Array.isArray(input.questions)
       && input.questions.length === 1 ? 'Question' : toolLabel(name);
+  // An MCP or plugin tool says which server it is from, in front of its own name: "Playwright › Browser click".
+  const server = mcpServerName(name);
+  if (server) {
+    const tag = document.createElement('span'); tag.className = 'tmcp'; tag.textContent = server + ' \u203a';
+    tag.title = 'MCP server: ' + server;
+    line.querySelector('.tname').before(tag, document.createTextNode(' '));
+  }
   // Multi-line detail (or any command/script, see hasCommand/hasScript) gets ONLY the boxed
   // IN below, never also the inline one-liner — the two used to both render for the same
   // content (e.g. a multi-line Bash script showed once wrapped inline via .tpath, then again
@@ -1141,7 +1180,10 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
   } else {
     // A tool's own description (e.g. Bash's "what this command does") sits inline next to
     // the name, same slot Agent uses above — independent of whether detail is boxed below.
-    if (input.description) line.querySelector('.tdesc').textContent = input.description;
+    // An MCP tool with none of its own says what it acts on, when its input names that in words
+    // (Playwright's `element`: "Submit button"); the input itself stays in the boxed IN below.
+    const described = input.description || (server && typeof input.element === 'string' ? input.element : '');
+    if (described) line.querySelector('.tdesc').textContent = described;
     if (boxDetail) {
       // Leave .tpath-wrap in the DOM (simpler than branching the innerHTML above) but
       // empty and invisible — the boxed IN a few lines down is the sole representation.

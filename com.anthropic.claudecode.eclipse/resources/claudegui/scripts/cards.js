@@ -310,7 +310,7 @@ window.onAskQuestion = function(tabId, reqId, questionsJson) {
   try { questions = JSON.parse(questionsJson) || []; } catch (e) {}
   if (!pane || !questions.length) { if (window._answerQuestion) window._answerQuestion(reqId, '[]'); return; }
   hideWorking();
-  // Keep the Asking tool's dot GRAY while the card is open; answered → green, dismissed → red.
+  // Keep the Questions tool's dot GRAY while the card is open; answered → green, dismissed → red.
   const pendingTool = lastToolLine(curTurn);
   if (pendingTool) pendingTool.classList.add('pending');
   const resolveDot = (rejected) => {
@@ -405,8 +405,8 @@ window.onAskQuestion = function(tabId, reqId, questionsJson) {
     const byQuestion = {};
     answers.forEach(a => { byQuestion[a.question] = a.answer; });
     // force only with Smart Scroll Lock on — see its comment in chat.js.
-    dropAskingLine(pendingTool);
-    addQuestionsAnswered(questions, byQuestion, pane); startFreshTurn(); scrollBottom(smartScrollLock);
+    renderQuestionsOutput(pendingTool, questions, byQuestion);
+    resumeAfterQuestions(); scrollBottom(smartScrollLock);
   }
   function cancel() {
     if (resolved) return; resolved = true;
@@ -415,11 +415,10 @@ window.onAskQuestion = function(tabId, reqId, questionsJson) {
     document.removeEventListener('keydown', onKey, true);
     resolveDot(true);
     if (window._answerQuestion) window._answerQuestion(reqId, '[]');
-    // The questions stay in the conversation as the overview, marked declined, and Claude's reply to
-    // the dismissal streams below it: the same pairing as an answer (finish).
+    // The questions stay in the conversation as the call's output, marked declined, and Claude's
+    // reply to the dismissal streams below it: the same pairing as an answer (finish).
     clearBottomCard(owner);
-    dropAskingLine(pendingTool);
-    addQuestionsAnswered(questions, null, pane, 'declined'); startFreshTurn();
+    renderQuestionsOutput(pendingTool, questions, null, 'declined'); resumeAfterQuestions();
     // force only with Smart Scroll Lock on — see its comment in chat.js.
     scrollBottom(smartScrollLock);
   }
@@ -609,12 +608,9 @@ window.onAskQuestion = function(tabId, reqId, questionsJson) {
     }
     resolveDot(true);
     clearBottomCard(owner);
-    // Same pairing as finish(): the overview's new sibling turn div requires startFreshTurn right
-    // after it (see the matching comment on the approval card's timeout handler) so Claude's
-    // continuation lands below it.
-    dropAskingLine(pendingTool);
-    addQuestionsAnswered(questions, null, pane, 'timeout');
-    startFreshTurn();
+    // Same pairing as finish(): the reply goes on under the output, in the same turn.
+    renderQuestionsOutput(pendingTool, questions, null, 'timeout');
+    resumeAfterQuestions();
     scrollBottom();
   });
 
