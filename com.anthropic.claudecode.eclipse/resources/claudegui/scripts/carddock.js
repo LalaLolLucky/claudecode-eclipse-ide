@@ -65,7 +65,30 @@ function clearBottomCard(owner) {
   // restore the gerund. Guarantee it here (the single dismissal choke point) so
   // the working indicator is present whenever a turn is still processing.
   if (owner) loadRender(owner);
+  // A request that came while this card was up waits for its turn here, and is built then:
+  // the composer stays out of the way until the last of them is answered.
+  if (owner && owner.cardQueue && owner.cardQueue.length) {
+    owner.cardQueue.shift().show();
+    return;
+  }
   ensureWorking();
+}
+/* One card at a time per conversation, and a request that comes while one is up waits behind
+   it. Showing it at once took the slot from the card before it, which was then nobody's: its
+   request stayed unanswered, and the agent it came from stayed waiting on it. A parallel tool
+   call, or a subagent's request that comes with the main agent's own, does exactly this.
+   `show` raises the card when its turn comes (the same entry point that was asked to). */
+function queueCardRequest(owner, reqId, show) {
+  if (!owner || !owner.pendingCard) return false;
+  if (!owner.cardQueue) owner.cardQueue = [];
+  owner.cardQueue.push({ reqId: reqId, show: show });
+  return true;
+}
+/** A request still waiting for its turn has been answered elsewhere, or has timed out: it is
+ *  dropped, so that no card is ever raised for it. */
+function dropQueuedCard(reqId) {
+  if (typeof tabs === 'undefined') return;
+  tabs.forEach(t => { if (t.cardQueue) t.cardQueue = t.cardQueue.filter(q => q.reqId !== reqId); });
 }
 
 /* ---- cancel key (Eclipse binding) ----
@@ -260,7 +283,7 @@ function registerCardTimeout(reqId, onTornDown) { pendingCardTimeouts.set(reqId,
 function unregisterCardTimeout(reqId) { pendingCardTimeouts.delete(reqId); }
 function tearDownCard(reqId, reason) {
   const fn = pendingCardTimeouts.get(reqId);
-  if (!fn) return;   // already resolved by the user, or not this page's card
+  if (!fn) { dropQueuedCard(reqId); return; }   // resolved by the user, or still waiting for its turn
   pendingCardTimeouts.delete(reqId);
   fn(reason);
 }
