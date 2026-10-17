@@ -108,10 +108,21 @@
    pushing past the pane. */
 .switch-divider .sw-text { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
-/* Opt-in timestamp line above a user bubble (PREF_HISTORY_SHOW_TIMESTAMPS). Its own
-   line in the turn, not part of .user-msg, so it never shifts the bubble's own padding
-   or the hover-actions badges pinned to .user-msg's corner. */
-.msg-ts { color: var(--fg-faint); font-size: 10.5px; margin: 0 2px 4px; }
+/* Opt-in time (PREF_HISTORY_SHOW_TIMESTAMPS), at the top right of both your messages and
+   Claude's replies. Above a user bubble it has a row of its own in the turn, not part of
+   .user-msg, so it never shifts the bubble's own padding or the hover-actions badges
+   pinned to .user-msg's corner; above a reply it is a line of its own in the turn, outside
+   the reply, so the reply's own dot, text and rail stay where they were. */
+.msg-ts { color: var(--fg-faint); font-size: 10.5px; white-space: nowrap; cursor: default; }
+.msg-ts-row { text-align: right; margin: 0 2px 4px; font-size: 10.5px; line-height: 1.2; }
+.a-item + .msg-ts-row { margin: 9px 2px 0; }
+.msg-ts-row + .a-item { margin-top: -2px; }
+/* The rail between two linked items runs through the time line that now sits between them
+   (the item's own line, below, stops 16px past it): same line, same colour, carried
+   across the row's own height and the gap on both sides. */
+.msg-ts-row { position: relative; }
+.a-item.linked + .msg-ts-row::before { content: ''; position: absolute; left: 5px; top: -9px; bottom: -9px;
+  width: 1px; background: var(--border); }
 
 /* Sticky goes on .turn, NOT .user-msg: a sticky element can only float within its OWN
    parent's box, and .turn wraps nothing but the one .user-msg — same height as its child,

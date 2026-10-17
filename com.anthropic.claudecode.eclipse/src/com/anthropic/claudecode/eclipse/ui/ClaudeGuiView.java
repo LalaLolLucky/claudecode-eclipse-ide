@@ -1737,7 +1737,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         pushEditKeyHints();      // label the right-click menu with the user's real keys
         pushDebugMode();         // let the page report its keys while Debug mode is on
         pushDictationAvailability(); // no dictation on macOS, or without ALSA on Linux/FreeBSD
-        pushHistoryShowTimestamps(); // whether to show a timestamp above your own messages
+        pushHistoryShowTimestamps(); // whether to show the time above your messages and Claude's replies
         pushHideRootDirectoriesRow(); // whether the root directories row is hidden entirely
         pushHideBeforeCompaction(); // whether what was said above a compaction is hidden or only folded
         pushSpinnerVerbs();      // which gerund categories the working indicator cycles
@@ -2994,7 +2994,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     }
 
     /**
-     * Tells the page whether to show a timestamp above each of your own messages.
+     * Tells the page whether to show the time above each of your own messages and Claude's replies.
      * Re-pushed on activation and on every live Preferences change (see
      * {@link #registerHistoryShowTimestampsPrefListener()}) — a Preferences dialog OK
      * doesn't reload the page or necessarily refocus this view, so without the live

@@ -188,9 +188,10 @@ public final class Constants {
     /** Claude's idle re-run timer for the statusLine command, in seconds. */
     public static final String PREF_STATUSLINE_REFRESH_SECONDS = "statuslineRefreshSeconds";
 
-    /** Show a small timestamp line above each of your own messages, in the Claude Code
-     *  view — live sends and loaded history both, in local time (the record itself is
-     *  UTC; see {@code load_session_history} in {@code session.rs}). Off by default:
+    /** Show the time above each of your own messages and above each of Claude's replies,
+     *  in the Claude Code view — live and loaded history both, in local time (the record
+     *  itself is UTC; see {@code load_session_history} in {@code session.rs}), with the
+     *  full date and time as a tooltip. Off by default:
      *  the same information is already one hover away in the History panel's own
      *  per-session time, so this trades a bit of vertical space for always-visible detail. */
     public static final String PREF_HISTORY_SHOW_TIMESTAMPS = "historyShowTimestamps";

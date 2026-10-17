@@ -213,15 +213,17 @@ function selectModel(id, opts) {
   enforceThinkingGate();
   persistTabPrefs(t); notifyStatusSelection(); pushLaunchSettings(t);
 }
-/* "〰 Switched to <model> 〰" divider element. */
-function makeSwitchDivider(name) {
+/* "〰 <text> 〰" divider element: "Switched to <model>", and the day a run of timestamped
+   messages begins on (chat.js, regroupDays). */
+function makeWavyDivider(text) {
   const turn = document.createElement('div'); turn.className = 'turn';
   const d = document.createElement('div'); d.className = 'switch-divider';
   d.innerHTML = '<span class="sw-line"></span><span class="sw-text"></span><span class="sw-line"></span>';
-  d.querySelector('.sw-text').textContent = 'Switched to ' + name;
+  d.querySelector('.sw-text').textContent = text;
   turn.appendChild(d);
   return turn;
 }
+function makeSwitchDivider(name) { return makeWavyDivider('Switched to ' + name); }
 /* Inserted live when the model changes mid-conversation (concrete id via fullId). */
 function addModelSwitchDivider(id) {
   const pane = activeTab() ? activeTab().pane : messagesEl;
