@@ -180,7 +180,11 @@ function popOverlay(fn) {
   notifyingCount = overlayStack.reduce((n, e) => n + (e.notifiesJava ? 1 : 0), 0);
   if (before > 0 && notifyingCount === 0 && window._overlayOpen) window._overlayOpen(false);
   // Closed by an Escape the page is dispatching: that press has had its one dismissal (escPress).
-  if (escPress.inPage) { escPress.dismissed = escPress.byPage = true; escPressDebug('page dismissed'); }
+  if (escPress.inPage) {
+    escPress.dismissed = escPress.byPage = true;
+    lastCancelAt = Date.now();
+    escPressDebug('page closed a card');
+  }
   return entry;
 }
 
@@ -255,7 +259,7 @@ let lastCancelAt = 0;
    second arrival found nothing left to close (each card's `resolved` guard), but a card waiting
    behind it comes up the moment the first one goes (clearBottomCard), and the second arrival
    closed that one too: the advisor's Esc denied the edit waiting behind it, whose diff showed for
-   a moment and was gone. lastCancelAt only covers Eclipse arriving twice.
+   a moment and was gone.
    So the press is remembered from its keydown to its keyup, and once it has closed something its
    later arrivals are let go: the page's keydown is swallowed here, on window in the capture phase
    and so before any card's listener, and cancelActiveCard returns. Key repeats are the same press,
@@ -263,7 +267,13 @@ let lastCancelAt = 0;
    A release the page never sees (Eclipse kept the key, or the editor a diff opened in took the
    focus) ends the press ESC_PRESS_MS after its last sign instead, so a stale one cannot swallow
    the next real press. Eclipse's arrival is only let go when the page has seen this press itself:
-   where the page never sees the key, nothing would tell a second press from the same one. */
+   where the page never sees the key, nothing would tell a second press from the same one.
+   Eclipse can also hand over the same press twice, and a quick tap's release can reach the page
+   between the two, ending the press before the second copy comes: seen on macOS as "page closed
+   a card", "Eclipse's copy let go", then "Eclipse closed a card", the approval behind the advisor
+   denied. So the page closing a card, and Eclipse's copy being let go, both start lastCancelAt's
+   50 ms as Eclipse's own dismissal does, and a copy right behind them is dropped whatever the
+   release has done. */
 const ESC_PRESS_MS = 400;
 const escPress = { dismissed: false, byPage: false, held: false, inPage: false, timer: 0 };
 function endEscPress() {
@@ -272,8 +282,9 @@ function endEscPress() {
   escPress.timer = 0;
 }
 function extendEscPress() { clearTimeout(escPress.timer); escPress.timer = setTimeout(endEscPress, ESC_PRESS_MS); }
+// The [KEY] lines (contextmenu.js): where the copies of a press go, for Debug mode only.
 function escPressDebug(what) {
-  try { if (window.__ccDebug && window._debugLog) window._debugLog('[CARDKEY] ' + what); } catch (e) {}
+  try { if (window.__ccDebug && window._debugLog) window._debugLog('[KEY] dismiss: ' + what); } catch (e) {}
 }
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
@@ -281,7 +292,7 @@ window.addEventListener('keydown', (e) => {
   extendEscPress();
   if (escPress.dismissed) {
     e.preventDefault(); e.stopImmediatePropagation();
-    escPressDebug('page Esc let go' + (e.repeat ? ' (repeat)' : ''));
+    escPressDebug("page's Esc let go" + (e.repeat ? ' (repeat)' : ''));
     return;
   }
   // What closes while this keydown is dispatched, the page closed (popOverlay notes it).
@@ -292,10 +303,11 @@ window.addEventListener('keyup', (e) => { if (e.key === 'Escape') endEscPress();
 
 window.cancelActiveCard = function() {
   if (!activeCardCancel) return;
-  if (Date.now() - lastCancelAt < 50) return;
+  if (Date.now() - lastCancelAt < 50) { escPressDebug("Eclipse's copy dropped, within 50 ms of the last"); return; }
   if (escPress.dismissed && (escPress.byPage || escPress.held)) {
     extendEscPress();
-    escPressDebug('Eclipse dismiss let go');
+    lastCancelAt = Date.now();
+    escPressDebug("Eclipse's copy let go");
     return;
   }
   // Bottom cards only: one parked on a background tab must not vanish because a key was
@@ -320,7 +332,7 @@ window.cancelActiveCard = function() {
   lastCancelAt = Date.now();
   escPress.dismissed = true;
   extendEscPress();
-  escPressDebug('Eclipse dismissed');
+  escPressDebug('Eclipse closed a card');
   entry.fn();
 };
 
