@@ -439,7 +439,12 @@
    shown. The fade under a previewed card's cut-off text keeps them legible over it. */
 .io-item { position: relative; }
 [data-mode="preview"] > .card-bar[data-over], [data-mode="expanded"] > .card-bar[data-over] {
-  position: absolute; right: 8px; bottom: 6px; z-index: 2; gap: 6px; padding: 0; border-top: 0; background: none; }
+  position: absolute; right: 8px; bottom: 6px; z-index: 2; gap: 6px; padding: 0; border-top: 0; background: none;
+  opacity: 0; transition: opacity .12s; }
+/* Shown only while the card is hovered (or a button in it has focus): an open card's
+   buttons lie over its text, so at rest the text is all there is. */
+.io-item:hover > .card-bar[data-over], .code-block:hover > .card-bar[data-over],
+.result-list:hover > .card-bar[data-over], .card-bar[data-over]:focus-within { opacity: 1; }
 [data-mode="preview"] > .card-bar[data-over] .cb-btn, [data-mode="expanded"] > .card-bar[data-over] .cb-btn {
   background: var(--bg-chip); border: 1px solid var(--border); color: var(--fg-dim); border-radius: 4px; padding: 2px 8px; }
 [data-mode="preview"] > .card-bar[data-over] .cb-btn:hover, [data-mode="expanded"] > .card-bar[data-over] .cb-btn:hover {
@@ -464,6 +469,8 @@
 
 /* collapsed: IN, OUT and a result list each take one line, a diff takes its summary line.
    line-clamp rather than nowrap so the one line still ends in an ellipsis when it is cut. */
+/* A failed tool's OUT (chat.js setToolError): the same box, its text and label in the error colour. */
+.io-item.err .io-label, .io-item.err pre { color: var(--red); }
 .io-item[data-mode="collapsed"] { display: flex; align-items: flex-start; }
 .io-item[data-mode="collapsed"] > .io-row { flex: 1; min-width: 0; }
 .io-item[data-mode="collapsed"] .io-label { padding-top: 3px; padding-bottom: 3px; }
@@ -516,10 +523,6 @@
    otherwise shrink to the room left on that line and stack its label letter by letter. */
 .tool-line .tpath-wrap .copy-btn { top: auto; right: auto; transform: translateX(-100%);
   white-space: nowrap; }
-/* Why a tool failed. Clamped to ONE line here as well as in the summariser: real
-   results run to 100+ lines, and the transcript stays scannable only if a failure
-   costs exactly one row. */
-.tool-sub.err { color: var(--red); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* inline code chip */
 code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; background: var(--ic-bg);

@@ -535,15 +535,28 @@ function toolLabel(name) {
 function planOutcomeText(rejected) {
   return rejected ? 'Stayed in plan mode' : 'User approved the plan';
 }
-/* The muted one-liner under a failed tool ("⚠ File does not exist…"). Shared by the
-   live path (onToolEnd) and the reload path (makeToolLine) so a conversation renders
-   the same either way — the two disagreeing is the bug this fixes. Idempotent: a
-   second result for the same tool replaces the line instead of stacking another. */
+/* Why a tool failed, as the tool's OUT row like any other result: the whole text, in the
+   same card as its IN row when it has one, capped to a preview with Show all / View full
+   output when it is long. Plain text whatever the tool (not renderToolOutput, which turns a
+   search's output into a result list and leaves some tools' out). Shared by the live path
+   (onToolEnd) and the reload path (makeToolLine) so a conversation renders the same either
+   way. Idempotent: a second result for the same tool replaces the row instead of stacking
+   another. A failure is never started hidden, whatever the reader's settings say of
+   output: the reason is all there is to read of it. */
 function setToolError(line, text) {
   if (!line || !text) return;
-  let sub = line.querySelector(':scope > .tool-sub.err');
-  if (!sub) { sub = document.createElement('div'); sub.className = 'tool-sub err'; line.appendChild(sub); }
-  sub.textContent = '⚠ ' + text;
+  const stale = line.querySelector('.io-item.out, .result-list.out');
+  if (stale) stale.remove();
+  let block = line._ioBlock;
+  if (!block || !line.contains(block)) {
+    block = document.createElement('div'); block.className = 'io-block';
+    line.appendChild(block);
+    line._ioBlock = block;
+  }
+  const mode = startModeFor(line.dataset.tname || '');
+  const out = appendIoRow(block, 'OUT', text, mode === 'hidden' ? 'preview' : mode);
+  out.classList.add('out', 'err');
+  joinHiddenLine(line, out);
 }
 /** Copies `text` via the native SWT clipboard bridge when available (same priority
  *  order as contextmenu.js's ccCopy), flashing the button that triggered it. */
@@ -609,11 +622,12 @@ function toolCardType(key) {
   if (key === 'write' || key === 'edit' || key === 'multiedit' || key === 'notebookedit') return 'edits';
   if (RESULT_LIST_TOOLS.has(key)) return 'search';
   if (key === 'webfetch' || key === 'websearch') return 'web';
+  if (key === 'askuserquestion') return 'questions';
   return '';
 }
 function startModeFor(key) { return cardStartByType[toolCardType(key)] || cardStartDefault; }
 /** Selects the line's cards that have something to collapse. */
-const CARD_SELECTOR = ':scope > .io-block > .io-item, :scope > .result-list, :scope > .code-block.edit';
+const CARD_SELECTOR = ':scope > .io-block > .io-item, :scope > .result-list, :scope > .code-block.edit, :scope > .q-overview';
 /** Gives a freshly built card its start mode. _shownMode is the view the arrow brings it back
  *  to after hiding it; _openMode the one "Show" opens a one-line card to. */
 function newCard(card, startMode) {

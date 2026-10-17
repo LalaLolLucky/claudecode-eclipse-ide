@@ -752,7 +752,7 @@ fn read_agent_log(projects_dir: &std::path::Path, session_id: &str, tool_use_id:
                         }
                         let is_err = b["is_error"].as_bool().unwrap_or(false);
                         let text = if is_err {
-                            tool_error_summary(&flatten_result_content(b)).unwrap_or_default()
+                            tool_error_text(&flatten_result_content(b)).unwrap_or_default()
                         } else {
                             flatten_result_content(b)
                         };
@@ -954,12 +954,12 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
     let mut tool_idx: HashMap<String, usize> = HashMap::new();
     // tool_use id → whether its tool_result reported an error (interrupt/reject).
     let mut result_error: HashMap<String, bool> = HashMap::new();
-    // tool_use id → the one-line reason a failed tool gave, for the muted line
-    // under its tool row. Only failures the user did not cause are recorded —
-    // see `tool_error_summary`, which returns None for their own decisions.
+    // tool_use id → the reason a failed tool gave, whole, for the error box under its
+    // tool row. Only failures the user did not cause are recorded — see
+    // `tool_error_text`, which returns None for their own decisions.
     let mut result_text: HashMap<String, String> = HashMap::new();
     // tool_use id → the FULL result text for a SUCCESSFUL tool — separate map from
-    // result_text above, which is error-only and pre-condensed to one line. This one
+    // result_text above, which is error-only. This one
     // feeds the same "OUT" rendering (chat.js's renderToolOutput) the live path uses via
     // chat.rs's build_status_json-adjacent tool_result handler — without it, a reloaded/
     // resumed conversation showed tool input but never its output, since history.js's
@@ -1113,8 +1113,8 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
                             // conversation used to leave a bare red dot with the reason
                             // thrown away, so a past failure read as an unexplained stop.
                             if is_err {
-                                if let Some(sum) = tool_error_summary(&flatten_result_content(b)) {
-                                    result_text.insert(tuid.to_string(), sum);
+                                if let Some(full) = tool_error_text(&flatten_result_content(b)) {
+                                    result_text.insert(tuid.to_string(), full);
                                 }
                             } else {
                                 // Full text, no condensing — chat.js caps/links-out to a
@@ -1458,10 +1458,6 @@ fn attached_file_path(text: &str) -> Option<&str> {
     (tail == " />" && !path.is_empty()).then_some(path)
 }
 
-/// Longest error summary we surface. The full text stays in the transcript; the
-/// GUI shows one line, and real results run to 100+ lines.
-const ERROR_SUMMARY_MAX: usize = 160;
-
 /// Prefixes that mark a result as the USER'S OWN decision rather than a tool
 /// failure. The CLI reports "declined", "rejected" and "answered instead" through
 /// the same `is_error` channel a genuine failure uses, but the GUI already shows
@@ -1474,55 +1470,19 @@ const DECISION_PREFIXES: [&str; 4] = [
     "[User typed]:",
 ];
 
-/// Condenses a failed tool's result into the single muted line shown beneath it,
-/// or `None` when nothing should be shown.
-///
-/// Returns `None` for the user's own decisions (see [`DECISION_PREFIXES`]) so a
-/// declined tool keeps its red dot and stays quiet.
-///
-/// A bare `Exit code N` first line is joined to the next real line: three
-/// quarters of genuine failures lead with it, and the number alone says nothing
-/// about what broke. The exit status is kept rather than dropped because 143
-/// (timeout) and 1 (ordinary failure) mean different things.
-pub(crate) fn tool_error_summary(raw: &str) -> Option<String> {
+/// A failed tool's result as the page shows it in its own box, whole: the CLI's error
+/// envelope taken off and nothing cut, or `None` for the user's own decisions (see
+/// [`DECISION_PREFIXES`]), which keep the red dot and stay quiet. The page caps a long
+/// one and links out to a full view itself, as it does for any other output.
+pub(crate) fn tool_error_text(raw: &str) -> Option<String> {
     let mut t = raw.trim();
-    if t.is_empty() {
+    if t.is_empty() || DECISION_PREFIXES.iter().any(|p| t.starts_with(p)) {
         return None;
     }
-    if DECISION_PREFIXES.iter().any(|p| t.starts_with(p)) {
-        return None;
-    }
-    // Unwrap the CLI's own error envelope so the message reads plainly.
     if let Some(inner) = t.strip_prefix("<tool_use_error>") {
         t = inner.strip_suffix("</tool_use_error>").unwrap_or(inner).trim();
     }
-    let mut lines = t.lines().map(str::trim).filter(|l| !l.is_empty());
-    let head = lines.next()?;
-    let mut summary = head.to_string();
-    if is_bare_exit_code(head) {
-        if let Some(next) = lines.next() {
-            summary.push_str(" · ");
-            summary.push_str(next);
-        }
-    }
-    if summary.is_empty() {
-        return None;
-    }
-    // char_indices, not byte slicing — these carry paths and prose that are not
-    // guaranteed ASCII, and a mid-codepoint cut would panic.
-    if summary.chars().count() > ERROR_SUMMARY_MAX {
-        let cut: String = summary.chars().take(ERROR_SUMMARY_MAX).collect();
-        summary = format!("{}…", cut.trim_end());
-    }
-    Some(summary)
-}
-
-/// True for a line that is exactly "Exit code <digits>" and nothing else.
-fn is_bare_exit_code(line: &str) -> bool {
-    match line.strip_prefix("Exit code ") {
-        Some(rest) => !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()),
-        None => false,
-    }
+    (!t.is_empty()).then(|| t.to_string())
 }
 
 /// Drops a leading "The user answered: " (any case, any leading whitespace)
@@ -3171,65 +3131,34 @@ mod tests {
         assert_eq!(got, want, "api error render items");
     }
 
-    /// The one-line reason shown under a failed tool. Every input below is a real
-    /// shape from local transcripts (111 `is_error` results were surveyed).
+    /// A failed tool's reason is carried whole, not cut to a line: the page puts it in a box
+    /// that caps it and links out to the rest, as it does for any output. Every input is a real
+    /// shape from local transcripts.
     #[test]
-    fn tool_error_summary_condenses_real_failures() {
-        use super::tool_error_summary as sum;
-
-        // Three quarters of genuine failures lead with a bare exit code, which on
-        // its own says nothing — the next real line is what broke.
+    fn tool_error_text_keeps_the_whole_reason() {
+        use super::tool_error_text as full;
         assert_eq!(
-            sum("Exit code 1\nTraceback (most recent call last):\r\n  File \"<string>\", line 4"),
-            Some("Exit code 1 · Traceback (most recent call last):".into())
+            full("Exit code 1
+Traceback (most recent call last):
+  File \"<string>\", line 4
+ValueError: nope"),
+            Some("Exit code 1
+Traceback (most recent call last):
+  File \"<string>\", line 4
+ValueError: nope".into())
         );
-        // The status is kept, not dropped: 143 (timeout) ≠ 1 (ordinary failure).
         assert_eq!(
-            sum("Exit code 143\nCommand timed out after 2m 0s"),
-            Some("Exit code 143 · Command timed out after 2m 0s".into())
+            full("<tool_use_error>File has not been read yet.
+Read it first.</tool_use_error>"),
+            Some("File has not been read yet.
+Read it first.".into())
         );
-        // An exit code with nothing after it still beats showing nothing.
-        assert_eq!(sum("Exit code 2"), Some("Exit code 2".into()));
-        // "Exit code" that is NOT bare is a message in its own right — left alone.
-        assert_eq!(sum("Exit code 1 was returned"), Some("Exit code 1 was returned".into()));
-
-        // The CLI's own error envelope is unwrapped so the message reads plainly.
-        assert_eq!(
-            sum("<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>"),
-            Some("File has not been read yet. Read it first before writing to it.".into())
-        );
-
-        // A single-line failure passes through untouched.
-        assert_eq!(
-            sum("File does not exist. Note: your current working directory is C:\\ws"),
-            Some("File does not exist. Note: your current working directory is C:\\ws".into())
-        );
-
-        // The user's own decisions are NOT failures: the GUI already shows those
-        // through its decision cards, so the tool row stays quiet (red dot only).
-        assert_eq!(sum("The user doesn't want to proceed with this tool use. The tool use was rejected"), None);
-        assert_eq!(sum("The user declined this action in Eclipse."), None);
-        assert_eq!(sum("The user dismissed the prompt."), None);
-        assert_eq!(sum("[User typed]: okay do it differently"), None);
-
-        // Nothing to say → no line at all, rather than an empty one.
-        assert_eq!(sum(""), None);
-        assert_eq!(sum("   \n  \n"), None);
-    }
-
-    /// Long results are cut to one line's worth. The cut counts CHARACTERS, not
-    /// bytes — these carry Windows paths and prose, and slicing mid-codepoint
-    /// would panic the loader on a conversation that merely contains a failure.
-    #[test]
-    fn tool_error_summary_truncates_on_char_boundaries() {
-        let long = "é".repeat(400);
-        let got = super::tool_error_summary(&long).unwrap();
-        assert_eq!(got.chars().count(), 161, "160 chars plus the ellipsis");
-        assert!(got.ends_with('…'));
-
-        let ascii = "x".repeat(400);
-        let got = super::tool_error_summary(&ascii).unwrap();
-        assert!(got.starts_with("xxxx") && got.ends_with('…'));
+        let long = "x".repeat(400);
+        assert_eq!(full(&long), Some(long.clone()), "nothing is cut");
+        // The user's own decisions stay quiet, as in the summary.
+        assert_eq!(full("The user declined this action in Eclipse."), None);
+        assert_eq!(full("   
+ "), None);
     }
 
     /// A failed tool must carry WHY it failed onto its render item, so a reopened
@@ -3237,7 +3166,7 @@ mod tests {
     /// the red dot but no text; a successful one carries its full output as
     /// resultText instead (a DIFFERENT field — see result_text vs
     /// result_success_text above — so makeToolLine can render it as an OUT box
-    /// rather than the muted one-line error note).
+    /// rather than a one-line error note).
     #[test]
     fn load_session_attaches_error_text_to_failed_tools() {
         let mut env = EnvGuard::lock();

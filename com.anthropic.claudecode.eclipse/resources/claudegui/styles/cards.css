@@ -107,16 +107,17 @@
 .question-card .q-esc { color: var(--fg-faint); font-size: 11px; padding: 4px 14px 0; }
 
 /* "User answered:" card left in the flow after responding to a question/decision */
-/* The overview left behind by answered questions: a header that folds the list, then each question
-   with its options, the chosen ones in full colour and the rest dimmed. */
+/* The output of an AskUserQuestion call (stream.js renderQuestionsOutput), under its "Asking" line:
+   a header that folds the list, then each question with its options, the chosen ones in full colour
+   and the rest dimmed. */
+.q-overview { margin: 0 0 2px 0; }
 .q-overview .qo-head { cursor: pointer; display: flex; flex-direction: column; gap: 2px; user-select: none; }
-.q-overview .qo-title { color: var(--fg); font-weight: 600; }
 .q-overview .qo-sub { display: flex; align-items: center; gap: 4px; color: var(--fg-dim); font-size: 12px; }
 .q-overview .qo-head:hover .qo-sub { color: var(--fg-soft); }
 .q-overview .qo-sub .chev { display: inline-flex; transition: transform .15s; transform: rotate(-90deg); opacity: .8; }
-.q-overview.collapsed .qo-sub .chev { transform: rotate(90deg); }
-.q-overview .qo-body { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-code); padding: 4px 0 8px; }
-.q-overview.collapsed .qo-body { display: none; }
+.q-overview[data-mode="collapsed"] .qo-sub .chev { transform: rotate(90deg); }
+.q-overview .qo-body { margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-code); padding: 4px 0 8px; }
+.q-overview[data-mode="collapsed"] .qo-body, .q-overview[data-mode="hidden"] { display: none; }
 /* Declined or timed out: nothing was chosen, so no option is the dimmed one. */
 .q-overview.unanswered .qo-opt { opacity: 1; }
 .q-overview .qo-q { color: var(--fg); font-size: 13px; font-weight: 600; padding: 10px 14px 4px; }

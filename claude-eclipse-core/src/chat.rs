@@ -3123,7 +3123,7 @@ fn process_event_value(
                         // applyToolResult resolves a top-level one.
                         let is_error = b["is_error"].as_bool().unwrap_or(false);
                         let text = if is_error {
-                            crate::session::tool_error_summary(&crate::session::flatten_result_content(b))
+                            crate::session::tool_error_text(&crate::session::flatten_result_content(b))
                                 .unwrap_or_default()
                         } else {
                             crate::session::flatten_result_content(b)
@@ -3142,16 +3142,15 @@ fn process_event_value(
                     // Successes fire too: the dot is then set from what actually
                     // happened instead of inferred when the NEXT tool starts.
                     //
-                    // On error, tool_error_summary condenses to one line (~160 chars) for
-                    // the muted "⚠ …" note under the tool line — that's the only thing the
-                    // GUI renders for a failure. On success, the GUI now actually renders
-                    // the result (chat.js's applyToolResult/renderToolOutput — an "OUT" box,
+                    // On error, the whole text, for the "ERR" box under the tool line
+                    // (chat.js's setToolError). On success, the GUI renders the result
+                    // (chat.js's applyToolResult/renderToolOutput — an "OUT" box,
                     // a checklist, a clickable result list), so it needs the FULL flattened
                     // content, not the empty string this used to send when nothing on the
                     // GUI side read it yet. No truncation here: the page caps/links out to a
                     // full view for long content on its own (capIfOverflowing in chat.js).
                     let text = if is_error {
-                        crate::session::tool_error_summary(&crate::session::flatten_result_content(b))
+                        crate::session::tool_error_text(&crate::session::flatten_result_content(b))
                             .unwrap_or_default()
                     } else {
                         crate::session::flatten_result_content(b)
