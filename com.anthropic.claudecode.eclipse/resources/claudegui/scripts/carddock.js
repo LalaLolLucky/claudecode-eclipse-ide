@@ -179,6 +179,8 @@ function popOverlay(fn) {
   const before = notifyingCount;
   notifyingCount = overlayStack.reduce((n, e) => n + (e.notifiesJava ? 1 : 0), 0);
   if (before > 0 && notifyingCount === 0 && window._overlayOpen) window._overlayOpen(false);
+  // Closed by an Escape the page is dispatching: that press has had its one dismissal (escPress).
+  if (escPress.inPage) { escPress.dismissed = escPress.byPage = true; escPressDebug('page dismissed'); }
   return entry;
 }
 
@@ -246,9 +248,56 @@ function unregisterOverlayCancel(fn) { popOverlay(fn); }
 // longer holds. 50ms comfortably covers the ~24ms gap measured between the two calls in
 // /tmp/find-debug.log while staying far below a human's fastest deliberate double-press.
 let lastCancelAt = 0;
+
+/* One press of the dismiss key closes one card, whichever way the press reaches the page. It can
+   reach it twice: through Eclipse's own binding (DismissCardHandler → cancelActiveCard) and as the
+   keydown the cards' own Escape listeners take, in either order. While a card stood alone the
+   second arrival found nothing left to close (each card's `resolved` guard), but a card waiting
+   behind it comes up the moment the first one goes (clearBottomCard), and the second arrival
+   closed that one too: the advisor's Esc denied the edit waiting behind it, whose diff showed for
+   a moment and was gone. lastCancelAt only covers Eclipse arriving twice.
+   So the press is remembered from its keydown to its keyup, and once it has closed something its
+   later arrivals are let go: the page's keydown is swallowed here, on window in the capture phase
+   and so before any card's listener, and cancelActiveCard returns. Key repeats are the same press,
+   so Esc held down closes one card, not the queue behind it.
+   A release the page never sees (Eclipse kept the key, or the editor a diff opened in took the
+   focus) ends the press ESC_PRESS_MS after its last sign instead, so a stale one cannot swallow
+   the next real press. Eclipse's arrival is only let go when the page has seen this press itself:
+   where the page never sees the key, nothing would tell a second press from the same one. */
+const ESC_PRESS_MS = 400;
+const escPress = { dismissed: false, byPage: false, held: false, inPage: false, timer: 0 };
+function endEscPress() {
+  clearTimeout(escPress.timer);
+  escPress.dismissed = escPress.byPage = escPress.held = escPress.inPage = false;
+  escPress.timer = 0;
+}
+function extendEscPress() { clearTimeout(escPress.timer); escPress.timer = setTimeout(endEscPress, ESC_PRESS_MS); }
+function escPressDebug(what) {
+  try { if (window.__ccDebug && window._debugLog) window._debugLog('[CARDKEY] ' + what); } catch (e) {}
+}
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  escPress.held = true;
+  extendEscPress();
+  if (escPress.dismissed) {
+    e.preventDefault(); e.stopImmediatePropagation();
+    escPressDebug('page Esc let go' + (e.repeat ? ' (repeat)' : ''));
+    return;
+  }
+  // What closes while this keydown is dispatched, the page closed (popOverlay notes it).
+  escPress.inPage = true;
+  setTimeout(() => { escPress.inPage = false; }, 0);
+}, true);
+window.addEventListener('keyup', (e) => { if (e.key === 'Escape') endEscPress(); }, true);
+
 window.cancelActiveCard = function() {
   if (!activeCardCancel) return;
   if (Date.now() - lastCancelAt < 50) return;
+  if (escPress.dismissed && (escPress.byPage || escPress.held)) {
+    extendEscPress();
+    escPressDebug('Eclipse dismiss let go');
+    return;
+  }
   // Bottom cards only: one parked on a background tab must not vanish because a key was
   // pressed over another conversation. Mirrors renderBottomCard's own visibility test,
   // now split into two checks since each tab tracks its own pendingCard instead of one
@@ -269,6 +318,9 @@ window.cancelActiveCard = function() {
   // bottom-card visibility guard, popOverlay finding nothing) must not arm the guard for
   // a call that didn't actually cancel anything.
   lastCancelAt = Date.now();
+  escPress.dismissed = true;
+  extendEscPress();
+  escPressDebug('Eclipse dismissed');
   entry.fn();
 };
 
