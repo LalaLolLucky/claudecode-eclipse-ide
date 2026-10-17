@@ -4,7 +4,34 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.20] — 2026-10-16 *(current)*
+## [3.2.21] — 2026-10-17 *(current)*
+
+### Added
+- **Edit before you approve:** change a Bash command on its permission card, or a proposed Write or Edit in its diff preview, and the edited version is what runs. Off by default: tick "Enable editable commands on permission card" in the Preferences ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #203).
+- "Yes, allow … for …" lets you choose where the rule is saved, and remembers your choice ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #203).
+- `claudeCodeEclipse`: open, answer or close the advisor's card, and see the requests waiting behind a card.
+
+### Changed
+- The Agent map shows each agent's status (Working, Waiting for your permission, Finished, Failed or Stopped), who started it, its type and model, and a readable list of its tool calls ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #199).
+- Timestamps show above Claude's replies too, with the full date and time on hover and one divider per day ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #200).
+- A refused call shows why under its tool: your reason, or Claude Code's own text in its OUT box ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #203).
+- A plain "No" on a permission card now stops and waits for you; give a reason and Claude carries on with it ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #203).
+- A failed tool shows its whole error in its OUT box, not one cut-off line ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #201).
+- MCP and plugin tools name their server in front of the tool, as in `Playwright › Browser click` ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #201).
+- Answered questions show as the question's own output, with a start mode of their own in the Preferences ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #201).
+- The buttons on tool input and output boxes show on hover only ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #201).
+
+### Fixed
+- A permission request that comes while another card is up waits its turn, instead of replacing it and leaving the first one unanswered ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #199).
+- A background agent's permission card no longer disappears when the turn ends ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #199).
+- One Esc closes one card: the request waiting behind it is no longer refused with it, and closing a card no longer also stops Claude's turn.
+- The working indicator no longer stays up while a request waits behind another card.
+- An edit's diff preview opens when its card comes up, not while the request still waits behind another.
+- Choosing an advisor no longer restarts a conversation that is waiting on you.
+
+---
+
+## [3.2.20] — 2026-10-16
 
 ### Added
 - The Agent map (`/tasks`) lists background tasks such as shells, with their output and a Stop button.
