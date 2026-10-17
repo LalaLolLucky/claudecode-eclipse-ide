@@ -17,7 +17,8 @@ import com.anthropic.claudecode.eclipse.editor.UiHelper;
 /**
  * Opens an Eclipse diff editor showing current-vs-proposed file content while the in-chat
  * permission decision card is up. Unlike {@link OpenDiffTool} this does NOT block or own the
- * accept/reject decision: the card does. The proposed (right) side can be edited, and what is
+ * accept/reject decision: the card does. With PREF_EDITABLE_PERMISSION_CARDS on, the proposed
+ * (right) side can be edited, and what is
  * left there when the card is answered is the change that is approved
  * ({@link #editedContent}); nothing is saved from the editor itself, and closing it asks
  * nothing. It is closed once the user decides.
@@ -26,8 +27,9 @@ public final class DiffPreview {
 
     private DiffPreview() {}
 
-    /** Opens the preview on the UI thread and returns its input (or null on failure). */
-    public static CompareEditorInput open(ProposedChange change, String label) {
+    /** Opens the preview on the UI thread and returns its input (or null on failure). With
+     *  {@code editable} false (PREF_EDITABLE_PERMISSION_CARDS off) both sides are read-only. */
+    public static CompareEditorInput open(ProposedChange change, String label, boolean editable) {
         final CompareEditorInput[] ref = { null };
         UiHelper.syncCall(() -> {
             try {
@@ -35,12 +37,12 @@ public final class DiffPreview {
 
                 CompareConfiguration cfg = new CompareConfiguration();
                 cfg.setLeftEditable(false);
-                cfg.setRightEditable(true);
+                cfg.setRightEditable(editable);
                 cfg.setLeftLabel("Current: " + name);
                 cfg.setRightLabel("Proposed: " + name);
 
                 CompareItem left  = new CompareItem(name, change.original, false);
-                CompareItem right = new CompareItem(name, change.proposed, true);
+                CompareItem right = new CompareItem(name, change.proposed, editable);
 
                 CompareEditorInput input = new CompareEditorInput(cfg) {
                     @Override

@@ -341,6 +341,11 @@ public class ClaudePreferencePage extends FieldEditorPreferencePage implements I
         }
 
         addCodeViewOption(new BooleanFieldEditor(
+                Constants.PREF_EDITABLE_PERMISSION_CARDS,
+                "Enable editable commands on permission card",
+                getFieldEditorParent()));
+
+        addCodeViewOption(new BooleanFieldEditor(
                 Constants.PREF_SMART_SCROLL_LOCK,
                 "Smart Scroll Lock: still jump to the bottom for your own actions (sending a "
                         + "message, answering a card) even while Scroll Lock is on",

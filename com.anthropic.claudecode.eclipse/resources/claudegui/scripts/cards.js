@@ -152,6 +152,14 @@ function permissionPrompt(toolName, input, t) {
   const file = p => code(permBase(p), p);
   switch (key) {
     case 'bash': case 'powershell': {
+      // Editable only with PREF_EDITABLE_PERMISSION_CARDS (window.__editablePermissionCards, pushed by
+      // ClaudeGuiView). Off, the card asks as it did before: the command read-only, in the question.
+      if (!window.__editablePermissionCards) {
+        const cmd = input.command || '';
+        if (cmd) { const c = document.createElement('code'); c.textContent = cmd; ask('Allow ' + toolName + ' ', c, '?'); }
+        else ask('Allow ' + toolName + '?');
+        break;
+      }
       ask('Allow this ' + (key === 'bash' ? 'bash' : 'PowerShell') + ' command?');
       const ed = document.createElement('textarea');
       ed.className = 'dec-cmd'; ed.spellcheck = false; ed.rows = 1; ed.value = input.command || '';

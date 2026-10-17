@@ -73,6 +73,12 @@ public final class Constants {
      *  On by default; off removes both. */
     public static final String PREF_DICTATION_ENABLED = "dictationEnabled";
 
+    /** What a permission card in the Claude Code view offers for editing: a Bash or PowerShell
+     *  card's command in an editable box, and a Write or Edit's proposed side of its diff
+     *  preview; what was edited is what runs. Off by default: the command is shown read-only,
+     *  in the card's question, and the diff preview is read-only, as before either could be edited. */
+    public static final String PREF_EDITABLE_PERMISSION_CARDS = "editablePermissionCards";
+
     /** Debug-only, macOS-only: offer dictation on macOS, where it is otherwise withheld
      *  because macOS silently denies the microphone to Eclipse.app. Counts only while Debug
      *  mode and {@link #PREF_DICTATION_ENABLED} are also on, and is unticked whenever either

@@ -282,6 +282,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private org.eclipse.jface.util.IPropertyChangeListener statusPrefListener;
     // Live-applies PREF_HISTORY_SHOW_TIMESTAMPS changes without a restart or page reload.
     private org.eclipse.jface.util.IPropertyChangeListener historyShowTimestampsPrefListener;
+    // Live-applies PREF_EDITABLE_PERMISSION_CARDS changes to the next permission card.
+    private org.eclipse.jface.util.IPropertyChangeListener editablePermissionCardsPrefListener;
     // Live-applies PREF_HIDE_ROOT_DIRECTORIES_ROW changes without a restart or page reload.
     private org.eclipse.jface.util.IPropertyChangeListener hideRootRowPrefListener;
     // Live-applies PREF_HIDE_BEFORE_COMPACTION changes without a restart or page reload.
@@ -408,6 +410,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         fetchUsageAsync();
         registerStatusPrefListener();
         registerHistoryShowTimestampsPrefListener();
+        registerEditablePermissionCardsPrefListener();
         registerHideRootRowPrefListener();
         registerHideBeforeCompactionPrefListener();
         registerSmartScrollLockPrefListener();
@@ -1748,6 +1751,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         pushDebugMode();         // let the page report its keys while Debug mode is on
         pushDictationAvailability(); // no dictation on macOS, or without ALSA on Linux/FreeBSD
         pushHistoryShowTimestamps(); // whether to show the time above your messages and Claude's replies
+        pushEditablePermissionCards(); // whether a Bash/PowerShell card's command can be edited
         pushHideRootDirectoriesRow(); // whether the root directories row is hidden entirely
         pushHideBeforeCompaction(); // whether what was said above a compaction is hidden or only folded
         pushSpinnerVerbs();      // which gerund categories the working indicator cycles
@@ -2500,6 +2504,18 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         Activator.getDefault().getPreferenceStore().addPropertyChangeListener(historyShowTimestampsPrefListener);
     }
 
+    /** Live-applies a Preferences change to "editable commands on permission card" —
+     *  mirrors {@link #registerHistoryShowTimestampsPrefListener()}. A card already up keeps
+     *  the way it was drawn; the next one follows the new value. (The diff preview reads the
+     *  preference itself, per request: see {@code PendingPreview.editable}.) */
+    private void registerEditablePermissionCardsPrefListener() {
+        editablePermissionCardsPrefListener = event -> {
+            if (!com.anthropic.claudecode.eclipse.Constants.PREF_EDITABLE_PERMISSION_CARDS.equals(event.getProperty())) return;
+            Display.getDefault().asyncExec(this::pushEditablePermissionCards);
+        };
+        Activator.getDefault().getPreferenceStore().addPropertyChangeListener(editablePermissionCardsPrefListener);
+    }
+
     /** Live-applies a Preferences change to "hide root directories row" without needing a
      *  page reload — mirrors {@link #registerStatusPrefListener()}. */
     private void registerHideRootRowPrefListener() {
@@ -3015,6 +3031,18 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         boolean show = Activator.getDefault().getPreferenceStore()
                 .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_HISTORY_SHOW_TIMESTAMPS);
         browser.execute("window.__historyShowTimestamps = " + show + ";");
+    }
+
+    /**
+     * Tells the page whether a Bash or PowerShell permission card shows its command in an
+     * editable box (cards.js {@code permissionPrompt}). Re-pushed on activation and on every
+     * live Preferences change (see {@link #registerEditablePermissionCardsPrefListener()}).
+     */
+    private void pushEditablePermissionCards() {
+        if (browser == null || browser.isDisposed() || !pageLoaded) return;
+        boolean editable = Activator.getDefault().getPreferenceStore()
+                .getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_EDITABLE_PERMISSION_CARDS);
+        browser.execute("window.__editablePermissionCards = " + editable + ";");
     }
 
     /**
@@ -4393,6 +4421,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         pushEditKeyHints();
         pushDebugMode();
         pushHistoryShowTimestamps();
+        pushEditablePermissionCards();
         pushHideRootDirectoriesRow();
         pushHideBeforeCompaction();
         pushSpinnerVerbs();
@@ -4530,7 +4559,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // Show the proposed change in an Eclipse diff editor while the card is up
         // (matches the VSCode panel: the diff opens at the decision point). Opened when
         // the page draws this card (openPreview), not now: it may wait behind another.
-        if (change != null) PREVIEWS.put(reqId, new PendingPreview(change));
+        // Editable or not is fixed here, for this request, so a Preferences change while the
+        // card is up cannot turn an edit the reader could not make into one that is approved.
+        if (change != null) PREVIEWS.put(reqId, new PendingPreview(change, Activator.getDefault()
+                .getPreferenceStore().getBoolean(com.anthropic.claudecode.eclipse.Constants.PREF_EDITABLE_PERMISSION_CARDS)));
 
         cardOpened();
         Display.getDefault().asyncExec(() -> {
@@ -4600,7 +4632,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         }
         String kind = d.has("d") && d.get("d").isJsonPrimitive() ? d.get("d").getAsString() : "";
         PendingPreview p = PREVIEWS.get(reqId);
-        if (!kind.startsWith("allow") || p == null) return decision;
+        if (!kind.startsWith("allow") || p == null || !p.editable) return decision;
         org.eclipse.compare.CompareEditorInput shown;
         synchronized (p) { shown = p.input; }
         String edited = com.anthropic.claudecode.eclipse.tools.DiffPreview.editedContent(shown, p.change);
@@ -4622,11 +4654,14 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     /** An approval request's diff preview: what it shows, and the editor once it is open. */
     private static final class PendingPreview {
         final com.anthropic.claudecode.eclipse.tools.ProposedChange change;
+        /** PREF_EDITABLE_PERMISSION_CARDS when the request came: the proposed side can be edited. */
+        final boolean editable;
         org.eclipse.compare.CompareEditorInput input;   // guarded by this
         boolean ended;                                  // guarded by this: the request is over
 
-        PendingPreview(com.anthropic.claudecode.eclipse.tools.ProposedChange change) {
+        PendingPreview(com.anthropic.claudecode.eclipse.tools.ProposedChange change, boolean editable) {
             this.change = change;
+            this.editable = editable;
         }
     }
 
@@ -4644,7 +4679,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         org.eclipse.compare.CompareEditorInput input = null;
         try {
             input = com.anthropic.claudecode.eclipse.tools.DiffPreview.open(p.change,
-                    java.nio.file.Path.of(p.change.filePath).getFileName() + " (proposed)");
+                    java.nio.file.Path.of(p.change.filePath).getFileName() + " (proposed)", p.editable);
         } catch (Exception ignored) {}
         if (input == null) return;
         boolean ended;
@@ -5141,6 +5176,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(historyShowTimestampsPrefListener); }
             catch (Throwable ignored) {}
             historyShowTimestampsPrefListener = null;
+        }
+        if (editablePermissionCardsPrefListener != null) {
+            try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(editablePermissionCardsPrefListener); }
+            catch (Throwable ignored) {}
+            editablePermissionCardsPrefListener = null;
         }
         if (hideRootRowPrefListener != null) {
             try { Activator.getDefault().getPreferenceStore().removePropertyChangeListener(hideRootRowPrefListener); }
