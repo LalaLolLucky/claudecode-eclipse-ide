@@ -80,6 +80,9 @@ struct ChatState {
     /// thread checks this before writing its `control_response`: the CLI has
     /// stopped listening for that id, so sending one is noise at best.
     cancelled_cards: std::collections::HashSet<String>,
+    /// The agents the CLI has started, kept from its task events: whether one runs in the
+    /// background decides whether its card outlives the turn (`CardsToCancel::TurnEnded`).
+    agent_tasks: AgentTasks,
 }
 
 /// A live persistent claude process. Stdin writes are serialized through the
@@ -717,6 +720,7 @@ impl ChatManager {
                 workspace_root: String::new(),
                 open_cards: std::collections::HashMap::new(),
                 cancelled_cards: std::collections::HashSet::new(),
+                agent_tasks: AgentTasks::new(),
             })),
             callbacks: Arc::new(Mutex::new(None)),
         }
@@ -1979,6 +1983,13 @@ fn reader_loop(
         if let Some(json) = crate::cli_ask::fast_mode_json(&event) {
             fire_string(&java_vm, &callbacks, "onFastMode", &json);
         }
+        // Which agents run in the background, read before this event is handled: a turn's
+        // result may take down the cards of the others (CardsToCancel::TurnEnded).
+        if event["type"].as_str() == Some("system")
+            && event["subtype"].as_str().is_some_and(|s| s.starts_with("task_"))
+        {
+            note_agent_task(&mut state.lock().unwrap().agent_tasks, &event);
+        }
 
         match event["type"].as_str().unwrap_or("") {
             "control_request" => {
@@ -2124,7 +2135,7 @@ fn reader_loop(
                 // failure takes its prompts with it), and a card nothing can
                 // answer must not outlive the turn that raised it. Not a background
                 // agent's: it outlives the turn, and its request is still waited on.
-                cancel_open_cards(&state, &java_vm, &callbacks, CardsToCancel::OwnOnly);
+                cancel_open_cards(&state, &java_vm, &callbacks, CardsToCancel::TurnEnded);
                 // Derive the session-specific status-bar data (model, context %,
                 // cost) from this turn's usage and fire it to the GUI status bar.
                 // Account-global rate limits come from the shared store, not here.
@@ -2583,17 +2594,18 @@ fn cancel_card(
     // The waiting thread is only let go once Java has answered for it, and it is the one that
     // would say the agent is no longer held up: said here as well, so a withdrawn card never
     // leaves its agent waiting on it.
-    if owner.agent {
+    if owner.task_id.is_some() {
         let released = serde_json::json!({ "kind": "agentPermission", "requestId": request_id, "waiting": false });
         fire_string(java_vm, callbacks, "onAgentActivity", &released.to_string());
     }
 }
 
 /// Whose request a card is up for: a subagent's, or the conversation's own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CardOwner {
-    /// A subagent made it (the request names one in `agent_id`).
-    agent: bool,
+    /// The subagent that made it: the request's `agent_id`, which is that agent's task id.
+    /// None for the conversation's own.
+    task_id: Option<String>,
 }
 
 /// Which of the open cards a cancel takes down.
@@ -2601,16 +2613,85 @@ struct CardOwner {
 enum CardsToCancel {
     /// All of them: the process they were raised by is gone, so none can be answered.
     All,
-    /// The conversation's own only. A turn's end moots what the turn raised, but a background
-    /// agent goes on after it: its request is still the CLI's to wait on, and answering it
-    /// late works (checked against a live CLI, which ran the command when it was allowed
-    /// seconds after the turn's result).
-    OwnOnly,
+    /// What the turn that just ended raised. A turn's end moots the conversation's own cards
+    /// and those of the agents that end with it, but a background agent goes on after it: its
+    /// request is still the CLI's to wait on, and answering it late works (checked against a
+    /// live CLI, which ran the command when it was allowed seconds after the turn's result).
+    TurnEnded,
 }
 impl CardsToCancel {
-    fn takes(self, owner: CardOwner) -> bool {
-        self == CardsToCancel::All || !owner.agent
+    fn takes(self, owner: &CardOwner, tasks: &AgentTasks) -> bool {
+        match self {
+            CardsToCancel::All => true,
+            CardsToCancel::TurnEnded => owner.task_id.as_deref().map_or(true, |id| !may_outlive_turn(tasks, id)),
+        }
     }
+}
+
+/// The agents the CLI has started in this conversation, by task id: what decides whether a
+/// subagent's card outlives the turn (`CardsToCancel::TurnEnded`).
+type AgentTasks = std::collections::HashMap<String, AgentTask>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AgentTask {
+    /// `is_backgrounded` from its `task_started`, changed by a later `task_updated`. None when
+    /// the CLI did not say (an older CLI).
+    backgrounded: Option<bool>,
+    /// The agent that started it (`parent_task_id`); None for one the conversation started.
+    parent: Option<String>,
+    /// `spawn_depth`: 1 for one the conversation started, N+1 for one a depth-N agent started.
+    depth: Option<u64>,
+}
+
+/// Keeps `tasks` up to date from a `system/task_started` or `system/task_updated` event; any
+/// other event leaves it alone.
+fn note_agent_task(tasks: &mut AgentTasks, event: &serde_json::Value) {
+    if event["type"].as_str() != Some("system") {
+        return;
+    }
+    let Some(task_id) = event["task_id"].as_str().filter(|id| !id.is_empty()) else {
+        return;
+    };
+    match event["subtype"].as_str() {
+        Some("task_started") => {
+            tasks.insert(task_id.to_string(), AgentTask {
+                backgrounded: event["is_backgrounded"].as_bool(),
+                parent: event["parent_task_id"].as_str().filter(|id| !id.is_empty()).map(str::to_string),
+                depth: event["spawn_depth"].as_u64(),
+            });
+        }
+        // A foreground agent sent to the background later says so here, and only here.
+        Some("task_updated") => {
+            if let Some(backgrounded) = event["patch"]["is_backgrounded"].as_bool() {
+                tasks.entry(task_id.to_string()).or_default().backgrounded = Some(backgrounded);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether the agent `task_id` can still be going after the turn that started it has ended:
+/// it, or an agent above it, runs in the background. One the core cannot place — never seen
+/// started, an older CLI that does not say, a parent it does not know — counts as able to:
+/// taking down a card the CLI still waits on would hang that agent, while a card left up
+/// that nobody waits on costs a click.
+fn may_outlive_turn(tasks: &AgentTasks, task_id: &str) -> bool {
+    let mut id = task_id;
+    // Bounded: parents form a chain, but a loop in what the CLI said must not hang the reader.
+    for _ in 0..32 {
+        let Some(task) = tasks.get(id) else { return true };
+        match task.backgrounded {
+            Some(false) => {}
+            _ => return true,
+        }
+        match task.parent.as_deref() {
+            Some(parent) => id = parent,
+            // Started by an agent it does not name: that agent may be in the background.
+            None if task.depth.is_some_and(|d| d > 1) => return true,
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Cancels every card still up for this conversation. See the call sites for
@@ -2627,7 +2708,7 @@ fn cancel_open_cards(
         if s.open_cards.is_empty() {
             return; // the overwhelmingly common case — don't touch anything
         }
-        s.open_cards.iter().filter(|(_, owner)| which.takes(**owner)).map(|(id, _)| id.clone()).collect()
+        s.open_cards.iter().filter(|(_, owner)| which.takes(owner, &s.agent_tasks)).map(|(id, _)| id.clone()).collect()
     };
     for id in ids {
         cancel_card(&id, state, java_vm, callbacks);
@@ -2661,7 +2742,7 @@ fn handle_control_request(
     // Registered BEFORE the card is raised: the withdrawal can arrive while the
     // card is still being drawn (the phone is quicker than a human), and a
     // cancel for an id not yet on the books would be dropped as unknown.
-    let owner = CardOwner { agent: request["agent_id"].as_str().is_some_and(|id| !id.is_empty()) };
+    let owner = CardOwner { task_id: request["agent_id"].as_str().filter(|id| !id.is_empty()).map(str::to_string) };
     state.lock().unwrap().open_cards.insert(request_id.clone(), owner);
     // A subagent held up on this: the Agent map says so while the card is up.
     if let Some(waiting) = agent_permission_payload(&request_id, request, true) {
@@ -4055,22 +4136,117 @@ mod agent_permission_tests {
 
 #[cfg(test)]
 mod card_cancel_tests {
-    use super::{CardOwner, CardsToCancel};
+    use super::{note_agent_task, AgentTasks, CardOwner, CardsToCancel};
+    use serde_json::json;
 
-    const MAIN: CardOwner = CardOwner { agent: false };
-    const AGENT: CardOwner = CardOwner { agent: true };
+    fn main_card() -> CardOwner {
+        CardOwner { task_id: None }
+    }
+    fn agent_card(id: &str) -> CardOwner {
+        CardOwner { task_id: Some(id.to_string()) }
+    }
+    /// A `task_started` as CLI 2.1.301 describes it; `parent` makes it one an agent started.
+    fn started(tasks: &mut AgentTasks, id: &str, backgrounded: bool, parent: Option<&str>) {
+        let mut event = json!({"type":"system","subtype":"task_started","task_id":id,"tool_use_id":"toolu_x",
+                               "description":"d","task_type":"local_agent","is_backgrounded":backgrounded,
+                               "spawn_depth":1,"uuid":"u","session_id":"s"});
+        if let Some(p) = parent {
+            event["parent_task_id"] = json!(p);
+            event["spawn_depth"] = json!(2);
+        }
+        note_agent_task(tasks, &event);
+    }
 
     #[test]
     fn a_turns_end_takes_down_the_conversations_own_cards_and_leaves_a_background_agents() {
         // The CLI sends the result of the turn that launched a background agent in the same
         // instant as that agent's request, and the request is answered fine after it.
-        assert!(CardsToCancel::OwnOnly.takes(MAIN));
-        assert!(!CardsToCancel::OwnOnly.takes(AGENT));
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "bg1", true, None);
+        assert!(CardsToCancel::TurnEnded.takes(&main_card(), &tasks));
+        assert!(!CardsToCancel::TurnEnded.takes(&agent_card("bg1"), &tasks));
     }
 
     #[test]
     fn a_process_that_is_gone_takes_every_card_with_it() {
-        assert!(CardsToCancel::All.takes(MAIN));
-        assert!(CardsToCancel::All.takes(AGENT));
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "bg1", true, None);
+        assert!(CardsToCancel::All.takes(&main_card(), &tasks));
+        assert!(CardsToCancel::All.takes(&agent_card("bg1"), &tasks));
+    }
+
+    #[test]
+    fn a_turns_end_takes_down_a_foreground_agents_card() {
+        // A foreground agent ends with the turn that started it: a card of its own still up then
+        // is one nothing will answer, as the conversation's own are.
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "fg1", false, None);
+        assert!(CardsToCancel::TurnEnded.takes(&agent_card("fg1"), &tasks));
+    }
+
+    #[test]
+    fn an_agent_started_inside_a_background_agent_keeps_its_card() {
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "bg1", true, None);
+        started(&mut tasks, "nested", false, Some("bg1"));
+        assert!(!CardsToCancel::TurnEnded.takes(&agent_card("nested"), &tasks));
+    }
+
+    #[test]
+    fn an_agent_started_inside_a_foreground_agent_loses_its_card() {
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "fg1", false, None);
+        started(&mut tasks, "nested", false, Some("fg1"));
+        assert!(CardsToCancel::TurnEnded.takes(&agent_card("nested"), &tasks));
+    }
+
+    #[test]
+    fn an_agent_moved_to_the_background_keeps_its_card() {
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "fg1", false, None);
+        note_agent_task(&mut tasks, &json!({"type":"system","subtype":"task_updated","task_id":"fg1",
+                                            "patch":{"is_backgrounded":true},"uuid":"u","session_id":"s"}));
+        assert!(!CardsToCancel::TurnEnded.takes(&agent_card("fg1"), &tasks));
+    }
+
+    #[test]
+    fn a_task_update_that_does_not_name_the_flag_changes_nothing() {
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "fg1", false, None);
+        note_agent_task(&mut tasks, &json!({"type":"system","subtype":"task_updated","task_id":"fg1",
+                                            "patch":{"status":"running"},"uuid":"u","session_id":"s"}));
+        assert!(CardsToCancel::TurnEnded.takes(&agent_card("fg1"), &tasks));
+    }
+
+    #[test]
+    fn a_card_whose_agent_cannot_be_told_apart_is_kept() {
+        // Taking down a card the CLI still waits on would hang that agent; leaving one up that
+        // nobody waits on costs a click. So an agent the core cannot place keeps its card.
+        let mut tasks = AgentTasks::new();
+        assert!(!CardsToCancel::TurnEnded.takes(&agent_card("never-started"), &tasks), "no task_started seen");
+        note_agent_task(&mut tasks, &json!({"type":"system","subtype":"task_started","task_id":"old","description":"d"}));
+        assert!(!CardsToCancel::TurnEnded.takes(&agent_card("old"), &tasks), "an older CLI, no is_backgrounded");
+        note_agent_task(&mut tasks, &json!({"type":"system","subtype":"task_started","task_id":"orphan","description":"d",
+                                            "is_backgrounded":false,"spawn_depth":2}));
+        assert!(!CardsToCancel::TurnEnded.takes(&agent_card("orphan"), &tasks), "started by an agent it does not name");
+        started(&mut tasks, "child", false, Some("unknown-parent"));
+        assert!(!CardsToCancel::TurnEnded.takes(&agent_card("child"), &tasks), "started by an agent never seen");
+    }
+
+    #[test]
+    fn a_loop_of_parents_does_not_hang_and_keeps_the_card() {
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "a", false, Some("b"));
+        started(&mut tasks, "b", false, Some("a"));
+        assert!(!CardsToCancel::TurnEnded.takes(&agent_card("a"), &tasks));
+    }
+
+    #[test]
+    fn other_events_are_left_alone() {
+        let mut tasks = AgentTasks::new();
+        note_agent_task(&mut tasks, &json!({"type":"system","subtype":"task_notification","task_id":"t","status":"completed"}));
+        note_agent_task(&mut tasks, &json!({"type":"system","subtype":"task_started","description":"no id"}));
+        note_agent_task(&mut tasks, &json!({"type":"assistant","task_id":"t"}));
+        assert!(tasks.is_empty());
     }
 }

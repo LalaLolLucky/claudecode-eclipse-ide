@@ -5,7 +5,8 @@
    permission mode; reads a tab's conversation, stops its turn, forks, rewinds or deletes
    at one of its messages, bookmarks a reply, archives or renames a saved conversation,
    and asks the CLI for the usage figures or the conversation as text; brings a tab to the
-   front, answers a tab's question card (never an approval) and closes a folder tab. Java calls window.__ccTool(requestJson) and hands the returned JSON
+   front, answers a tab's question card (never an approval), opens, answers or closes the
+   advisor's card, and closes a folder tab. Java calls window.__ccTool(requestJson) and hands the returned JSON
    back to Claude (ClaudeGuiView#pageTool). */
 
 (function () {
@@ -40,7 +41,31 @@
     if (out.remoteControl === 'on') out.remoteControlUrl = t.remoteControlUrl;
     const card = cardKind(t);
     if (card) out.waitingOnCard = card;
+    // Claude's requests that came while a card was up, waiting behind it in order (carddock.js).
+    if (t.cardQueue && t.cardQueue.length) out.cardsWaiting = t.cardQueue.map(q => q.kind || 'card');
     return out;
+  }
+  /* The advisor's card a tab waits on: its choices by label and the one in effect. */
+  function advisorCardOf(t) {
+    const card = t.pendingCard;
+    return { choices: (card._choices || []).slice(), current: card._current || '' };
+  }
+  /* The advisor's card of `t`, for an action on it. The card writes what was picked into the
+     tab in front, and only shows there, so that tab has to be the one in front. */
+  function advisorCardFor(t) {
+    const kind = cardKind(t);
+    if (kind !== 'advisor') {
+      refuse(kind ? 'That tab waits on ' + (kind === 'question' ? 'a question card' : 'an approval card') + ", not the advisor's."
+        : "That tab is not waiting on the advisor's card. Open it with action 'runCommand' and '/advisor'.");
+    }
+    if (t !== activeTab()) refuse("The advisor's card is answered in the tab in front. Bring that tab forward with action 'selectTab' first.");
+    return t.pendingCard;
+  }
+  /* What an answer to a card says about the requests that waited behind it: the next one's
+     card comes up right after this call. */
+  function queueNotes(t) {
+    return (t.cardQueue && t.cardQueue.length)
+      ? ["A request of Claude's waited behind the card; its own card comes up now ('readTab' shows it)."] : [];
   }
   /* Which card a tab waits on: a question (AskUserQuestion), an approval (a tool asking to
      run or to edit) or the advisor's choice. Null when none. */
@@ -307,8 +332,7 @@
   const DESK_ONLY = {
     '/rewind': 'opens the rewind dialog',
     '/resume': 'opens the session history',
-    '/mcp': 'opens the MCP servers window',
-    '/advisor': 'opens a card for choosing the advisor model'
+    '/mcp': 'opens the MCP servers window'
   };
   /* The view's own command menu (slash.js), so there is no second list to keep in step. */
   function commandList() {
@@ -369,6 +393,16 @@
     },
     '/help': function () {
       return { commands: commandList(), notes: ['Any other command is passed to Claude in the tab.'] };
+    },
+    /* The advisor's card, opened as the composer's /advisor opens it: in the tab in front,
+       which it is drawn in and writes its outcome to. Answered with 'answerAdvisor' or closed
+       with 'dismissAdvisor'. */
+    '/advisor': function (t, arg, text) {
+      refuseWhileSwitching(t);
+      if (t !== activeTab()) refuse("The advisor's card opens in the tab in front. Bring that tab forward with action 'selectTab' first.");
+      if (t.pendingCard) refuse('That tab is waiting on a card already; it has to be answered before the advisor\'s card can open.');
+      openAdvisorCard(text);
+      return { advisor: advisorCardOf(t) };
     }
   };
 
@@ -599,6 +633,7 @@
       const out = { ok: true, tab: describe(t), total: all.length, messages: all.slice(-limit),
         waitingOnCard: cardKind(t) || false };
       if (out.waitingOnCard === 'question') out.questions = cardQuestions(t);
+      if (out.waitingOnCard === 'advisor') out.advisor = advisorCardOf(t);
       const notes = [];
       if (t.streaming) notes.push('Claude is still working in this tab; its reply so far may be incomplete.');
       if (t.opening) notes.push('The conversation is still being drawn; its older messages are not all here yet.');
@@ -779,15 +814,15 @@
       if (t.id !== activeId) switchTab(t.id);
       return result(t, []);
     },
-    /* The question card a tab waits on, answered as its own Submit answers it. An approval or
-       the advisor's card is the user's: they decide what Claude may do. */
+    /* The question card a tab waits on, answered as its own Submit answers it. An approval is
+       the user's: they decide what Claude may do. */
     answerQuestion: function (req) {
       const t = tabForChange(req);
       const kind = cardKind(t);
       if (!kind) refuse('That tab is not waiting on a card.');
+      if (kind === 'advisor') refuse("That tab waits on the advisor's card; answer it with action 'answerAdvisor' or close it with 'dismissAdvisor'.");
       if (kind !== 'question') {
-        refuse('That tab waits on ' + (kind === 'advisor' ? "the advisor's card" : 'an approval card')
-          + ', which only the user answers, in the view or on their other devices.');
+        refuse('That tab waits on an approval card, which only the user answers, in the view or on their other devices.');
       }
       if (!Array.isArray(req.answers)) refuse("'answers' must be a list, one answer per question.");
       const card = t.pendingCard;
@@ -800,6 +835,30 @@
       finally { if (t !== activeTab() && target && target !== t) loadRender(target); }
       if (refusal) refuse(refusal);
       return { ok: true, answered: true, questions: questions.map(q => q.question), answers: req.answers, tab: describe(t) };
+    },
+    /* The advisor's card, answered as a click on one of its choices: the choice is written to
+       Claude Code's own settings, for every conversation on this machine. */
+    answerAdvisor: function (req) {
+      const t = tabForChange(req);
+      const card = advisorCardFor(t);
+      const asked = (typeof req.advisor === 'string') ? req.advisor.trim() : '';
+      const i = card._choices.findIndex(label => label.toLowerCase() === asked.toLowerCase());
+      if (i < 0) refuse("The advisor's card has no choice '" + asked + "'. Use one of: " + card._choices.join(', ') + '.');
+      const notes = queueNotes(t);
+      card._choose(i);
+      const out = { ok: true, advisor: card._choices[i], tab: describe(t) };
+      if (notes.length) out.notes = notes;
+      return out;
+    },
+    /* The advisor's card closed as Esc closes it: nothing is changed or written. */
+    dismissAdvisor: function (req) {
+      const t = tabForChange(req);
+      const card = advisorCardFor(t);
+      const notes = queueNotes(t);
+      card._dismiss();
+      const out = { ok: true, dismissed: true, tab: describe(t) };
+      if (notes.length) out.notes = notes;
+      return out;
     },
     /* A folder tab closed with its conversations, as its × does, short of the one question
        the view asks: the last folder is not closed from here. */

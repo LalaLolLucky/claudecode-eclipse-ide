@@ -75,6 +75,12 @@ function openAdvisorCard(echoText) {
     clearBottomCard(owner);
   }
   function cancel() { if (!resolved) done(); }
+  // For the claudeCodeEclipse tool (claudetool.js): the choices by label, the one in effect,
+  // and the card's own pick and Esc.
+  card._choices = OPTS.map(([label]) => label);
+  card._current = OPTS[curIdx][0];
+  card._choose = (i) => confirm(i);
+  card._dismiss = cancel;
   function confirm(i) {
     if (resolved) return;
     const label = OPTS[i][0], value = OPTS[i][1];
@@ -83,7 +89,13 @@ function openAdvisorCard(echoText) {
     // The setting is read at claude spawn time — retire every idle tab's process
     // so its next send respawns (and resumes via sessionId) with the new advisor.
     // A tab mid-stream keeps its process; it picks the change up on its own respawn.
-    if (window._disposeTab) tabs.forEach(tb => { if (!tb.streaming) window._disposeTab(tb.id); });
+    // Nor a tab with a request of Claude's still waiting on the user (a background agent's,
+    // after its turn ended, waits behind this very card): retiring its process would take
+    // the request, and the agent, with it.
+    if (window._disposeTab) tabs.forEach(tb => {
+      const waiting = (tb.pendingCard && tb.pendingCard !== card) || (tb.cardQueue && tb.cardQueue.length);
+      if (!tb.streaming && !waiting) window._disposeTab(tb.id);
+    });
     done();
     // The "/advisor" echo lands HERE, not when the card opened: the command only
     // becomes part of the conversation once a choice is made. Cancel/Esc runs

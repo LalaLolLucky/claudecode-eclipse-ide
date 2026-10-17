@@ -69,7 +69,7 @@ window.onApprovalRequest = function(tabId, reqId, toolName, detail, rememberLabe
   // changing) can't retarget which tab's card this decide() call clears.
   const owner = t || rtab || activeTab();
   // One card at a time: a request that comes while one is up waits behind it (carddock.js).
-  if (queueCardRequest(owner, reqId, () => window.onApprovalRequest(tabId, reqId, toolName, detail, rememberLabel))) return;
+  if (queueCardRequest(owner, reqId, () => window.onApprovalRequest(tabId, reqId, toolName, detail, rememberLabel), 'approval')) return;
   const pane = streamPane() || (activeTab() ? activeTab().pane : null);
   if (!pane) { if (window._decide) window._decide(reqId, 'deny', ''); return; }
   hideWorking();
@@ -281,6 +281,9 @@ window.onApprovalRequest = function(tabId, reqId, toolName, detail, rememberLabe
   });
 
   showBottomCard(card, owner);
+  // The proposed change opens in its diff editor now that its card is up, not when the
+  // request came: it may have waited behind another card (ClaudeGuiView.openPreview).
+  if (window._approvalShown) window._approvalShown(reqId);
   // force only with Smart Scroll Lock on — see its comment in chat.js.
   scrollBottom(smartScrollLock);
 };
@@ -301,7 +304,7 @@ window.onAskQuestion = function(tabId, reqId, questionsJson) {
   // card this closure's finish()/cancel() will show/clear, independent of rtab or
   // activeTab() changing later (e.g. the user switches tabs before answering).
   const owner = t || rtab || activeTab();
-  if (queueCardRequest(owner, reqId, () => window.onAskQuestion(tabId, reqId, questionsJson))) return;   // as above
+  if (queueCardRequest(owner, reqId, () => window.onAskQuestion(tabId, reqId, questionsJson), 'question')) return;   // as above
   const pane = streamPane() || (activeTab() ? activeTab().pane : null);
   let questions = [];
   try { questions = JSON.parse(questionsJson) || []; } catch (e) {}

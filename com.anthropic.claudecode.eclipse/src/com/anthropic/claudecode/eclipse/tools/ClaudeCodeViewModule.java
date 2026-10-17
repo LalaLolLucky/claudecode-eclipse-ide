@@ -41,14 +41,14 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
     private static final List<String> ACTIONS = List.of("listTabs", "newTab", "configureTab", "sendPrompt", "runCommand", "remoteControl", "closeTab", "listHistory", "openSession",
             "readTab", "stopTab", "forkMessage", "rewindCode", "deleteMessage", "listBookmarks", "setBookmark",
             "archiveSession", "renameSession", "usage", "exportConversation", "selectTab", "answerQuestion",
-            "closeFolder");
+            "answerAdvisor", "dismissAdvisor", "closeFolder");
 
     /** The actions on a saved conversation, which is checked here before the page is asked. */
     private static final List<String> ON_A_SESSION = List.of("openSession", "archiveSession", "renameSession");
 
     /** What an action may send to the page; anything else in the call stays behind. */
     private static final List<String> PARAMS = List.of("tabId", "folder", "model", "effort", "thinking", "mode", "prompt", "command", "enabled", "remoteControl",
-            "messageId", "replyId", "restoreCode", "preview", "archived", "limit", "answers");
+            "messageId", "replyId", "restoreCode", "preview", "archived", "limit", "answers", "advisor");
 
     /** How long an answer the page has to wait for is waited for here, and how often the page
      *  is asked whether it has come. The page gives up on the CLI first, and says so. */
@@ -165,8 +165,10 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
                 + "/compact, /clear, /context, /model, /remote-control and /help are carried out for "
                 + "that tab and answered in the result; /clear replaces that tab's conversation with "
                 + "a new one, which on the tab the call came from ends this conversation, and on a "
-                + "tab under Remote Control cuts the user's other devices off from it. /rewind, "
-                + "/resume, /mcp and /advisor open something in the view that waits for the user "
+                + "tab under Remote Control cuts the user's other devices off from it. /advisor opens "
+                + "the advisor's card in that tab, which has to be the tab in front with no card up, "
+                + "and answers with its choices and the current one. /rewind, "
+                + "/resume and /mcp open something in the view that waits for the user "
                 + "there, and are refused. Any other command (Claude's own, a custom command, a "
                 + "skill) is passed to Claude in that tab, and the call returns at once without "
                 + "what it prints. "
@@ -185,7 +187,9 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
                 + "in front: the last 'limit' of the user's messages and Claude's replies, each "
                 + "with the 'messageId' or 'replyId' other actions take, and whether Claude is "
                 + "still working or the tab waits on a card ('waitingOnCard': question, approval or "
-                + "advisor), with a question card's questions and options. Read it to "
+                + "advisor), with a question card's questions and options and the advisor card's "
+                + "choices, and the requests of Claude's waiting behind that card for their turn "
+                + "('cardsWaiting', in order: approval or question; 'listTabs' shows it too). Read it to "
                 + "see the answer to a prompt that was sent. "
                 + "action='stopTab' stops what Claude is doing in the tab with 'tabId', like the "
                 + "Stop button, and leaves the tab open. "
@@ -214,9 +218,15 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
                 + "'tabId' waits on, as the user would: 'answers' has one entry per question, in "
                 + "order, each an option's label or words of its own, and for a question that "
                 + "takes several options their labels joined by ', '. 'readTab' shows the "
-                + "questions and their options. Only a question card is answered from here: an "
-                + "approval card (a tool asking to run or to edit) and the advisor's are the "
-                + "user's to answer, and are refused. action='closeFolder' closes the folder tab "
+                + "questions and their options. action='answerAdvisor' picks 'advisor' on the "
+                + "advisor's card the tab with 'tabId' waits on, as a click on that choice does: one "
+                + "of the choices 'readTab' shows, by its label, or 'No advisor'. The choice is Claude "
+                + "Code's own advisor setting, which applies to every conversation and workspace on "
+                + "this machine and to the Claude Terminal. action='dismissAdvisor' closes that card "
+                + "and changes nothing, as Esc does. Both need that tab in front. A request of "
+                + "Claude's that came while the card was up shows its own card once it is gone. An "
+                + "approval card (a tool asking to run or to edit) is the user's to answer, and is "
+                + "refused. action='closeFolder' closes the folder tab "
                 + "'folder' with its conversations; it is refused for the only folder open, and "
                 + "while one of its conversations is working or waiting on a card. "
                 + "A call cannot tell which tab it was made from, so take 'tabId' from 'listTabs' "
@@ -227,7 +237,7 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
     public void describeParams(JsonObject props) {
         props.add("tabId", param("string", "claudeCodeView configureTab/sendPrompt/runCommand/remoteControl/closeTab/"
                 + "readTab/stopTab/forkMessage/rewindCode/deleteMessage/listBookmarks/setBookmark/usage/"
-                + "exportConversation/selectTab/answerQuestion: the tab, as shown by 'listTabs', e.g. 'tab2'. Left out, "
+                + "exportConversation/selectTab/answerQuestion/answerAdvisor/dismissAdvisor: the tab, as shown by 'listTabs', e.g. 'tab2'. Left out, "
                 + "'configureTab', 'readTab', 'listBookmarks', 'usage' and 'exportConversation' take the "
                 + "tab in front; the others require it."));
         props.add("folder", param("string", "claudeCodeView newTab/listHistory/openSession/archiveSession/closeFolder: the full "
@@ -236,6 +246,8 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
         props.add("answers", ToolSupport.strings("claudeCodeView answerQuestion: one answer per question of "
                 + "the card, in order: an option's label, words of its own, or for a question that takes "
                 + "several options their labels joined by ', '."));
+        props.add("advisor", param("string", "claudeCodeView answerAdvisor: the choice to pick on the "
+                + "advisor's card, by its label as 'readTab' shows it, or 'No advisor'."));
         props.add("sessionId", param("string", "claudeCodeView openSession/archiveSession/renameSession: "
                 + "the conversation, as 'listHistory' shows it."));
         props.add("query", param("string", "claudeCodeView listHistory: show only the conversations "
@@ -306,6 +318,7 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
             }
             if ("renameSession".equals(action)) nameRename(params, request);
             if ("answerQuestion".equals(action)) checkAnswers(params);
+            if ("answerAdvisor".equals(action)) checkAdvisor(params);
             if (params.has("files") && !params.get("files").isJsonNull()) request.add("files", filesOf(params));
             if ("exportConversation".equals(action)) exportTo = exportFileOf(params);
         } catch (IllegalArgumentException e) {
@@ -399,6 +412,17 @@ class ClaudeCodeViewModule implements ClaudeCodeEclipseTool.Module {
         if (!strings) {
             throw new IllegalArgumentException("'answers' is required: a list with one answer per question, "
                     + "in order. 'readTab' shows the questions.");
+        }
+    }
+
+    /** An 'answerAdvisor' call's choice: a label in words. Whether the card offers it, the page says. */
+    private static void checkAdvisor(JsonObject params) {
+        JsonElement advisor = params.get("advisor");
+        boolean words = advisor != null && advisor.isJsonPrimitive() && advisor.getAsJsonPrimitive().isString()
+                && !advisor.getAsString().isBlank();
+        if (!words) {
+            throw new IllegalArgumentException("'advisor' is required: one of the choices on the advisor's card, "
+                    + "by its label, or 'No advisor'. 'readTab' shows them.");
         }
     }
 

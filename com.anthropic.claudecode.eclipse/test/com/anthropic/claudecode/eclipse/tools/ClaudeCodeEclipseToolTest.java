@@ -633,6 +633,62 @@ class ClaudeCodeEclipseToolTest {
     }
 
     @Test
+    void theAdvisorPickedReachesThePageByItsLabel() {
+        Page page = new Page("{\"ok\":true,\"advisor\":\"Opus 5\",\"tab\":{\"id\":\"tab2\"}}");
+        JsonObject call = args("claudeCodeView", "answerAdvisor");
+        call.addProperty("tabId", "tab2");
+        call.addProperty("advisor", "Opus 5");
+
+        McpToolResult result = toolOver(page).execute(call);
+
+        assertFalse(result.isError());
+        JsonObject asked = page.asked.get(0);
+        assertEquals("answerAdvisor", asked.get("action").getAsString());
+        assertEquals("tab2", asked.get("tabId").getAsString());
+        assertEquals("Opus 5", asked.get("advisor").getAsString());
+    }
+
+    @Test
+    void anAdvisorAnswerWithoutAChoiceIsRefusedWithoutAskingThePage() {
+        Page page = new Page("{\"ok\":true}");
+        JsonObject none = args("claudeCodeView", "answerAdvisor");
+        none.addProperty("tabId", "tab2");
+        JsonObject blank = args("claudeCodeView", "answerAdvisor");
+        blank.addProperty("tabId", "tab2");
+        blank.addProperty("advisor", "  ");
+        JsonObject number = args("claudeCodeView", "answerAdvisor");
+        number.addProperty("tabId", "tab2");
+        number.addProperty("advisor", 2);
+
+        assertTrue(toolOver(page).execute(none).isError());
+        assertTrue(toolOver(page).execute(blank).isError());
+        assertTrue(toolOver(page).execute(number).isError());
+        assertTrue(page.asked.isEmpty());
+    }
+
+    @Test
+    void theAdvisorsCardIsDismissedByAskingThePage() {
+        Page page = new Page("{\"ok\":true,\"dismissed\":true,\"tab\":{\"id\":\"tab2\"}}");
+        JsonObject call = args("claudeCodeView", "dismissAdvisor");
+        call.addProperty("tabId", "tab2");
+
+        McpToolResult result = toolOver(page).execute(call);
+
+        assertFalse(result.isError());
+        assertEquals("dismissAdvisor", page.asked.get(0).get("action").getAsString());
+        assertEquals("tab2", page.asked.get(0).get("tabId").getAsString());
+    }
+
+    @Test
+    void theSchemaDescribesTheAdvisorChoice() {
+        JsonObject advisor = new ClaudeCodeEclipseTool().inputSchema().getAsJsonObject("properties")
+                .getAsJsonObject("advisor");
+
+        assertEquals("string", advisor.get("type").getAsString());
+        assertTrue(advisor.get("description").getAsString().contains("answerAdvisor"));
+    }
+
+    @Test
     void aFolderIsClosedByAskingThePageWithItsPath() {
         Page page = new Page("{\"ok\":true,\"closed\":\"C:\\\\work\\\\api\",\"tabs\":[]}");
         JsonObject call = args("claudeCodeView", "closeFolder");

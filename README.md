@@ -217,7 +217,7 @@ Go to **Window → Preferences → Claude Code** to configure:
 | Enable Speech-to-text (STT) for Mac [Experimental] | Off | macOS only: dictation there is opt-in |
 | Smart Scroll Lock | Off | Still jump to the bottom for your own actions while Scroll Lock is on |
 | Start a tool's input, output and diff cards | Showing a few lines | Hidden (only the tool line; its arrow shows them), collapsed to one line, a few lines, or everything. Bash commands, file edits, search results, agents and web tools can each have their own start; the rest follow this one. Each card's own buttons and the arrow move it between the views from there |
-| Show a timestamp above your own messages | Off | A small local-time line above each message you sent, in live conversations and in history loaded from disk |
+| Show the time above your messages and Claude's replies | Off | A small local-time line above each message you sent and each of Claude's replies, the full date and time on hover, and one divider at the start of each day, in live conversations and in history loaded from disk |
 | Hide the root directories row | Off | Removes the working-folder picker, its collapsed stand-in and its toolbar toggle — for anyone who only ever works in one folder |
 | Hide messages from before a compaction | On | Hides everything above a conversation's last compaction; unticked, it is kept under one collapsed line |
 

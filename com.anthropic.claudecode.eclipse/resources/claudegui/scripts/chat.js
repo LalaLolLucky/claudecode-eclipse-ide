@@ -250,7 +250,11 @@ function absTime(iso) {
  *  page yet, and older parts go in above newer ones, so only the finished pane knows where
  *  a day changes. The dividers it made before are taken away first. Called wherever
  *  timestamped messages have been put into a pane. Only timestamped messages count, so
- *  with the setting off there are none. */
+ *  with the setting off there are none.
+ *  What came before a compaction is a section of its own (stream.js, .pre-compact, folded
+ *  away or hidden): its dividers are marked as part of it, so they go wherever it goes, and
+ *  the messages after it start their own run of days, so the first of them has its divider
+ *  even on the day the section ends. */
 function regroupDays(pane) {
   if (!pane) return;
   pane.querySelectorAll('.day-divider').forEach(d => {
@@ -258,10 +262,12 @@ function regroupDays(pane) {
     d.remove();
     if (turn && turn !== pane && turn.classList.contains('turn') && !turn.firstChild) turn.remove();
   });
-  let day = null;
+  let day = null, section = null;
   pane.querySelectorAll('.msg-ts-row > .msg-ts').forEach(label => {
     const d = new Date(Number(label.dataset.at));
     if (isNaN(d.getTime())) return;
+    const pre = !!label.closest('.pre-compact');
+    if (pre !== section) { section = pre; day = null; }
     const key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
     if (key === day) return;
     day = key;
@@ -271,16 +277,23 @@ function regroupDays(pane) {
     const line = wrap.firstChild; line.classList.add('day-divider');
     const row = label.parentNode, turn = row.parentNode;
     if (turn !== pane && turn.classList.contains('turn') && turn.firstChild === row) {
+      if (pre) wrap.classList.add('pre-compact');
       pane.insertBefore(wrap, turn);          // the message opens its turn: the divider is a turn of its own before it
     } else {
       turn.insertBefore(line, row);           // mid-turn: a line in the turn, where the day changes
     }
   });
 }
-/** The full local date and time behind a short label, for its tooltip: "2026-10-16 22:35:25 GMT+5:30". */
+/** The full local date and time behind a short label, for its tooltip: "2026-10-16 22:35:25 GMT+5:30".
+ *  An engine older than the 'shortOffset' zone name throws for it (a RangeError, and the
+ *  message it labels would not be drawn): the zone then reads by its short name instead. */
 function fullTime(iso) {
   const t = Date.parse(iso); if (isNaN(t)) return '';
-  return new Date(t).toLocaleString('sv-SE', { timeZoneName: 'shortOffset' });
+  try { return new Date(t).toLocaleString('sv-SE', { timeZoneName: 'shortOffset' }); }
+  catch (e) {
+    return new Date(t).toLocaleString('sv-SE', { year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short' });
+  }
 }
 /** The small time line shared by your messages and Claude's replies (one setting,
  *  window.__historyShowTimestamps): the short time as text, the full date and time as
@@ -1097,7 +1110,9 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
   line.innerHTML = '<span class="' + dotClass + '"></span><span class="tname"></span>'
       + (isAgent ? ' <span class="tagent-type"></span> <span class="tdesc"></span>'
                  : ' <span class="tdesc"></span> <span class="tpath-wrap"><span class="tpath"></span></span>');
-  line.querySelector('.tname').textContent = toolLabel(name);   // generic label, not the raw name
+  // generic label, not the raw name; AskUserQuestion is "Question" for one, as VS Code counts it
+  line.querySelector('.tname').textContent = key === 'askuserquestion' && Array.isArray(input.questions)
+      && input.questions.length === 1 ? 'Question' : toolLabel(name);
   // Multi-line detail (or any command/script, see hasCommand/hasScript) gets ONLY the boxed
   // IN below, never also the inline one-liner — the two used to both render for the same
   // content (e.g. a multi-line Bash script showed once wrapped inline via .tpath, then again

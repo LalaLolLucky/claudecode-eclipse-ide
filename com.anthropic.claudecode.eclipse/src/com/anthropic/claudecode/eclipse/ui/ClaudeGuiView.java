@@ -200,6 +200,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     private final List<Runnable> answersForLoadedPage = new java.util.ArrayList<>();
     @SuppressWarnings("unused") private SimpleFunction currentContextFn;
     @SuppressWarnings("unused") private SimpleFunction decideFn;
+    @SuppressWarnings("unused") private SimpleFunction approvalShownFn;
     @SuppressWarnings("unused") private SimpleFunction answerQuestionFn;
     @SuppressWarnings("unused") private SimpleFunction overlayOpenFn;
     @SuppressWarnings("unused") private SimpleFunction debugLogFn;
@@ -329,6 +330,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         return active;
     }
     private static final ConcurrentHashMap<String, CompletableFuture<String>> PENDING = new ConcurrentHashMap<>();
+    /** The diff preview of each approval request that has one, by request id, until the
+     *  request ends. Opened only once the page draws that request's card ({@code _approvalShown}):
+     *  a request that comes while another card is up waits behind it (carddock.js), and its
+     *  preview must not stand in front of the change the card on screen is asking about. */
+    private static final ConcurrentHashMap<String, PendingPreview> PREVIEWS = new ConcurrentHashMap<>();
     private static volatile boolean allowAllSession = false;
     // --- AskUserQuestion bridge (claude mcp__eclipse__askUserQuestion) ---
     private static final ConcurrentHashMap<String, CompletableFuture<String>> QPENDING = new ConcurrentHashMap<>();
@@ -1400,6 +1406,11 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 // approval tool can pass it back to claude as the deny reason.
                 if (f != null) f.complete(msg.isEmpty() ? dec : (dec + msg));
             }
+            return null;
+        });
+        // The page has drawn an approval card: its diff preview, if it has one, opens now.
+        approvalShownFn = new SimpleFunction(browser, "_approvalShown", a -> {
+            if (a.length >= 1 && a[0] instanceof String reqId) openPreview(reqId);
             return null;
         });
         answerQuestionFn = new SimpleFunction(browser, "_answerQuestion", a -> {
@@ -4533,14 +4544,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         final String rl = esc(rememberLabel == null ? "" : rememberLabel);
 
         // Show the proposed change in an Eclipse diff editor while the card is up
-        // (matches the VSCode panel: the diff opens at the decision point).
-        final org.eclipse.compare.CompareEditorInput[] preview = { null };
+        // (matches the VSCode panel: the diff opens at the decision point). Opened when
+        // the page draws this card (openPreview), not now: it may wait behind another.
         if (filePath != null && !filePath.isEmpty() && proposedContent != null) {
-            try {
-                preview[0] = com.anthropic.claudecode.eclipse.tools.DiffPreview.open(
-                        filePath, proposedContent,
-                        java.nio.file.Path.of(filePath).getFileName() + " (proposed)");
-            } catch (Exception ignored) {}
+            PREVIEWS.put(reqId, new PendingPreview(filePath, proposedContent));
         }
 
         cardOpened();
@@ -4573,10 +4580,64 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             cardClosed();
             PENDING.remove(reqId);
             unregisterControlCard(tabId, controlId, reqId);
-            if (preview[0] != null) {
-                try { com.anthropic.claudecode.eclipse.tools.DiffPreview.close(preview[0]); }
-                catch (Exception ignored) {}
-            }
+            closePreview(reqId);
+        }
+    }
+
+    /** An approval request's diff preview: what it shows, and the editor once it is open. */
+    private static final class PendingPreview {
+        final String filePath;
+        final String proposedContent;
+        org.eclipse.compare.CompareEditorInput input;   // guarded by this
+        boolean ended;                                  // guarded by this: the request is over
+
+        PendingPreview(String filePath, String proposedContent) {
+            this.filePath = filePath;
+            this.proposedContent = proposedContent;
+        }
+    }
+
+    /**
+     * Opens the diff preview of approval request {@code reqId}, if it has one: called when the
+     * page draws its card. Once only. A request that ended while the editor was opening has it
+     * closed again at once.
+     */
+    private static void openPreview(String reqId) {
+        PendingPreview p = PREVIEWS.get(reqId);
+        if (p == null) return;
+        synchronized (p) {
+            if (p.ended || p.input != null) return;
+        }
+        org.eclipse.compare.CompareEditorInput input = null;
+        try {
+            input = com.anthropic.claudecode.eclipse.tools.DiffPreview.open(p.filePath, p.proposedContent,
+                    java.nio.file.Path.of(p.filePath).getFileName() + " (proposed)");
+        } catch (Exception ignored) {}
+        if (input == null) return;
+        boolean ended;
+        synchronized (p) {
+            ended = p.ended;
+            if (!ended) p.input = input;
+        }
+        if (ended) {
+            try { com.anthropic.claudecode.eclipse.tools.DiffPreview.close(input); }
+            catch (Exception ignored) {}
+        }
+    }
+
+    /** Closes the diff preview of approval request {@code reqId}, open or not yet: the request is over. */
+    private static void closePreview(String reqId) {
+        PendingPreview p = PREVIEWS.remove(reqId);
+        if (p == null) return;
+        org.eclipse.compare.CompareEditorInput input;
+        synchronized (p) {
+            p.ended = true;
+            input = p.input;
+            p.input = null;
+        }
+        if (input != null) {
+            try { com.anthropic.claudecode.eclipse.tools.DiffPreview.close(input); }
+            catch (Exception ignored) {}
         }
     }
 
