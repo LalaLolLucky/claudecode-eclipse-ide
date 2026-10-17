@@ -512,6 +512,24 @@ function toolLabel(name) {
   const words = n.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Working';
 }
+/** The MCP server a tool belongs to, as a reader would say it, from its "mcp__<server>__<tool>"
+ *  name, or '' for a tool that is not an MCP one. A plugin's server is named
+ *  "plugin_<plugin>_<server>" and a claude.ai connector's "claude_ai_<name>": those prefixes are
+ *  dropped, a plugin that names its server after itself ("plugin_github_github") reads once, and
+ *  what is left is capitalised word by word ("superpowers_chrome" → "Superpowers Chrome"). */
+function mcpServerName(name) {
+  const raw = String(name || '');
+  if (raw.indexOf('mcp__') !== 0) return '';
+  let server = raw.split('__')[1] || '';
+  if (server.indexOf('plugin_') === 0) {
+    server = server.slice('plugin_'.length);
+    const half = server.length / 2 - 0.5;
+    if (server.charAt(half) === '_' && server.slice(0, half) === server.slice(half + 1)) server = server.slice(0, half);
+  } else if (server.indexOf('claude_ai_') === 0) {
+    server = server.slice('claude_ai_'.length);
+  }
+  return server.split('_').filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
 /* Build a tool line (+ inline diff inside the same .a-item so the connector spans it).
    Shared by live streaming (addToolLine, no status → gray) and history reconstruction
    (status "done"/"interrupted" from the transcript → green/red, so a reloaded convo
@@ -1127,6 +1145,13 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
   // generic label, not the raw name; AskUserQuestion is "Question" for one, as VS Code counts it
   line.querySelector('.tname').textContent = key === 'askuserquestion' && Array.isArray(input.questions)
       && input.questions.length === 1 ? 'Question' : toolLabel(name);
+  // An MCP or plugin tool says which server it is from, in front of its own name: "Playwright › Browser click".
+  const server = mcpServerName(name);
+  if (server) {
+    const tag = document.createElement('span'); tag.className = 'tmcp'; tag.textContent = server + ' \u203a';
+    tag.title = 'MCP server: ' + server;
+    line.querySelector('.tname').before(tag, document.createTextNode(' '));
+  }
   // Multi-line detail (or any command/script, see hasCommand/hasScript) gets ONLY the boxed
   // IN below, never also the inline one-liner — the two used to both render for the same
   // content (e.g. a multi-line Bash script showed once wrapped inline via .tpath, then again
@@ -1155,7 +1180,10 @@ function makeToolLine(name, input, status, errorText, root, resultText, hasAgent
   } else {
     // A tool's own description (e.g. Bash's "what this command does") sits inline next to
     // the name, same slot Agent uses above — independent of whether detail is boxed below.
-    if (input.description) line.querySelector('.tdesc').textContent = input.description;
+    // An MCP tool with none of its own says what it acts on, when its input names that in words
+    // (Playwright's `element`: "Submit button"); the input itself stays in the boxed IN below.
+    const described = input.description || (server && typeof input.element === 'string' ? input.element : '');
+    if (described) line.querySelector('.tdesc').textContent = described;
     if (boxDetail) {
       // Leave .tpath-wrap in the DOM (simpler than branching the innerHTML above) but
       // empty and invisible — the boxed IN a few lines down is the sole representation.

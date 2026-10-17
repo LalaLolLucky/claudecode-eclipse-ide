@@ -618,7 +618,7 @@ function agentToolHeader(rawName, rawInput) {
     case 'taskoutput':
       return named(label, input.task_id ? 'task: "' + input.task_id + '"' : '');
     default:
-      return named(label, '');
+      return named(mcp && mcpServerName(rawName) ? mcpServerName(rawName) + ' › ' + label : label, '');
   }
 }
 
