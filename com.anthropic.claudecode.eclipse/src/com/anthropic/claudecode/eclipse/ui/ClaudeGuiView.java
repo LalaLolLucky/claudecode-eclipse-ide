@@ -4778,13 +4778,14 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      * when the bound key is pressed. Routes to the page's own cancel path so the keyboard
      * and in-page routes stay identical.
      */
-    public static void dismissActiveCard(int eventTime) {
+    public static void dismissActiveCard(org.eclipse.swt.widgets.Event trigger) {
         // Eclipse was confirmed (via logging, since removed) to dispatch this command
         // multiple times for one physical keypress — a single Ctrl+G was observed popping
         // TWO entries off the JS-side cancel stack (find AND history). Dedup on the OS-level
         // event timestamp (Event.time — identical across redeliveries of one keypress,
         // distinct across separate presses) rather than a wall-clock time window, which
         // would need guessing at how many redeliveries can occur.
+        int eventTime = trigger != null ? trigger.time : -1;
         if (eventTime != -1 && eventTime == lastDismissEventTime) return;
         lastDismissEventTime = eventTime;
         ClaudeGuiView view = active;
@@ -4792,7 +4793,30 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 || !view.pageLoaded) {
             return;
         }
+        // An Esc sent to the page is the page's: its cards take Escape themselves, and this
+        // command came on top of that, a copy of the same press — on macOS after it, late
+        // enough that the card the page's Esc had closed was already followed by the next,
+        // which the copy then closed too (the edit waiting behind the advisor's card, denied).
+        // Decided by where the key was sent, not where the focus is now: the next card can
+        // open a diff editor that takes the focus before the copy comes. Not on Windows,
+        // where WebView2 gives Eclipse the key first and the page may never see it.
+        // Ctrl+G (Emacs) is never the page's and always goes on.
+        boolean sentToPage = trigger != null && trigger.keyCode == SWT.ESC
+                && !"win32".equals(SWT.getPlatform()) && isWithin(trigger.widget, view.browser);
+        ClaudeCodeView.debug("[KEY] dismiss: Eclipse's command, sent to "
+                + (trigger == null || trigger.widget == null ? "nothing" : trigger.widget.getClass().getSimpleName())
+                + (sentToPage ? ", left to the page" : ", passed on"));
+        if (sentToPage) return;
         view.browser.execute("window.cancelActiveCard && window.cancelActiveCard()");
+    }
+
+    /** Whether {@code widget} is {@code control} or inside it. */
+    private static boolean isWithin(org.eclipse.swt.widgets.Widget widget, org.eclipse.swt.widgets.Control control) {
+        for (org.eclipse.swt.widgets.Control c = widget instanceof org.eclipse.swt.widgets.Control w ? w : null;
+                c != null; c = c.getParent()) {
+            if (c == control) return true;
+        }
+        return false;
     }
 
     /**

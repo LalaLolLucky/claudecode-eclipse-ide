@@ -16,26 +16,26 @@ import com.anthropic.claudecode.eclipse.ui.ClaudeGuiView;
  * <p>The work is deliberately delegated to the page rather than reimplemented here: the
  * card's own JS {@code cancel()} already answers the CLI, resolves the step dot and tears
  * the card down. Going through it means the keyboard path and the in-page Esc path cannot
- * drift apart, and the existing {@code resolved} guard makes a double-fire a no-op.
+ * drift apart, and the existing {@code resolved} guard makes a double-fire a no-op. An Esc
+ * sent to the page is left to the page's own listeners (see
+ * {@link ClaudeGuiView#dismissActiveCard}): a copy of it from here closed the card behind.
  */
 public class DismissCardHandler extends AbstractHandler {
 
     @Override
     public Object execute(ExecutionEvent event) {
-        ClaudeGuiView.dismissActiveCard(eventTime(event));
+        ClaudeGuiView.dismissActiveCard(trigger(event));
         return null;
     }
 
     /**
-     * The OS-level timestamp of the key event that triggered this command, or -1 if
-     * unavailable (programmatic execution, no underlying SWT event). Identical across
-     * however many times Eclipse redelivers ONE physical keypress to this handler, and
-     * distinct across genuinely separate presses — used by {@link ClaudeGuiView} to dedup
-     * a confirmed multi-dispatch without guessing at a time-window threshold.
+     * The key event that triggered this command, or null if there is none (programmatic
+     * execution). {@link ClaudeGuiView} reads its OS-level time, identical across however
+     * many times Eclipse redelivers ONE physical keypress and distinct across separate
+     * presses, to dedup a confirmed multi-dispatch; and its key and widget, to leave an Esc
+     * the page takes itself to the page.
      */
-    private static int eventTime(ExecutionEvent event) {
-        Object trigger = event.getTrigger();
-        if (trigger instanceof org.eclipse.swt.widgets.Event swtEvent) return swtEvent.time;
-        return -1;
+    private static org.eclipse.swt.widgets.Event trigger(ExecutionEvent event) {
+        return event.getTrigger() instanceof org.eclipse.swt.widgets.Event swtEvent ? swtEvent : null;
     }
 }
