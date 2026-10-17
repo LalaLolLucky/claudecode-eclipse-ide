@@ -22,7 +22,7 @@ class TerminalLaunchArgsTest {
     private static final String CONFIG = "C:/state/terminal/mcp-10123.json";
     private static final String HIDDEN = "mcp__eclipse__openDiff,mcp__eclipse__acceptDiff,"
             + "mcp__eclipse__rejectDiff,mcp__eclipse__closeAllDiffTabs,"
-            + "mcp__eclipse__askUserQuestion,mcp__eclipse__approvalPrompt";
+            + "mcp__eclipse__askUserQuestion";
 
     /** A CLI that knows every flag asked about. */
     private static final Predicate<String> CURRENT = flag -> true;

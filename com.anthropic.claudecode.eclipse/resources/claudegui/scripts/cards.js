@@ -1,32 +1,5 @@
 /* cards.js — CLI-enforced permission decision card + AskUserQuestion card. */
 
-/* The CLI's own wording for "rejected, and here is what the user wants instead",
-   copied verbatim from the claude binary (verified byte-for-byte against
-   bin/claude.exe — note it ends with a NEWLINE, not a space; the user's text goes
-   on the following line). Using the CLI's phrasing is what makes
-   the model treat the tail as the user speaking instead of as anomalous tool
-   output, and the explicit rejection clause stops it narrating an edit that never
-   happened (#98). The CLI's other variant ends "STOP what you are doing and wait
-   for the user to tell you how to proceed." — that one is for a deny with no
-   instruction, and it is what the CLI already sends when this text is empty. */
-const DENY_WITH_INSTRUCTION =
-  "The user doesn't want to proceed with this tool use. The tool use was rejected " +
-  "(eg. if it was a file edit, the new_string was NOT written to the file). " +
-  "To tell you how to proceed, the user said:\n";
-
-/* Identifies the ONE middle-option label that means "switch this session to
-   acceptEdits". The label is built by primary_suggestion() in chat.rs, which is
-   the only thing that crosses the bridge — the suggestion's type does not — so
-   the wording is the signal. Its other branches are deliberately excluded:
-     "Yes, allow '<rule>' …"      addRules      — scoped to one tool/path
-     "Yes, allow all <Tool> …"    addRules      — scoped to one tool
-     "Yes, allow edits in <dir> …" addDirectories — scoped to one directory
-     "Yes, switch to <m> mode …"  setMode, but not acceptEdits
-   Flipping the indicator (and therefore the next spawn's --permission-mode) to
-   acceptEdits for any of those would hand the session BROADER permission than
-   the user agreed to on the card. Keep this in step with primary_suggestion. */
-const ACCEPTS_ALL_EDITS = /^Yes, allow all edits\b/;
-
 /* ---- plan approval (ExitPlanMode) ----
    The CLI asks for ExitPlanMode like any other tool — `checkPermissions` returns
    a bare {behavior:"ask", message:"Exit plan mode?"} with NO permission_suggestions,
@@ -41,8 +14,8 @@ const PLAN_TOOL = 'ExitPlanMode';
 const PLAN_MODE_FOR = { allowAuto: 'acceptEdits', allowManual: 'default' };
 /* The CLI's own wording for a rejected plan, copied byte-exact from claude.exe
    (its `dmn`, up to the "\n\nRejected plan:\n" slot, which we can't fill — the
-   plan text isn't on this wire). NOT DENY_WITH_INSTRUCTION: that one asserts a
-   file edit was skipped, which is wrong here and would drop edit-rejection
+   plan text isn't on this wire). NOT DENY_STOP / DENY_WITH_REASON: those
+   assert a file edit was skipped, which is wrong here and would drop edit-rejection
    language into a planning conversation. */
 const PLAN_REJECTED =
   "The agent proposed a plan that was rejected by the user. The user chose to stay " +
@@ -53,15 +26,225 @@ const PLAN_REJECTED =
    the join site (below), NOT baked in here, so this stays greppable in claude.exe. */
 const PLAN_FEEDBACK = "To tell you how to proceed, the user said:\n";
 
-/* ---- permission decision card (claude --permission-prompt-tool) ---- */
+/* ---- permission decision card (claude --permission-prompt-tool stdio) ---- */
+
+/* The words a rejection tells Claude, as the VS Code extension sends them (its webview bundle):
+   with nothing from the reader the run is told to stop and wait for them, with some they are
+   the reason. The CLI refuses a rejection with no message at all. */
+const DENY_STOP =
+  "The user doesn't want to proceed with this tool use. The tool use was rejected " +
+  "(eg. if it was a file edit, the new_string was NOT written to the file). " +
+  "STOP what you are doing and wait for the user to tell you how to proceed.";
+const DENY_WITH_REASON =
+  "The user doesn't want to proceed with this tool use. The tool use was rejected " +
+  "(eg. if it was a file edit, the new_string was NOT written to the file). " +
+  "The user provided the following reason for the rejection: ";
+
+/* Where "don't ask again" saves what it allows, as the CLI names the places, in the order the
+   Left and Right arrows go through them. */
+const PERM_DESTINATIONS = ['localSettings', 'userSettings', 'projectSettings', 'session'];
+const PERM_DEST_NAME = {
+  localSettings: 'this project (just you)', userSettings: 'all projects',
+  projectSettings: 'this project (shared)', session: 'this session' };
+const PERM_DEST_HINT = {
+  localSettings: 'Saves to .claude/settings.local.json (gitignored)',
+  userSettings: 'Saves to ~/.claude/settings.json',
+  projectSettings: 'Saves to .claude/settings.json (shared with team)',
+  session: 'Only for this session (not saved)' };
+const PERM_DEST_KEY = 'claude-eclipse-permission-destination';
+/* Which destination a card starts on when none was chosen before: the widest one the CLI offered. */
+const PERM_DEST_WIDEST = ['userSettings', 'projectSettings', 'localSettings', 'session'];
+
+function storedPermDestination() {
+  try { const v = localStorage.getItem(PERM_DEST_KEY); return PERM_DESTINATIONS.indexOf(v) >= 0 ? v : null; }
+  catch (e) { return null; }
+}
+function storePermDestination(v) { try { localStorage.setItem(PERM_DEST_KEY, v); } catch (e) {} }
+
+/* A grant's text on one line: a line break in a rule would break the label. */
+const PERM_LINE_BREAK = new RegExp('\\r\\n|[\\r\\n\\v\\f\\x85' + String.fromCharCode(0x2028, 0x2029) + ']', 'g');
+function permOneLine(text) { return String(text).replace(PERM_LINE_BREAK, String.fromCharCode(0x23ce)); }
+function permBase(p) { return String(p || '').split(/[\\/]/).pop() || String(p || ''); }
+
+/** What the CLI's suggested updates would allow: `{rules, dirs, mode}`, each rule or directory as
+ *  a short `label` and its `full` text (for a tooltip). */
+function describeSuggestions(suggestions) {
+  const rules = [], dirs = [];
+  let mode = null;
+  suggestions.forEach(s => {
+    if (!s) return;
+    if (s.type === 'addRules') {
+      (s.rules || []).forEach(r => {
+        if (!r.ruleContent) { rules.push({ label: r.toolName, full: r.toolName }); return; }
+        const prefix = /^(.+):\*$/.exec(r.ruleContent);
+        if (prefix) { rules.push({ label: prefix[1], full: r.ruleContent }); return; }
+        const chars = Array.from(r.ruleContent);
+        rules.push({ label: chars.length > 20 ? chars.slice(0, 17).join('') + '…' : r.ruleContent, full: r.ruleContent });
+      });
+    } else if (s.type === 'addDirectories') {
+      (s.directories || []).forEach(d => dirs.push({ label: permBase(d) + '/', full: d }));
+    } else if (s.type === 'setMode') {
+      mode = { mode: s.mode, destination: s.destination };
+    }
+  });
+  return { rules: rules, dirs: dirs, mode: mode };
+}
+
+/** The "don't ask again" option's text for `desc` and the chosen `dest`. `cycle(1)` is what clicking
+ *  the destination does. `hasDest` is false when the option saves nowhere the reader can choose
+ *  (a change of mode, or nothing that can be named). */
+function rememberLabel(desc, dest, cycle) {
+  const node = document.createElement('span');
+  const put = function () {
+    Array.prototype.forEach.call(arguments, p => node.appendChild(typeof p === 'string' ? document.createTextNode(p) : p));
+  };
+  const grant = g => {
+    const e = document.createElement('span');
+    e.textContent = permOneLine(g.label);
+    if (permOneLine(g.full) !== permOneLine(g.label)) e.title = permOneLine(g.full);
+    return e;
+  };
+  const several = (list, text) => {
+    const e = document.createElement('span');
+    e.textContent = text;
+    e.title = list.map(g => '• ' + permOneLine(g.full)).join('\n');
+    return e;
+  };
+  const link = () => {
+    const e = document.createElement('span');
+    e.className = 'dec-dest'; e.textContent = PERM_DEST_NAME[dest]; e.title = PERM_DEST_HINT[dest];
+    e.onclick = ev => { ev.stopPropagation(); cycle(1); };
+    return e;
+  };
+  const r = desc.rules, d = desc.dirs;
+  if (r.length === 1) put('Yes, allow ', grant(r[0]), ' for ', link());
+  else if (r.length === 2) put('Yes, allow ', grant(r[0]), ' and ', grant(r[1]), ' for ', link());
+  else if (r.length > 2) put('Yes, allow ', grant(r[0]), ' and ', several(r.slice(1), (r.length - 1) + ' more'), ' for ', link());
+  else if (d.length === 1) put('Yes, allow access to ', grant(d[0]), ' for ', link());
+  else if (d.length > 1) put('Yes, allow access to ', several(d, d.length + ' directories'), ' for ', link());
+  else {
+    const m = desc.mode && desc.mode.mode;
+    put(m === 'acceptEdits' ? 'Yes, allow all edits this session'
+        : m === 'default' ? 'Yes, return to normal mode' : "Yes, and don't ask again");
+    return { node: node, hasDest: false };
+  }
+  return { node: node, hasDest: true };
+}
+
+/** The card's question, and under it what the reader needs to see or may change, for one tool's
+ *  request: `{header: [nodes], body: [nodes], editor}`. `editor` is the command box of a shell
+ *  tool, whose text is what gets run. */
+function permissionPrompt(toolName, input, t) {
+  const key = String(toolName || '').toLowerCase();
+  const out = { header: [], body: [], editor: null };
+  const ask = function () {
+    out.header = Array.prototype.map.call(arguments, p => typeof p === 'string' ? document.createTextNode(p) : p);
+  };
+  const code = (text, title) => {
+    const c = document.createElement('code'); c.className = 'dec-path'; c.textContent = text;
+    if (title) c.title = title;
+    return c;
+  };
+  const line = (cls, text) => {
+    const d = document.createElement('div'); d.className = cls; d.textContent = text;
+    return d;
+  };
+  const file = p => code(permBase(p), p);
+  switch (key) {
+    case 'bash': case 'powershell': {
+      ask('Allow this ' + (key === 'bash' ? 'bash' : 'PowerShell') + ' command?');
+      const ed = document.createElement('textarea');
+      ed.className = 'dec-cmd'; ed.spellcheck = false; ed.rows = 1; ed.value = input.command || '';
+      ed.setAttribute('aria-label', 'Command to run (editable)');
+      out.editor = ed; out.body.push(ed);
+      if (input.description) out.body.push(line('dec-desc', input.description));
+      break;
+    }
+    case 'edit': case 'multiedit': ask('Make this edit to ', file(input.file_path), '?'); break;
+    case 'notebookedit': ask('Make this edit to ', file(input.notebook_path), '?'); break;
+    case 'write': ask('Allow write to ', file(input.file_path), '?'); break;
+    case 'read': ask('Allow reading from ', file(input.file_path), '?'); break;
+    case 'glob': case 'grep': case 'search': {
+      const what = key === 'glob' ? 'glob search in' : key === 'grep' ? 'grep in' : 'searching in';
+      if (input.path) ask('Allow ' + what + ' ', code(input.path), '?');
+      else ask(key === 'search' ? 'Allow this search' : 'Allow this ' + key + ' command');
+      break;
+    }
+    case 'webfetch': ask('Allow fetching this url?'); out.body.push(line('dec-input', input.url || '')); break;
+    case 'websearch': {
+      ask('Allow searching for this query?');
+      out.body.push(line('dec-input', input.query || ''));
+      const extra = [];
+      if (input.allowed_domains && input.allowed_domains.length) extra.push('Allowed: ' + input.allowed_domains.join(', '));
+      if (input.blocked_domains && input.blocked_domains.length) extra.push('Blocked: ' + input.blocked_domains.join(', '));
+      if (extra.length) out.body.push(line('dec-input', extra.join(' · ')));
+      break;
+    }
+    case 'sandboxnetworkaccess':
+      ask('Allow network connection to this host?'); out.body.push(line('dec-input', input.host || '')); break;
+    case 'skill': {
+      const name = String(input.skill || '').replace(/^\//, '');
+      ask('Use skill ', code('/' + name), '?');
+      out.body.push(line('dec-note', 'Claude may use instructions, code, or files from this skill.'));
+      const known = typeof allSlashCommands === 'function'
+          ? allSlashCommands(t).find(c => c.name === name) : null;
+      if (known && known.description) out.body.push(line('dec-desc', known.description));
+      if (input.args) out.body.push(line('dec-desc', 'Arguments: ' + input.args));
+      break;
+    }
+    default: {
+      const server = typeof mcpServerName === 'function' ? mcpServerName(toolName) : '';
+      const label = typeof toolLabel === 'function' ? toolLabel(toolName) : String(toolName || 'this action');
+      const strong = document.createElement('strong');
+      strong.textContent = server ? server + ' › ' + label : label;
+      ask('Do you want to proceed with ', strong, '?');
+      if (Object.keys(input).length) {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary'); summary.textContent = 'Details';
+        const pre = document.createElement('pre'); pre.className = 'dec-json';
+        pre.textContent = JSON.stringify(input, null, 2);
+        details.appendChild(summary); details.appendChild(pre);
+        out.body.push(details);
+      }
+    }
+  }
+  return out;
+}
+
+/* The tool line each open card is for, by request: the diff preview can change the input after
+   the card is answered, and the line then has to show what was approved. */
+const approvalLines = new Map();
+/* Java → page, after an approval whose input the diff preview changed: the line's diff shows the
+   edit that was approved instead of the one that was asked for. */
+window.onApprovalEdited = function(reqId, inputJson) {
+  const entry = approvalLines.get(reqId);
+  approvalLines.delete(reqId);
+  if (!entry) return;
+  const line = entry.line;
+  let input; try { input = JSON.parse(inputJson); } catch (e) { return; }
+  const oldBlock = line.querySelector(':scope > [data-kind="diff"]');
+  if (!oldBlock) return;
+  const diff = buildToolDiff(entry.name, input, oldBlock.dataset.mode);
+  if (!diff) return;
+  const oldSub = line.querySelector(':scope > .tool-sub.diff-sub');
+  const sub = document.createElement('div'); sub.className = 'tool-sub diff-sub'; sub.textContent = diff.summary;
+  if (oldSub) oldSub.replaceWith(sub); else line.insertBefore(sub, oldBlock);
+  oldBlock.replaceWith(diff.block);
+  applyCardMode(diff.block, diff.block.dataset.mode);
+  settleCards(line);
+};
 /**
- * Permission decision card (CLI can_use_tool). Blocks the CLI until _decide(reqId,…).
- * @type {(tabId: string, reqId: string, toolName: string, detail: string,
- *         rememberLabel: string) => void} rememberLabel "" = no middle remember option
+ * Permission decision card (CLI can_use_tool). Blocks the CLI until _decide(reqId, decisionJson).
+ * `inputJson` is the tool's input (without the text a diff preview shows instead); `metaJson`
+ * is what the CLI says besides it: `{suggestions, reason, description, defaultToNo,
+ * suppressAlwaysAllow}`. The decision is `{d, input?, dest?, msg?, interrupt?}`, see
+ * `permission_response` in chat.rs.
+ * @type {(tabId: string, reqId: string, toolName: string, inputJson: string,
+ *         metaJson: string) => void}
  */
-window.onApprovalRequest = function(tabId, reqId, toolName, detail, rememberLabel) {
+window.onApprovalRequest = function(tabId, reqId, toolName, inputJson, metaJson) {
   const t = tabById(tabId);
-  if (t && t.cancelled) { if (window._decide) window._decide(reqId, 'deny', ''); return; }  // stopped: auto-deny, no card
+  if (t && t.cancelled) { if (window._decide) window._decide(reqId, 'deny'); return; }  // stopped: auto-deny, no card
   if (t) loadRender(t);   // card belongs to this conversation
   // The card's OWNER tab, for showBottomCard/clearBottomCard below — t if it
   // resolved, else whatever loadRender last pointed at, same fallback order the
@@ -69,41 +252,49 @@ window.onApprovalRequest = function(tabId, reqId, toolName, detail, rememberLabe
   // changing) can't retarget which tab's card this decide() call clears.
   const owner = t || rtab || activeTab();
   // One card at a time: a request that comes while one is up waits behind it (carddock.js).
-  if (queueCardRequest(owner, reqId, () => window.onApprovalRequest(tabId, reqId, toolName, detail, rememberLabel), 'approval')) return;
+  if (queueCardRequest(owner, reqId, () => window.onApprovalRequest(tabId, reqId, toolName, inputJson, metaJson), 'approval')) return;
   const pane = streamPane() || (activeTab() ? activeTab().pane : null);
-  if (!pane) { if (window._decide) window._decide(reqId, 'deny', ''); return; }
+  if (!pane) { if (window._decide) window._decide(reqId, 'deny'); return; }
   hideWorking();
+  let input = {}, meta = {};
+  try { input = JSON.parse(inputJson) || {}; } catch (e) {}
+  try { meta = JSON.parse(metaJson) || {}; } catch (e) {}
+  const suggestions = Array.isArray(meta.suggestions) ? meta.suggestions : [];
   // The tool line awaiting this decision is the last one in the turn. Keep its dot
   // GRAY while the card is open (mark .pending so markToolsDone skips it); decide()
   // flips it green on allow / red on deny.
   const pendingTool = lastToolLine(curTurn);
   if (pendingTool) pendingTool.classList.add('pending');
+  if (pendingTool) approvalLines.set(reqId, { line: pendingTool, name: toolName });
   // Keyed on the tool NAME alone — never on "has no suggestions", which plenty of
   // ordinary asks also satisfy and which would give them plan options.
   const isPlan = (toolName === PLAN_TOOL);
-  const isEdit = !isPlan && /edit|write|multiedit|str_replace|notebook|create/i.test(toolName || '');
   const card = document.createElement('div'); card.className = 'decision';
 
+  const fold = document.createElement('button');
+  fold.type = 'button'; fold.className = 'dec-fold'; fold.title = 'Fold'; fold.innerHTML = ICONS.CHEVRON;
+  fold.onclick = () => { fold.title = card.classList.toggle('folded') ? 'Unfold' : 'Fold'; };
+  card.appendChild(fold);
+
+  const prompt = isPlan ? { header: ['Accept this plan?'], body: [], editor: null }
+                        : permissionPrompt(toolName, input, t);
   const q = document.createElement('div'); q.className = 'dec-q';
-  if (isPlan) {
-    q.textContent = 'Accept this plan?';
-  } else if (isEdit && detail) {
-    q.appendChild(document.createTextNode('Make this edit to '));
-    const c = document.createElement('code'); c.textContent = detail; q.appendChild(c);
-    q.appendChild(document.createTextNode('?'));
-  } else if (isEdit) {
-    q.textContent = 'Make this edit?';
-  } else {
-    q.appendChild(document.createTextNode('Allow ' + (toolName || 'this action') + (detail ? ' ' : '')));
-    if (detail) { const c = document.createElement('code'); c.textContent = detail; q.appendChild(c); }
-    q.appendChild(document.createTextNode('?'));
-  }
+  prompt.header.forEach(n => q.appendChild(typeof n === 'string' ? document.createTextNode(n) : n));
   card.appendChild(q);
+  prompt.body.forEach(n => card.appendChild(n));
+  const editor = prompt.editor;
+  if (editor) {
+    const grow = () => { editor.style.height = 'auto'; editor.style.height = Math.min(editor.scrollHeight + 2, window.innerHeight * 0.4) + 'px'; };
+    editor.addEventListener('input', grow);
+    requestAnimationFrame(grow);
+  }
 
   let resolved = false;
-  function decide(d, msg) {
+  /* `o` is what the decision carries besides its kind. */
+  function decide(d, o) {
     if (resolved) return; resolved = true;
     unregisterCardTimeout(reqId);
+    if (d === 'deny') approvalLines.delete(reqId);
     unregisterCardCancel();
     document.removeEventListener('keydown', onKey, true);
     // Resolve the pending tool's dot: allow → green (finished), deny → red (rejected).
@@ -120,25 +311,15 @@ window.onApprovalRequest = function(tabId, reqId, toolName, detail, rememberLabe
         pendingTool.appendChild(sub);
       }
     }
-    // Bare user prose must never be the deny message on its own: the CLI hands a
-    // deny message to the model as an is_error tool_result, so unframed prose there
-    // reads as anomalous/injected output, and the model — told only that the tool
-    // failed — would narrate success for an edit that never ran (#98).
-    //
-    // The CLI itself has a canonical wrapper for exactly this case. Prefixing the
-    // user's words with DENY_WITH_INSTRUCTION reuses the CLI's own wording, so the
-    // model reads the tail as the user speaking rather than as stray tool output.
-    // The alternative (deny + a separately queued user message) costs an extra turn
-    // and produces a dead-end "the edit was declined" reply before the real one,
-    // because the model answers the deny before the queued text arrives.
-    //
-    // Wire path: Java completes "deny" + text, and chat.rs's `decision.len() > 4`
-    // slices the text back out as the deny message — the same channel as before,
-    // now carrying CLI-authored framing. JS-only; no DLL rebuild.
-    let out = '';
-    if (d === 'deny' && isPlan) out = msg ? PLAN_REJECTED + '\n' + PLAN_FEEDBACK + msg : PLAN_REJECTED;
-    else if (d === 'deny' && msg) out = DENY_WITH_INSTRUCTION + msg;
-    if (window._decide) window._decide(reqId, d, out);
+    const payload = Object.assign({ d: d }, o || {});
+    // A shell command the reader changed is the command that runs.
+    if (d !== 'deny' && editor && editor.value !== (input.command || '')) {
+      payload.input = Object.assign({}, input, { command: editor.value });
+      // The tool's IN row shows what runs, not what was asked.
+      const inRow = pendingTool && pendingTool.querySelector('.io-item[data-kind="input"]');
+      if (inRow && inRow._setText) inRow._setText(editor.value);
+    }
+    if (window._decide) window._decide(reqId, JSON.stringify(payload));
     // Approving the plan ENDS plan mode, so the indicator has to move off "Plan"
     // — and to the mode the user actually chose, which the CLI won't do for us
     // (it restores its own prePlanMode). Push it only AFTER the allow is written,
@@ -150,59 +331,95 @@ window.onApprovalRequest = function(tabId, reqId, toolName, detail, rememberLabe
       }
       if (typeof adoptModeForTab === 'function') adoptModeForTab(t, mode);
     }
-    // "Yes, allow all edits …" IS a mode switch: chat.rs echoes the CLI's setMode
-    // suggestion back as updatedPermissions, so from here on the session behaves
-    // exactly like "Edit automatically". Move the indicator to match, or it keeps
-    // claiming "Manual" while nothing prompts again.
-    // NOT while the tab is in Plan. There, "allow all edits this session" answers
-    // the pending edit — it is not a request to leave planning. Adopting it anyway
-    // set t.permMode='acceptEdits', so the next message respawned out of plan mode,
-    // and the CLI then remembered prePlanMode==='acceptEdits', which SUPPRESSES the
-    // setMode suggestion on every later card (the missing middle option). Leaving
-    // t.permMode alone keeps Plan sticky exactly as it was before this flip existed.
-    if (d === 'allowRemember' && ACCEPTS_ALL_EDITS.test(rememberLabel || '')
-        && !(t && t.permMode === 'plan')
-        && typeof adoptModeForTab === 'function') {
-      adoptModeForTab(t, 'acceptEdits');
+    // A remembered mode change IS a mode switch: from here on the session behaves like that mode,
+    // so the indicator moves to match, or it keeps claiming "Manual" while nothing prompts again.
+    // NOT into acceptEdits while the tab is in Plan. There, "allow all edits this session" answers
+    // the pending edit — it is not a request to leave planning. Adopting it anyway set
+    // t.permMode='acceptEdits', so the next message respawned out of plan mode, and the CLI then
+    // remembered prePlanMode==='acceptEdits', which SUPPRESSES the setMode suggestion on every
+    // later card. Leaving t.permMode alone keeps Plan sticky.
+    if (d === 'allowRemember' && typeof adoptModeForTab === 'function') {
+      const change = suggestions.find(s => s && s.type === 'setMode');
+      if (change && (change.mode === 'default' || (change.mode === 'acceptEdits' && !(t && t.permMode === 'plan')))) {
+        adoptModeForTab(t, change.mode);
+      }
     }
     clearBottomCard(owner);                     // card disappears — composer returns
-    if (d === 'deny' && msg) {
-      // Keep the "User answered:" card: this is a decision the user made on a card,
-      // and it reads as such. (A reload replays it from the transcript as a plain
-      // user line, since that is what it is on the wire.)
-      addAnswered(msg, pane);
-      startFreshTurn();
-    } else {
-      // Process continues after the decision — start a fresh body below the edits
-      // and re-show the working indicator so the user sees activity again.
-      finalizeThink(); curBody = null; curText = '';
-      showWorking();
-    }
+    // Process continues after the decision — start a fresh body below the edits
+    // and re-show the working indicator so the user sees activity again.
+    finalizeThink(); curBody = null; curText = '';
+    showWorking();
     // force only with Smart Scroll Lock on — see its comment in chat.js. By default
     // this obeys Scroll Lock: answering must not move them either.
     scrollBottom(smartScrollLock);
   }
+  /* A rejection. With words of the reader's the run goes on, told why; without, it stops and waits
+     for them (the CLI ends the turn). A plan keeps the CLI's own words and never stops the run. */
+  function reject(text) {
+    let msg, interrupt = false;
+    if (isPlan) msg = text ? PLAN_REJECTED + '\n' + PLAN_FEEDBACK + text : PLAN_REJECTED;
+    else if (text) msg = DENY_WITH_REASON + text;
+    else { msg = DENY_STOP; interrupt = true; }
+    decide('deny', { msg: msg, interrupt: interrupt });
+  }
 
-  // Middle "remember" option is contextual: its label comes from the CLI's own
-  // permission_suggestion (edits→"all edits", Bash→the command, etc.), and is
-  // omitted entirely when the CLI offers no suggestion for this tool.
+  // Where "don't ask again" saves: what was chosen last, else the widest the CLI offered.
+  let dest = storedPermDestination();
+  if (!dest) {
+    const offered = suggestions.map(s => s && s.destination).filter(Boolean);
+    dest = PERM_DEST_WIDEST.find(d => offered.indexOf(d) >= 0) || 'session';
+  }
+  const desc = describeSuggestions(suggestions);
+  const canRemember = !isPlan && !meta.suppressAlwaysAllow && suggestions.length > 0;
+
   const opts = isPlan
-    ? [['allowAuto',   'Yes, and auto-accept'],
-       ['allowManual', 'Yes, and manually approve edits'],
-       ['deny',        'No, keep planning']]
-    : [['allow', 'Yes']];
-  if (!isPlan && rememberLabel) opts.push(['allowRemember', rememberLabel]);
-  if (!isPlan) opts.push(['deny', 'No']);
-  opts.forEach(([d, label], i) => {
-    const opt = document.createElement('div'); opt.className = 'dec-opt' + (i === 0 ? ' sel' : '');
-    opt.setAttribute('data-d', d);
+    ? [{ d: 'allowAuto',   label: 'Yes, and auto-accept' },
+       { d: 'allowManual', label: 'Yes, and manually approve edits' },
+       { d: 'deny',        label: 'No, keep planning' }]
+    : [{ d: 'allow', label: 'Yes' }];
+  if (canRemember) opts.push({ d: 'allowRemember', label: '' });
+  if (!isPlan) opts.push({ d: 'deny', label: 'No' });
+
+  // When the CLI wants "No" to be the answer to an unthinking keypress, no number answers
+  // for the reader, and the card starts on No.
+  const numbersOff = !!meta.defaultToNo && !isPlan;
+  if (numbersOff) card.classList.add('no-nums');
+  let sel = numbersOff ? opts.findIndex(o => o.d === 'deny') : 0;
+  const optEls = [];
+  const setSel = i => { sel = i; optEls.forEach((e, k) => e.classList.toggle('sel', k === i)); };
+
+  // The remember option is repainted when its destination changes.
+  let rememberLbl = null, rememberHasDest = false;
+  const paintRemember = () => {
+    const made = rememberLabel(desc, dest, cycleDest);
+    rememberHasDest = made.hasDest;
+    rememberLbl.textContent = '';
+    rememberLbl.appendChild(made.node);
+  };
+  function cycleDest(by) {
+    dest = PERM_DESTINATIONS[(PERM_DESTINATIONS.indexOf(dest) + by + PERM_DESTINATIONS.length) % PERM_DESTINATIONS.length];
+    storePermDestination(dest);
+    paintRemember();
+  }
+
+  const act = o => {
+    if (o.d === 'deny') reject('');
+    else if (o.d === 'allowRemember') decide('allowRemember', { dest: dest });
+    else decide(o.d);
+  };
+  opts.forEach((o, i) => {
+    const opt = document.createElement('div'); opt.className = 'dec-opt' + (i === sel ? ' sel' : '');
+    opt.setAttribute('data-d', o.d);
     opt.innerHTML = '<span class="num"></span><span class="dec-lbl"></span>';
     opt.querySelector('.num').textContent = (i + 1);
-    opt.querySelector('.dec-lbl').textContent = label;
-    opt.onclick = () => decide(d);
-    opt.onmouseenter = () => card.querySelectorAll('.dec-opt.sel').forEach(e => e.classList.remove('sel'));
+    const lbl = opt.querySelector('.dec-lbl');
+    if (o.d === 'allowRemember') rememberLbl = lbl; else lbl.textContent = o.label;
+    opt.onclick = () => act(o);
+    opt.onmouseenter = () => setSel(i);
+    optEls.push(opt);
     card.appendChild(opt);
   });
+  if (rememberLbl) paintRemember();
 
   const insteadNum = opts.length + 1;
   const instead = document.createElement('div'); instead.className = 'dec-instead';
@@ -211,8 +428,8 @@ window.onApprovalRequest = function(tabId, reqId, toolName, detail, rememberLabe
   inp.placeholder = isPlan ? 'Tell Claude what to change' : 'Tell Claude what to do instead';
   inp.onkeydown = (e) => {
     e.stopPropagation();
-    if (e.key === 'Enter') { e.preventDefault(); const v = inp.value.trim(); if (v) decide('deny', v); }
-    else if (e.key === 'Escape') { e.preventDefault(); decide('deny', ''); }
+    if (e.key === 'Enter') { e.preventDefault(); const v = inp.value.trim(); if (v) reject(v); }
+    else if (e.key === 'Escape') { e.preventDefault(); reject(''); }
   };
   instead.appendChild(inp); card.appendChild(instead);
 
@@ -227,19 +444,36 @@ window.onApprovalRequest = function(tabId, reqId, toolName, detail, rememberLabe
     esc.style.display = t ? '' : 'none';
   });
 
-  // Number-key shortcuts map to the visible options in order; Esc cancels.
+  // Keys: a number answers with that option (the last number is the box for the reader's own
+  // words), Enter with the option the card is on, Up and Down move it, Left and Right change where
+  // "don't ask again" saves, Esc rejects.
   function onKey(e) {
     if (resolved || document.activeElement === inp) return;
     // A background tab's card (now that per-tab cards can coexist instead of
     // evicting each other) isn't in the DOM — bail so its number/Esc shortcuts
     // can't fire on whatever card the ACTIVE tab is actually showing.
     if (!card.isConnected) { document.removeEventListener('keydown', onKey, true); return; }
-    if (e.key === 'Escape') { e.preventDefault(); decide('deny', ''); return; }
+    if (card.classList.contains('folded')) return;
+    if (editor && document.activeElement === editor) return;   // typing a command
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'Escape') { e.preventDefault(); reject(''); return; }
     const n = parseInt(e.key, 10);
-    if (n >= 1 && n <= opts.length) { e.preventDefault(); decide(opts[n - 1][0], ''); }
+    if (n >= 1 && n <= insteadNum && !numbersOff) {
+      e.preventDefault();
+      if (n === insteadNum) inp.focus(); else act(opts[n - 1]);
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); act(opts[sel]);
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const next = sel + (e.key === 'ArrowDown' ? 1 : -1);
+      if (next >= opts.length) inp.focus(); else if (next >= 0) setSel(next);
+    } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && rememberHasDest && opts[sel].d === 'allowRemember') {
+      e.preventDefault();
+      if (!e.repeat) cycleDest(e.key === 'ArrowRight' ? 1 : -1);
+    }
   }
   document.addEventListener('keydown', onKey, true);
-  registerCardCancel(() => decide('deny', ''), owner);
+  registerCardCancel(() => reject(''), owner);
 
   // Presentation-only cleanup for a card nobody here answered — see the reason
   // codes on registerCardTimeout in carddock.js. It must NOT call window._decide
@@ -271,12 +505,6 @@ window.onApprovalRequest = function(tabId, reqId, toolName, detail, rememberLabe
       }
     }
     clearBottomCard(owner);
-    // addAnswered inserts a new sibling turn div; startFreshTurn must follow it
-    // (curTurn = null) or the CLI's continuation streams into the turn ABOVE this
-    // note instead of below it — the same pairing decide()'s message-deny branch
-    // uses, not the silent plain-deny branch (which inserts nothing).
-    addAnswered('(No response — the request timed out and was denied.)', pane);
-    startFreshTurn();
     scrollBottom();
   });
 

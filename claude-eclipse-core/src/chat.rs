@@ -1557,8 +1557,8 @@ fn run_turn(
         cmd_args.push("--allowed-tools".into());
         cmd_args.push("mcp__eclipse__askUserQuestion".into());
         // Disallow the blocking IDE diff tool: in the GUI we want claude to use its
-        // built-in Edit (gated by the approvalPrompt card → "Make this edit?" + our
-        // non-blocking DiffPreview), NOT openDiff (which gates as "allow openDiff?" then
+        // built-in Edit (gated by the permission card + our non-blocking DiffPreview),
+        // NOT openDiff (which gates as "allow openDiff?" then
         // blocks until the user saves/closes the diff tab). Cover every name form.
         // Scoped to the GUI chat only — the terminal view's claude is unaffected.
         cmd_args.push("--disallowed-tools".into());
@@ -1576,13 +1576,6 @@ fn run_turn(
              (each with `label` and `description`). The tool returns the user's selections."
                 .into(),
         );
-
-        // "Ask before edits" (default mode): route each permission request to our
-        // approvalPrompt tool so the GUI can show an in-chat Yes/No decision card.
-        if perm_mode == "default" {
-            cmd_args.push("--permission-prompt-tool".into());
-            cmd_args.push("mcp__eclipse__approvalPrompt".into());
-        }
     }
     // Per-tab continuity: resume the tab's own session if we have its id, else
     // start fresh (a new session id comes back via the init event → onSessionId).
@@ -1757,9 +1750,7 @@ fn spawn_persistent(
         "--verbose".into(),
         "--include-partial-messages".into(),
         // Route permission prompts over stdin/stdout as control_requests. The
-        // CLI blocks each gated tool until our control_response — this replaces
-        // the mcp__eclipse__approvalPrompt shim (which depended on the model
-        // remembering to call it).
+        // CLI blocks each gated tool until our control_response.
         "--permission-prompt-tool".into(),
         "stdio".into(),
     ];
@@ -1805,7 +1796,7 @@ fn spawn_persistent(
         cmd_args.push(mcp_config_value(mcp_port, cfg));
 
         // Blocking diff tools stay disallowed (the approval card + DiffPreview
-        // handle edits). The two legacy shim tools are superseded here: questions
+        // handle edits). The legacy question shim is superseded here: questions
         // now flow through the built-in AskUserQuestion via the control channel.
         // The real diff tools are the qualified MCP names; a bare "openDiff" is
         // not a known tool and the CLI warns on it ("matches no known tool").
@@ -1813,7 +1804,6 @@ fn spawn_persistent(
         cmd_args.push("mcp__ide__openDiff".into());
         cmd_args.push("mcp__eclipse__openDiff".into());
         cmd_args.push("mcp__eclipse__askUserQuestion".into());
-        cmd_args.push("mcp__eclipse__approvalPrompt".into());
     }
     if !resume_id.is_empty() {
         cmd_args.push("--resume".into());
@@ -2732,12 +2722,9 @@ fn handle_control_request(
     let request_id = event["request_id"].as_str().unwrap_or("").to_string();
     let tool_name = request["tool_name"].as_str().unwrap_or("tool").to_string();
     let input = request.get("input").cloned().unwrap_or_else(|| serde_json::json!({}));
-    // The CLI's suggested "remember this decision" rules (setMode / addRules /
-    // addDirectories). We surface the primary one as the card's middle option and
-    // echo it back as updatedPermissions so the CLI enforces the scoped rule.
-    let suggestions = request.get("permission_suggestions")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
+    // What the card needs besides the input: the CLI's suggested "remember this
+    // decision" updates (all of them), why it asks, and how it wants it asked.
+    let meta = permission_meta(request);
 
     // Registered BEFORE the card is raised: the withdrawal can arrive while the
     // card is still being drawn (the phone is quicker than a human), and a
@@ -2758,7 +2745,7 @@ fn handle_control_request(
         .name("claude-chat-perm".into())
         .spawn(move || {
             let response = decide_can_use_tool(&request_id, &tool_name, &input,
-                                               &suggestions, &vm, &cb);
+                                               &meta, &vm, &cb);
             // Answered here or withdrawn, the agent is no longer waiting on it.
             if let Some(released) = released {
                 fire_string(&vm, &cb, "onAgentActivity", &released.to_string());
@@ -2791,13 +2778,13 @@ fn handle_control_request(
 
 /// Maps a can_use_tool request onto the GUI's existing cards and back:
 ///  - AskUserQuestion → onQuestionRequest, answers array → {questions, answers}
-///  - everything else → onPermissionRequest, "allow*"/"deny[msg]" decision string
-///    (same contract as ApprovalPromptTool so the Java side is shared code).
+///  - everything else → onPermissionRequest (the request's meta as JSON), a
+///    decision JSON back, see [`permission_response`]
 fn decide_can_use_tool(
     request_id: &str,
     tool_name: &str,
     input: &serde_json::Value,
-    suggestions: &serde_json::Value,
+    meta: &serde_json::Value,
     java_vm: &Arc<jni::JavaVM>,
     callbacks: &Arc<jni::objects::GlobalRef>,
 ) -> serde_json::Value {
@@ -2833,79 +2820,69 @@ fn decide_can_use_tool(
         });
     }
 
-    // Pick the primary suggestion + its human label for the card's middle option.
-    // Empty label → the card shows no "remember" option (just Yes / No / instead).
-    let (primary, remember_label) = primary_suggestion(suggestions);
-
     let decision = fire_four_string_ret(java_vm, callbacks, "onPermissionRequest",
                                        request_id, tool_name, &input.to_string(),
-                                       &remember_label)
-        .unwrap_or_else(|| "deny".into());
-
-    if decision == "allowRemember" {
-        // Allow AND echo the CLI's own suggestion so it enforces the scoped rule
-        // (VSCode parity — replaces the old client-side "allow everything" flag).
-        match primary {
-            Some(s) => serde_json::json!({
-                "behavior": "allow",
-                "updatedInput": input,
-                "updatedPermissions": [s]
-            }),
-            None => serde_json::json!({ "behavior": "allow", "updatedInput": input }),
-        }
-    } else if decision.starts_with("allow") {
-        serde_json::json!({ "behavior": "allow", "updatedInput": input })
-    } else {
-        let msg = if decision.starts_with("deny") && decision.len() > 4 {
-            decision[4..].to_string()
-        } else {
-            "The user declined this action in Eclipse.".to_string()
-        };
-        serde_json::json!({ "behavior": "deny", "message": msg })
-    }
+                                       &meta.to_string())
+        .unwrap_or_default();
+    permission_response(&decision, input, &meta["suggestions"])
 }
 
-/// Chooses the suggestion to surface as the approval card's middle "remember"
-/// option and builds its human label. Returns (suggestion, label); an empty
-/// label means no remember option should be shown. Uses the CLI's own ordering
-/// (first = most relevant) and labels the scope truthfully from `destination`
-/// ("this session" vs "always").
-fn primary_suggestion(suggestions: &serde_json::Value) -> (Option<serde_json::Value>, String) {
-    let arr = match suggestions.as_array() {
-        Some(a) if !a.is_empty() => a,
-        _ => return (None, String::new()),
-    };
-    let s = arr[0].clone();
-    let scope = match s["destination"].as_str() {
-        Some("session") => "this session",
-        _ => "always",
-    };
-    let label = match s["type"].as_str() {
-        Some("setMode") => match s["mode"].as_str() {
-            Some("acceptEdits") => format!("Yes, allow all edits {}", scope),
-            Some(m) => format!("Yes, switch to {} mode {}", m, scope),
-            None => return (None, String::new()),
-        },
-        Some("addRules") => {
-            let rule0 = s["rules"].as_array().and_then(|r| r.first());
-            let content = rule0.and_then(|r| r["ruleContent"].as_str()).unwrap_or("");
-            let tname = rule0.and_then(|r| r["toolName"].as_str()).unwrap_or("this");
-            if content.is_empty() {
-                format!("Yes, allow all {} {}", tname, scope)
-            } else {
-                format!("Yes, allow '{}' {}", content, scope)
+/// What the permission card is told about a `can_use_tool` request besides its input.
+fn permission_meta(request: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "suggestions": request.get("permission_suggestions").filter(|s| s.is_array())
+            .cloned().unwrap_or_else(|| serde_json::json!([])),
+        "reason": request["decision_reason"].as_str().unwrap_or(""),
+        "description": request["description"].as_str().unwrap_or(""),
+        "defaultToNo": request["default_to_no"].as_bool().unwrap_or(false),
+        "suppressAlwaysAllow": request["suppress_always_allow_rule"].as_bool().unwrap_or(false),
+    })
+}
+
+/// The places a remembered rule can be saved to, as the CLI names them.
+const PERMISSION_DESTINATIONS: [&str; 4] = ["localSettings", "userSettings", "projectSettings", "session"];
+
+/// The CLI's suggestions with the reader's chosen destination, which an edit-mode
+/// suggestion keeps its own of (it is the mode for the session, not a rule to save).
+fn remembered_permissions(suggestions: &serde_json::Value, dest: Option<&str>) -> Vec<serde_json::Value> {
+    let dest = dest.filter(|d| PERMISSION_DESTINATIONS.contains(d));
+    suggestions.as_array().into_iter().flatten().filter(|s| s.is_object()).map(|s| {
+        let mut s = s.clone();
+        if let (Some(d), true) = (dest, s["type"].as_str() != Some("setMode")) {
+            s["destination"] = serde_json::json!(d);
+        }
+        s
+    }).collect()
+}
+
+/// The control_response body for a decision the card made. The decision is JSON:
+/// `{"d":"allow"|"allowRemember"|"allowAuto"|"allowManual"|"deny", "input":{…}?, "dest":"…"?,
+/// "msg":"…"?, "interrupt":bool?}`. `input` is the tool's input as the reader edited it;
+/// `dest` is where a remembered rule is saved. Anything that is not such a decision
+/// (the card was torn down, Java failed) is a rejection that lets Claude carry on.
+fn permission_response(decision: &str, input: &serde_json::Value, suggestions: &serde_json::Value) -> serde_json::Value {
+    let d: serde_json::Value = serde_json::from_str(decision).unwrap_or(serde_json::Value::Null);
+    match d["d"].as_str() {
+        Some(kind) if kind.starts_with("allow") => {
+            let updated = d.get("input").filter(|i| i.is_object()).cloned().unwrap_or_else(|| input.clone());
+            let mut r = serde_json::json!({ "behavior": "allow", "updatedInput": updated });
+            if kind == "allowRemember" {
+                let perms = remembered_permissions(suggestions, d["dest"].as_str());
+                if !perms.is_empty() {
+                    r["updatedPermissions"] = serde_json::Value::Array(perms);
+                }
             }
+            r
         }
-        Some("addDirectories") => {
-            let dir = s["directories"].as_array()
-                .and_then(|d| d.first())
-                .and_then(|d| d.as_str())
-                .unwrap_or("");
-            format!("Yes, allow edits in {} {}", dir, scope)
+        Some("deny") => {
+            let msg = d["msg"].as_str().filter(|m| !m.is_empty())
+                .unwrap_or("The user declined this action in Eclipse.");
+            serde_json::json!({ "behavior": "deny", "message": msg,
+                                "interrupt": d["interrupt"].as_bool().unwrap_or(false) })
         }
-        _ => return (None, String::new()),
-    };
-    (Some(s), label)
+        _ => serde_json::json!({ "behavior": "deny", "message": "The user declined this action in Eclipse.",
+                                 "interrupt": false }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4247,5 +4224,73 @@ mod card_cancel_tests {
         note_agent_task(&mut tasks, &json!({"type":"system","subtype":"task_started","description":"no id"}));
         note_agent_task(&mut tasks, &json!({"type":"assistant","task_id":"t"}));
         assert!(tasks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod permission_response_tests {
+    use super::{permission_meta, permission_response};
+    use serde_json::json;
+
+    fn rule(dest: &str) -> serde_json::Value {
+        json!({"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm test *"}],"behavior":"allow","destination":dest})
+    }
+
+    #[test]
+    fn a_request_gives_the_card_everything_it_asks_about() {
+        let req = json!({"subtype":"can_use_tool","tool_name":"Bash","description":"Run it",
+            "permission_suggestions":[rule("localSettings")],"decision_reason":"needs approval",
+            "default_to_no":true,"suppress_always_allow_rule":true});
+        assert_eq!(permission_meta(&req), json!({"suggestions":[rule("localSettings")],"reason":"needs approval",
+            "description":"Run it","defaultToNo":true,"suppressAlwaysAllow":true}));
+        let bare = permission_meta(&json!({"subtype":"can_use_tool"}));
+        assert_eq!(bare, json!({"suggestions":[],"reason":"","description":"","defaultToNo":false,"suppressAlwaysAllow":false}));
+    }
+
+    #[test]
+    fn allow_sends_the_input_as_edited_or_as_it_was() {
+        let input = json!({"command":"npm test"});
+        let plain = permission_response(r#"{"d":"allow"}"#, &input, &json!([]));
+        assert_eq!(plain, json!({"behavior":"allow","updatedInput":{"command":"npm test"}}));
+        let edited = permission_response(r#"{"d":"allow","input":{"command":"npm run lint"}}"#, &input, &json!([]));
+        assert_eq!(edited["updatedInput"], json!({"command":"npm run lint"}));
+        assert!(edited.get("updatedPermissions").is_none(), "no rule unless asked for");
+    }
+
+    #[test]
+    fn remembering_sends_every_suggestion_to_the_chosen_destination() {
+        let sugg = json!([rule("localSettings"), {"type":"setMode","mode":"acceptEdits","destination":"session"}]);
+        let r = permission_response(r#"{"d":"allowRemember","dest":"projectSettings"}"#, &json!({}), &sugg);
+        assert_eq!(r["updatedPermissions"][0]["destination"], "projectSettings");
+        assert_eq!(r["updatedPermissions"][1]["destination"], "session", "a mode change keeps its own");
+        assert_eq!(r["updatedPermissions"].as_array().unwrap().len(), 2);
+        // No destination, or one the CLI does not know: the suggestion's own stands.
+        let own = permission_response(r#"{"d":"allowRemember"}"#, &json!({}), &json!([rule("localSettings")]));
+        assert_eq!(own["updatedPermissions"][0]["destination"], "localSettings");
+        let odd = permission_response(r#"{"d":"allowRemember","dest":"policySettings"}"#, &json!({}), &json!([rule("localSettings")]));
+        assert_eq!(odd["updatedPermissions"][0]["destination"], "localSettings");
+        // Nothing suggested: allowed, nothing remembered.
+        let none = permission_response(r#"{"d":"allowRemember","dest":"session"}"#, &json!({}), &json!([]));
+        assert!(none.get("updatedPermissions").is_none());
+    }
+
+    #[test]
+    fn a_rejection_carries_its_message_and_whether_it_stops_the_run() {
+        let stop = permission_response(r#"{"d":"deny","msg":"STOP","interrupt":true}"#, &json!({}), &json!([]));
+        assert_eq!(stop, json!({"behavior":"deny","message":"STOP","interrupt":true}));
+        let say = permission_response(r#"{"d":"deny","msg":"use yarn"}"#, &json!({}), &json!([]));
+        assert_eq!(say, json!({"behavior":"deny","message":"use yarn","interrupt":false}));
+        // The CLI refuses a rejection with no message, so there is always one.
+        let blank = permission_response(r#"{"d":"deny"}"#, &json!({}), &json!([]));
+        assert!(!blank["message"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn what_is_not_a_decision_is_a_rejection_that_does_not_stop_the_run() {
+        for bad in ["", "deny", "allow", "{}", "null", r#"{"d":7}"#] {
+            let r = permission_response(bad, &json!({"command":"x"}), &json!([]));
+            assert_eq!(r["behavior"], "deny", "{bad:?}");
+            assert_eq!(r["interrupt"], false, "{bad:?}");
+        }
     }
 }

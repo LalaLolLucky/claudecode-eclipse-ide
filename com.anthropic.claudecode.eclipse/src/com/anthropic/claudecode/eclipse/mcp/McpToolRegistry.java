@@ -112,7 +112,6 @@ public class McpToolRegistry {
         }
         register(new EclipseDialogTool());
         register(new ClaudeCodeEclipseTool());
-        register(new com.anthropic.claudecode.eclipse.tools.ApprovalPromptTool());
         register(new com.anthropic.claudecode.eclipse.tools.AskUserQuestionTool());
         registerOptionalToolsIfAvailable();
         registerJdtToolsIfAvailable();

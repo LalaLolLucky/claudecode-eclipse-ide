@@ -47,7 +47,7 @@ final class TerminalLaunchArgs {
      * not here — denying it is how the Claude Code view switches the diff editor off.
      */
     private static final List<String> HIDDEN_TOOLS = List.of(
-            "openDiff", "acceptDiff", "rejectDiff", "closeAllDiffTabs", "askUserQuestion", "approvalPrompt");
+            "openDiff", "acceptDiff", "rejectDiff", "closeAllDiffTabs", "askUserQuestion");
 
     /**
      * The preferences that add something to the command line. {@code permissionMode} is the

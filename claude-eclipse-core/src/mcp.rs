@@ -368,19 +368,6 @@ fn fallback_tools() -> Value {
             }
         },
         {
-            "name": "approvalPrompt",
-            "description": "Permission prompt: ask the user to approve a tool call before it runs. Returns a JSON string {\"behavior\":\"allow\",\"updatedInput\":<input>} or {\"behavior\":\"deny\",\"message\":\"...\"}.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "tool_name": { "type": "string", "description": "Name of the tool requesting permission" },
-                    "input":     { "type": "object", "description": "The input the tool would run with" },
-                    "tool_use_id": { "type": "string", "description": "Identifier for this tool use" }
-                },
-                "required": ["tool_name", "input"]
-            }
-        },
-        {
             "name": "askUserQuestion",
             "description": "Ask the user one or more multiple-choice questions and wait for their selection. Use this instead of the built-in AskUserQuestion. Returns the user's chosen answers as text.",
             "inputSchema": {

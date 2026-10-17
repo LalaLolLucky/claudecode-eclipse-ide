@@ -1459,12 +1459,10 @@ fn attached_file_path(text: &str) -> Option<&str> {
 }
 
 /// Prefixes that mark a result as the USER'S OWN decision rather than a tool
-/// failure. The CLI reports "declined", "rejected" and "answered instead" through
-/// the same `is_error` channel a genuine failure uses, but the GUI already shows
-/// those through its decision cards — repeating the sentence under the tool row
-/// would be noise. Verified against 111 real `is_error` results: 23 are these.
-const DECISION_PREFIXES: [&str; 4] = [
-    "The user doesn't want to proceed",
+/// failure, made some way other than a permission card (a declined Eclipse prompt or
+/// question). The CLI reports them through the same `is_error` channel a genuine failure
+/// uses, but the GUI already shows those through its own cards, so they are left out.
+const DECISION_PREFIXES: [&str; 3] = [
     "The user declined",
     "The user dismissed",
     "[User typed]:",
@@ -1472,8 +1470,10 @@ const DECISION_PREFIXES: [&str; 4] = [
 
 /// A failed tool's result as the page shows it in its own box, whole: the CLI's error
 /// envelope taken off and nothing cut, or `None` for the user's own decisions (see
-/// [`DECISION_PREFIXES`]), which keep the red dot and stay quiet. The page caps a long
-/// one and links out to a full view itself, as it does for any other output.
+/// [`DECISION_PREFIXES`]), which keep the red dot and stay quiet. A refusal on a
+/// permission card is not one of those: it comes back whole, for the page to lay out as
+/// "Reason: …" or as the tool's output. The page caps a long one and links out to a full
+/// view itself, as it does for any other output.
 pub(crate) fn tool_error_text(raw: &str) -> Option<String> {
     let mut t = raw.trim();
     if t.is_empty() || DECISION_PREFIXES.iter().any(|p| t.starts_with(p)) {
@@ -3155,6 +3155,10 @@ Read it first.".into())
         );
         let long = "x".repeat(400);
         assert_eq!(full(&long), Some(long.clone()), "nothing is cut");
+        // A refusal on a permission card is the page's to show, whole and not condensed.
+        let refusal = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user provided the following reason for the rejection: too risky
+really";
+        assert_eq!(full(refusal), Some(refusal.into()));
         // The user's own decisions stay quiet, as in the summary.
         assert_eq!(full("The user declined this action in Eclipse."), None);
         assert_eq!(full("   
@@ -3162,8 +3166,8 @@ Read it first.".into())
     }
 
     /// A failed tool must carry WHY it failed onto its render item, so a reopened
-    /// conversation reads the same as it did live. A tool the user declined gets
-    /// the red dot but no text; a successful one carries its full output as
+    /// conversation reads the same as it did live. A tool the user refused on its card
+    /// carries the CLI's whole message; a successful one carries its full output as
     /// resultText instead (a DIFFERENT field — see result_text vs
     /// result_success_text above — so makeToolLine can render it as an OUT box
     /// rather than a one-line error note).
@@ -3194,10 +3198,10 @@ Read it first.".into())
         let want: serde_json::Value = serde_json::from_str(r#"[
             {"t":"user","content":"go","ts":"2026-09-04T01:00:00.000Z"},
             {"t":"tool","name":"Read","input":{"file_path":"C:\\nope.java"},"model":"claude-opus-4-8","id":"toolu_a","status":"interrupted","errorText":"File does not exist. Note: your current working directory is C:\\ws"},
-            {"t":"tool","name":"Edit","input":{"file_path":"C:\\x.java"},"model":"claude-opus-4-8","id":"toolu_b","status":"interrupted"},
+            {"t":"tool","name":"Edit","input":{"file_path":"C:\\x.java"},"model":"claude-opus-4-8","id":"toolu_b","status":"interrupted","errorText":"The user doesn't want to proceed with this tool use. The tool use was rejected"},
             {"t":"tool","name":"Read","input":{"file_path":"C:\\ok.java"},"model":"claude-opus-4-8","id":"toolu_c","status":"done","resultText":"contents"}
         ]"#).unwrap();
-        assert_eq!(got, want, "failed tools carry their reason; declined ones stay quiet; successful ones carry their output");
+        assert_eq!(got, want, "failed tools carry their reason, a refusal its whole message; successful ones carry their output");
     }
 
     /// A subagent's own nested transcript lives in its own dedicated file, never

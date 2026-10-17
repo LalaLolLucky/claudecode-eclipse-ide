@@ -48,9 +48,9 @@ public class ChatProcessManager {
     private Consumer<String> onCliReply;
     private Consumer<String> onFastMode;
 
-    /** (requestId, toolName, inputJson, rememberLabel) → decision string. See {@link NativeCore.ChatCallbacks#onPermissionRequest}. */
+    /** (requestId, toolName, inputJson, metaJson) → decision JSON. See {@link NativeCore.ChatCallbacks#onPermissionRequest}. */
     public interface PermissionHandler {
-        String handle(String requestId, String toolName, String inputJson, String rememberLabel);
+        String handle(String requestId, String toolName, String inputJson, String metaJson);
     }
 
     public ChatProcessManager() {
@@ -67,10 +67,10 @@ public class ChatProcessManager {
             @Override public void onTokens(String n)       { emit(ChatProcessManager.this.onTokens, n); }
             @Override public void onRateLimit(String j)    { emit(ChatProcessManager.this.onRateLimit, j); }
             @Override public String onPermissionRequest(String requestId, String toolName,
-                                                        String inputJson, String rememberLabel) {
+                                                        String inputJson, String metaJson) {
                 var h = ChatProcessManager.this.onPermissionRequest;
                 if (h == null) return "deny";
-                try { return h.handle(requestId, toolName, inputJson, rememberLabel); } catch (Exception e) { return "deny"; }
+                try { return h.handle(requestId, toolName, inputJson, metaJson); } catch (Exception e) { return "deny"; }
             }
             @Override public String onQuestionRequest(String requestId, String questionsJson) {
                 var h = ChatProcessManager.this.onQuestionRequest;
@@ -186,7 +186,7 @@ public class ChatProcessManager {
                 effort == null ? "" : effort, model == null ? "" : model,
                 thinking == null ? "" : thinking, ultracode);
     }
-    /** (toolName, inputJson, rememberLabel) → "allow" | "allowRemember" | "deny" | "deny&lt;message&gt;". Persistent mode. */
+    /** Persistent mode: the decision card's answer for a permission request, as JSON. */
     public void setOnPermissionRequest(PermissionHandler cb) {
         this.onPermissionRequest = cb;
     }

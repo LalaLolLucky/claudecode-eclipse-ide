@@ -1,8 +1,6 @@
 package com.anthropic.claudecode.eclipse.tools;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
@@ -207,7 +205,7 @@ public class OpenDiffTool implements McpTool {
                         String mergedContent = doc != null ? doc.get() : null;
                         if (mergedContent == null) {
                             // Fallback: try the reflection read, then the flushed item.
-                            mergedContent = readLeftViewerDocument(this);
+                            mergedContent = CompareViewerDocs.textOf(this, "fLeft");
                             if (mergedContent == null) {
                                 flushViewers(monitor);
                                 mergedContent = left.getContentString();
@@ -252,8 +250,8 @@ public class OpenDiffTool implements McpTool {
                 Display.getDefault().timerExec(250, () -> {
                     if (closed.get()) return;
                     try {
-                        IDocument leftDoc  = getViewerDocumentByField(input, "fLeft");
-                        IDocument rightDoc = getViewerDocumentByField(input, "fRight");
+                        IDocument leftDoc  = CompareViewerDocs.documentOf(input, "fLeft");
+                        IDocument rightDoc = CompareViewerDocs.documentOf(input, "fRight");
                         IDocumentListener listener = new IDocumentListener() {
                             @Override public void documentAboutToBeChanged(DocumentEvent e) {}
                             @Override public void documentChanged(DocumentEvent e) {
@@ -439,136 +437,5 @@ public class OpenDiffTool implements McpTool {
                 file.refreshLocal(IResource.DEPTH_ZERO, null);
             }
         } catch (Exception ignored) {}
-    }
-
-    /**
-     * Resolves the IDocument backing one of the TextMergeViewer's source viewers
-     * by reflecting on the named field ("fLeft" or "fRight"). Returns null if any
-     * step of the lookup fails — callers should fall back gracefully.
-     */
-    private static IDocument getViewerDocumentByField(CompareEditorInput input, String fieldName) {
-        try {
-            Field paneField = findDeclaredField(CompareEditorInput.class, "fContentInputPane");
-            if (paneField == null) return null;
-            paneField.setAccessible(true);
-            Object pane = paneField.get(input);
-            if (pane == null) return null;
-
-            Method getViewer = findDeclaredMethod(pane.getClass(), "getViewer");
-            if (getViewer == null) return null;
-            getViewer.setAccessible(true);
-            Object viewer = getViewer.invoke(pane);
-            if (viewer == null) return null;
-
-            Field sideField = findDeclaredField(viewer.getClass(), fieldName);
-            if (sideField == null) return null;
-            sideField.setAccessible(true);
-            Object sideViewer = sideField.get(viewer);
-            if (sideViewer == null) return null;
-
-            Method getDoc = findDeclaredMethod(sideViewer.getClass(), "getDocument");
-            if (getDoc != null) {
-                getDoc.setAccessible(true);
-                Object doc = getDoc.invoke(sideViewer);
-                if (doc instanceof IDocument) return (IDocument) doc;
-            }
-
-            Method getSV = findDeclaredMethod(sideViewer.getClass(), "getSourceViewer");
-            if (getSV != null) {
-                getSV.setAccessible(true);
-                Object sv = getSV.invoke(sideViewer);
-                if (sv != null) {
-                    getDoc = findDeclaredMethod(sv.getClass(), "getDocument");
-                    if (getDoc != null) {
-                        getDoc.setAccessible(true);
-                        Object doc = getDoc.invoke(sv);
-                        if (doc instanceof IDocument) return (IDocument) doc;
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
-    /**
-     * Reads the live content of the left text viewer's IDocument via reflection.
-     *
-     * Eclipse's ContentMergeViewer.flush() only copies viewer content to the
-     * CompareItem model if its internal fLeftDirty flag is set.  That flag is
-     * reset during viewer initialisation, so by the time Ctrl+S fires it is
-     * often already false — making flushViewers() a no-op even after the user
-     * merged chunks with ←.  This method bypasses that flag entirely by reading
-     * the IDocument directly from the viewer.
-     *
-     * Chain: CompareEditorInput.fContentInputPane (CompareViewerSwitchingPane)
-     *        → getViewer() (TextMergeViewer)
-     *        → fLeft (MergeSourceViewer)
-     *        → getDocument() / getSourceViewer().getDocument()
-     *
-     * Returns null on any reflection failure so callers can fall back gracefully.
-     */
-    private static String readLeftViewerDocument(CompareEditorInput input) {
-        try {
-            Field paneField = findDeclaredField(CompareEditorInput.class, "fContentInputPane");
-            if (paneField == null) return null;
-            paneField.setAccessible(true);
-            Object pane = paneField.get(input);
-            if (pane == null) return null;
-
-            Method getViewer = findDeclaredMethod(pane.getClass(), "getViewer");
-            if (getViewer == null) return null;
-            getViewer.setAccessible(true);
-            Object viewer = getViewer.invoke(pane);
-            if (viewer == null) return null;
-
-            Field fLeft = findDeclaredField(viewer.getClass(), "fLeft");
-            if (fLeft == null) return null;
-            fLeft.setAccessible(true);
-            Object leftViewer = fLeft.get(viewer);
-            if (leftViewer == null) return null;
-
-            // Try getDocument() directly on the MergeSourceViewer.
-            Method getDoc = findDeclaredMethod(leftViewer.getClass(), "getDocument");
-            if (getDoc != null) {
-                getDoc.setAccessible(true);
-                Object doc = getDoc.invoke(leftViewer);
-                if (doc instanceof IDocument) return ((IDocument) doc).get();
-            }
-
-            // Fall back: MergeSourceViewer.getSourceViewer().getDocument()
-            Method getSV = findDeclaredMethod(leftViewer.getClass(), "getSourceViewer");
-            if (getSV != null) {
-                getSV.setAccessible(true);
-                Object sv = getSV.invoke(leftViewer);
-                if (sv != null) {
-                    getDoc = findDeclaredMethod(sv.getClass(), "getDocument");
-                    if (getDoc != null) {
-                        getDoc.setAccessible(true);
-                        Object doc = getDoc.invoke(sv);
-                        if (doc instanceof IDocument) return ((IDocument) doc).get();
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
-    /** Searches {@code cls} and all its superclasses for a declared field. */
-    private static Field findDeclaredField(Class<?> cls, String name) {
-        for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
-            try { return c.getDeclaredField(name); }
-            catch (NoSuchFieldException ignored) {}
-        }
-        return null;
-    }
-
-    /** Searches {@code cls} and all its superclasses for a no-arg declared method. */
-    private static Method findDeclaredMethod(Class<?> cls, String name) {
-        for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
-            for (Method m : c.getDeclaredMethods()) {
-                if (m.getName().equals(name) && m.getParameterCount() == 0) return m;
-            }
-        }
-        return null;
     }
 }

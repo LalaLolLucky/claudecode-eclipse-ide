@@ -525,6 +525,9 @@
    otherwise shrink to the room left on that line and stack its label letter by letter. */
 .tool-line .tpath-wrap .copy-btn { top: auto; right: auto; transform: translateX(-100%);
   white-space: nowrap; }
+/* A rejection that came with the reader's own words: "Reason: …" under the tool's name. */
+.tool-sub.reason { color: var(--fg-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-sub.reason b { color: var(--fg); }
 
 /* inline code chip */
 code.ic { font-family: 'Cascadia Code','Consolas',monospace; font-size: 11.5px; background: var(--ic-bg);

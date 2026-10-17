@@ -15,6 +15,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 
 import org.eclipse.core.resources.IContainer;
@@ -335,7 +338,6 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      *  a request that comes while another card is up waits behind it (carddock.js), and its
      *  preview must not stand in front of the change the card on screen is asking about. */
     private static final ConcurrentHashMap<String, PendingPreview> PREVIEWS = new ConcurrentHashMap<>();
-    private static volatile boolean allowAllSession = false;
     // --- AskUserQuestion bridge (claude mcp__eclipse__askUserQuestion) ---
     private static final ConcurrentHashMap<String, CompletableFuture<String>> QPENDING = new ConcurrentHashMap<>();
     /**
@@ -1399,12 +1401,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             return null;
         });
         decideFn = new SimpleFunction(browser, "_decide", a -> {
-            if (a.length >= 2 && a[0] instanceof String reqId && a[1] instanceof String dec) {
-                String msg = (a.length >= 3 && a[2] instanceof String m) ? m : "";
+            if (a.length >= 2 && a[0] instanceof String reqId && a[1] instanceof String decision) {
                 CompletableFuture<String> f = PENDING.get(reqId);
-                // Encode an optional "do this instead" message after a separator so the
-                // approval tool can pass it back to claude as the deny reason.
-                if (f != null) f.complete(msg.isEmpty() ? dec : (dec + msg));
+                if (f != null) f.complete(decision);
             }
             return null;
         });
@@ -3210,7 +3209,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         return managers.computeIfAbsent(tabId, id -> {
             ChatProcessManager m = new ChatProcessManager();
             m.setPersistent(true);
-            m.setOnPermissionRequest((rid, tool, input, label) -> handleControlPermission(id, rid, tool, input, label));
+            m.setOnPermissionRequest((rid, tool, input, meta) -> handleControlPermission(id, rid, tool, input, meta));
             m.setOnQuestionRequest((rid, q) -> requestQuestion(id, rid, q));
             m.setOnCardCancel(rid -> cancelControlCard(id, rid));
             m.setOnStatus(json -> onStatusForTab(id, json));
@@ -4478,56 +4477,42 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     }
 
     /**
-     * Persistent-chat permission request (stdio control channel). Derives the
-     * card detail and DiffPreview content exactly like {@code ApprovalPromptTool}
-     * and funnels into the same {@link #requestApproval} card flow, so both
-     * routes look identical to the user. Called on a dedicated Rust thread;
-     * blocks until the user decides. {@code rememberLabel} is the CLI-derived
-     * label for the middle "remember" option (empty = no such option). Returns
-     * "allow", "allowRemember", "deny", or "deny&lt;message&gt;".
+     * Persistent-chat permission request (stdio control channel): raises the in-chat decision
+     * card, with the call's diff preview when it writes a file, and blocks until the user
+     * decides. Called on a dedicated Rust thread. {@code metaJson} is what the CLI says besides
+     * the input (its suggested rules, why it asks, how it wants it asked). Returns the decision
+     * as JSON for the core ({@code permission_response} in chat.rs): the card's own, plus the
+     * call's input as the reader changed it in the preview.
      */
     private static String handleControlPermission(String tabId, String controlId, String toolName,
-                                                  String inputJson, String rememberLabel) {
-        com.google.gson.JsonElement input;
+                                                  String inputJson, String metaJson) {
+        JsonObject input = new JsonObject();
         try {
-            input = com.google.gson.JsonParser.parseString(inputJson);
-        } catch (Exception e) {
-            input = new com.google.gson.JsonObject();
-        }
-        String[] proposal = com.anthropic.claudecode.eclipse.tools.ApprovalPromptTool
-                .proposedContentFor(toolName, input);
-        String decision = requestApproval(toolName,
-                com.anthropic.claudecode.eclipse.tools.ApprovalPromptTool.detailOf(input),
-                proposal != null ? proposal[0] : null,
-                proposal != null ? proposal[1] : null,
-                rememberLabel, tabId, controlId);
+            JsonElement parsed = JsonParser.parseString(inputJson);
+            if (parsed.isJsonObject()) input = parsed.getAsJsonObject();
+        } catch (Exception ignored) {}
+        String decision = requestApproval(toolName, input,
+                com.anthropic.claudecode.eclipse.tools.ProposedChange.of(toolName, input),
+                metaJson, tabId, controlId);
         return decision == null ? "deny" : decision;
     }
 
-    /** Legacy overload (MCP {@code ApprovalPromptTool}) — no CLI-derived remember
-     *  label, so it shows the static "allow all edits this session" option; routes
-     *  the card to the active tab. */
-    public static String requestApproval(String toolName, String detail,
-                                         String filePath, String proposedContent) {
-        return requestApproval(toolName, detail, filePath, proposedContent,
-                               "Yes, allow all edits this session",
-                               active != null ? active.activeTabId : "", "");
+    /** The input as the card needs it: without the text a preview shows instead. */
+    private static JsonObject cardInput(JsonObject input, boolean hasPreview) {
+        if (!hasPreview) return input;
+        JsonObject trimmed = input.deepCopy();
+        for (String key : new String[] { "content", "old_string", "new_string", "edits" }) trimmed.remove(key);
+        return trimmed;
     }
 
-    /** Sets the legacy session-wide auto-allow flag (MCP path only). */
-    public static void setAllowAllSession(boolean on) { allowAllSession = on; }
-
     /**
-     * Shows an in-chat decision card and blocks until the user chooses.
-     * {@code rememberLabel} sets the middle option's text (empty = no middle
-     * option). Returns the raw decision: "allow", "allowRemember", "deny", or
-     * "deny&lt;message&gt;" — the caller decides how to honor "allowRemember".
+     * Shows an in-chat decision card and blocks until the user chooses. Returns the card's
+     * decision JSON (see {@link #handleControlPermission}); anything that is not JSON is a
+     * rejection (the request timed out, was withdrawn, or the view is gone).
      */
-    public static String requestApproval(String toolName, String detail,
-                                         String filePath, String proposedContent,
-                                         String rememberLabel, String tabId,
-                                         String controlId) {
-        if (allowAllSession) return "allow";
+    private static String requestApproval(String toolName, JsonObject input,
+                                          com.anthropic.claudecode.eclipse.tools.ProposedChange change,
+                                          String metaJson, String tabId, String controlId) {
         ClaudeGuiView view = active;
         if (view == null || view.browser == null) return "deny";
         String reqId = UUID.randomUUID().toString();
@@ -4536,26 +4521,23 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         // Registered before the card is drawn: the CLI can withdraw the request
         // while it is still going up (a phone answers faster than a person), and
         // a withdrawal for a card not yet on the books would find nothing.
-        // Empty for the legacy MCP route, which has no CLI request behind it.
         registerControlCard(tabId, controlId, reqId);
         final String tid = esc(tabId == null ? "" : tabId);
         final String tn = esc(toolName == null ? "tool" : toolName);
-        final String dt = esc(detail == null ? "" : detail);
-        final String rl = esc(rememberLabel == null ? "" : rememberLabel);
+        final String in = esc(cardInput(input, change != null).toString());
+        final String meta = esc(metaJson == null ? "{}" : metaJson);
 
         // Show the proposed change in an Eclipse diff editor while the card is up
         // (matches the VSCode panel: the diff opens at the decision point). Opened when
         // the page draws this card (openPreview), not now: it may wait behind another.
-        if (filePath != null && !filePath.isEmpty() && proposedContent != null) {
-            PREVIEWS.put(reqId, new PendingPreview(filePath, proposedContent));
-        }
+        if (change != null) PREVIEWS.put(reqId, new PendingPreview(change));
 
         cardOpened();
         Display.getDefault().asyncExec(() -> {
             if (view.browser != null && !view.browser.isDisposed() && view.pageLoaded) {
                 pushCancelHint(view);
                 view.browser.execute("window.onApprovalRequest && window.onApprovalRequest('"
-                        + tid + "','" + reqId + "','" + tn + "','" + dt + "','" + rl + "')");
+                        + tid + "','" + reqId + "','" + tn + "','" + in + "','" + meta + "')");
             } else {
                 CompletableFuture<String> f = PENDING.remove(reqId);
                 if (f != null) f.complete("deny");
@@ -4566,7 +4548,9 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                     Activator.getDefault().getPreferenceStore(),
                     com.anthropic.claudecode.eclipse.Constants.PREF_APPROVAL_TIMEOUT_MODE,
                     com.anthropic.claudecode.eclipse.Constants.PREF_APPROVAL_TIMEOUT_SECONDS);
-            return future.get(seconds, TimeUnit.SECONDS);
+            String decision = withPreviewEdits(future.get(seconds, TimeUnit.SECONDS), reqId, toolName, input);
+            showApprovedInput(view, reqId, decision, change != null);
+            return decision;
         } catch (TimeoutException e) {
             // The card is still on screen (the user never answered): the JS side has
             // no idea we're about to give up on its behalf, so tell it to tear the
@@ -4584,16 +4568,65 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         }
     }
 
+    /** Tells the page which input was approved, when the diff preview changed it: its tool line shows that. */
+    private static void showApprovedInput(ClaudeGuiView view, String reqId, String decision, boolean hadPreview) {
+        if (!hadPreview) return;
+        try {
+            JsonElement parsed = JsonParser.parseString(decision);
+            if (!parsed.isJsonObject() || !parsed.getAsJsonObject().has("input")) return;
+            String changed = esc(parsed.getAsJsonObject().get("input").toString());
+            Display.getDefault().asyncExec(() -> {
+                if (view.browser != null && !view.browser.isDisposed()) {
+                    view.browser.execute("window.onApprovalEdited && window.onApprovalEdited('" + reqId + "','" + changed + "')");
+                }
+            });
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * An approval with what the reader changed in the diff preview: the decision with the
+     * call's input as edited there. A preview left alone, a decision that is not an approval,
+     * and a preview that cannot be read leave it as it was. A preview put back to the file's
+     * own text is a rejection that lets Claude carry on: nothing is left to approve.
+     */
+    private static String withPreviewEdits(String decision, String reqId, String toolName, JsonObject input) {
+        JsonObject d;
+        try {
+            JsonElement parsed = JsonParser.parseString(decision);
+            if (!parsed.isJsonObject()) return decision;
+            d = parsed.getAsJsonObject();
+        } catch (Exception e) {
+            return decision;
+        }
+        String kind = d.has("d") && d.get("d").isJsonPrimitive() ? d.get("d").getAsString() : "";
+        PendingPreview p = PREVIEWS.get(reqId);
+        if (!kind.startsWith("allow") || p == null) return decision;
+        org.eclipse.compare.CompareEditorInput shown;
+        synchronized (p) { shown = p.input; }
+        String edited = com.anthropic.claudecode.eclipse.tools.DiffPreview.editedContent(shown, p.change);
+        com.anthropic.claudecode.eclipse.tools.ProposedChange change = p.change;
+        if (edited == null || edited.equals(change.proposed)) return decision;
+        if (edited.equals(change.original)) {
+            JsonObject deny = new JsonObject();
+            deny.addProperty("d", "deny");
+            deny.addProperty("msg", "The user put the file back as it was in the diff view, so the change was not made.");
+            deny.addProperty("interrupt", false);
+            return deny.toString();
+        }
+        JsonObject changed = change.editedInput(toolName, input, edited);
+        if (changed == null) return decision;
+        d.add("input", changed);
+        return d.toString();
+    }
+
     /** An approval request's diff preview: what it shows, and the editor once it is open. */
     private static final class PendingPreview {
-        final String filePath;
-        final String proposedContent;
+        final com.anthropic.claudecode.eclipse.tools.ProposedChange change;
         org.eclipse.compare.CompareEditorInput input;   // guarded by this
         boolean ended;                                  // guarded by this: the request is over
 
-        PendingPreview(String filePath, String proposedContent) {
-            this.filePath = filePath;
-            this.proposedContent = proposedContent;
+        PendingPreview(com.anthropic.claudecode.eclipse.tools.ProposedChange change) {
+            this.change = change;
         }
     }
 
@@ -4610,8 +4643,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         }
         org.eclipse.compare.CompareEditorInput input = null;
         try {
-            input = com.anthropic.claudecode.eclipse.tools.DiffPreview.open(p.filePath, p.proposedContent,
-                    java.nio.file.Path.of(p.filePath).getFileName() + " (proposed)");
+            input = com.anthropic.claudecode.eclipse.tools.DiffPreview.open(p.change,
+                    java.nio.file.Path.of(p.change.filePath).getFileName() + " (proposed)");
         } catch (Exception ignored) {}
         if (input == null) return;
         boolean ended;

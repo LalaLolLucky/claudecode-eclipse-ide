@@ -487,7 +487,7 @@ const TOOL_LABELS = {
   askuserquestion:'Questions', runtests:'Testing',
   getdiagnostics:'Checking', checkdocumentdirty:'Checking',
   getcurrentselection:'Reading', getlatestselection:'Reading',
-  getopeneditors:'Reading', getworkspacefolders:'Reading', approvalprompt:'Permission'
+  getopeneditors:'Reading', getworkspacefolders:'Reading'
 };
 /* Tool names whose result text is naturally structured as "file:line[:col]" rows
    (search/reference/diagnostic-shaped) — their OUT gets rendered as a clickable
@@ -563,6 +563,25 @@ function planOutcomeText(rejected) {
    output: the reason is all there is to read of it. */
 function setToolError(line, text) {
   if (!line || !text) return;
+  // A rejection that came with the reader's own words is not a failure: it reads "Reason: …"
+  // right under the tool's name, as in the VS Code extension, and has no warning line.
+  if (text.startsWith(DENY_WITH_REASON)) {
+    let why = line.querySelector(':scope > .tool-sub.reason');
+    if (!why) {
+      why = document.createElement('div'); why.className = 'tool-sub reason';
+      const label = document.createElement('b'); label.textContent = 'Reason: ';
+      why.appendChild(label); why.appendChild(document.createElement('span'));
+      line.insertBefore(why, [].find.call(line.children, c => c.tagName === 'DIV') || null);
+    }
+    why.lastChild.textContent = text.slice(DENY_WITH_REASON.length);
+    return;
+  }
+  // A plain refusal is the tool's output, in its OUT box.
+  if (text.startsWith(DENY_STOP.slice(0, DENY_STOP.indexOf('.')))) {
+    renderToolOutput(line, line.dataset.tname || '', text);
+    return;
+  }
+  // Anything else is a real failure: its whole text, in the OUT box in the error colour.
   const stale = line.querySelector('.io-item.out, .result-list.out');
   if (stale) stale.remove();
   let block = line._ioBlock;
@@ -948,13 +967,16 @@ function appendIoRow(block, label, text, startMode) {
   const row = document.createElement('div'); row.className = 'io-row';
   const labelEl = document.createElement('span'); labelEl.className = 'io-label'; labelEl.textContent = label;
   const pre = document.createElement('pre'); pre.textContent = text;
-  row.appendChild(labelEl); row.appendChild(pre); row.appendChild(makeCopyBtn(() => text));
+  let shown = text;
+  row.appendChild(labelEl); row.appendChild(pre); row.appendChild(makeCopyBtn(() => shown));
   item.appendChild(row);
   block.appendChild(item);
   syncBlock(block);
   // What settleCards labels the button with and opens when it is clicked.
   item.dataset.kind = label === 'IN' ? 'input' : label === 'OUT' ? 'output' : label.toLowerCase();
-  item._fullText = () => text;
+  item._fullText = () => shown;
+  // For an input the reader changed on its card: what the row shows, copies and opens is the new text.
+  item._setText = (t) => { shown = t; pre.textContent = t; };
   return item;
 }
 /** A fresh `.io-block` holding a single row — the common case (a tool with only an IN, or
@@ -1107,7 +1129,7 @@ function makeAgentLogSection() {
 // span, a checklist, or their own dedicated card elsewhere) — never also get a boxed IN.
 const SKIP_IN_BOX = new Set([
   'write', 'edit', 'multiedit', 'notebookedit', 'agent', 'task', 'todowrite',
-  'askuserquestion', 'approvalprompt', 'exitplanmode'
+  'askuserquestion', 'exitplanmode'
 ]);
 function makeToolLine(name, input, status, errorText, root, resultText, hasAgentLog) {
   input = input || {};
@@ -1372,7 +1394,7 @@ function applyToolResult(payload) {
 // Tools whose successful result is already fully represented some other way (a diff,
 // the plan-outcome tool-sub, the question card) — showing the CLI's boilerplate ack text
 // underneath would just be noise, so OUT is skipped for these specifically.
-const SKIP_OUT_BOX = new Set(['write', 'edit', 'multiedit', 'notebookedit', 'exitplanmode', 'askuserquestion', 'approvalprompt', 'todowrite', 'read']);
+const SKIP_OUT_BOX = new Set(['write', 'edit', 'multiedit', 'notebookedit', 'exitplanmode', 'askuserquestion', 'todowrite', 'read']);
 /* The actual output-rendering fix: until now a successful tool_result only ever colored
    the dot (applyToolResult above) — the CLI's answer never appeared anywhere. Shared by
    the live path (applyToolResult) and, when a reload's session.rs starts carrying result
