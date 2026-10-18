@@ -548,6 +548,18 @@ function resumeNoteTurn(text) {
   const turn = document.createElement('div'); turn.className = 'turn'; turn.appendChild(note);
   return turn;
 }
+/* The note goes once Claude's reply starts: the request that reply answers has put the conversation
+   back in the prompt cache, so what the note says no longer holds. The turn it sat in goes with it
+   when it held nothing else. */
+function dropResumeNote(t) {
+  if (!t || !t.hasResumeNote) return;
+  t.hasResumeNote = false;
+  t.pane.querySelectorAll('.resume-note').forEach(note => {
+    const turn = note.parentNode;
+    note.remove();
+    if (turn && turn.classList.contains('turn') && !turn.firstChild) turn.remove();
+  });
+}
 /* The same sentence asked for on its own, for a conversation that did not come with it
    (one read the old way, see loadHistory). Empty when the native library is from before
    the note. With the tab's folder, for the reason backfillMessageIds gives. */
@@ -1135,7 +1147,8 @@ function drawOpened(t, opening, got, inOneGo) {
     if (!n) addSystemToPane(box, 'This conversation is empty or could not be loaded.');
     else {
       const note = resumeNoteTurn(typeof got.note === 'string' ? got.note : resumeNoteFor(t, id));
-      if (note) box.appendChild(note);
+      if (note) { box.appendChild(note); t.hasResumeNote = true; }
+      if (got.cache) { t.cache = got.cache; if (t === activeTab()) updateCachePill(); }
     }
     const waiting = opening.line && opening.line.parentNode === pane;
     placeHistoryPart(t, box, waiting ? opening.line.nextSibling : pane.firstChild);

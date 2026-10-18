@@ -360,8 +360,10 @@ function resumeWorkingFor(t) {
       : shuffledGerunds[Math.floor(Math.random() * shuffledGerunds.length)];
   appendStaticWorking(t, word);
 }
-/* Live token count shown beside the "Thinking…" marker (real output tokens via the
-   CLI partial-message stream), removed once thinking finalizes to "Thought for Ns". */
+/* Live token count shown beside the "Thinking…" marker: the CLI's own running estimate of the thinking
+   under way (system/thinking_tokens), not the turn's output. A model that omits its thinking sends none and
+   the marker is bare. Starts over with each thinking block (ensureThink), removed once thinking finalizes
+   to "Thought for Ns". */
 window.onTokens = function(tabId, n) {
   const t = tabById(tabId); if (!t) return;
   loadRender(t);

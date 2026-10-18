@@ -48,16 +48,98 @@ window.onContextStatus = function(tabId, json) {
   let data = null;
   try { data = JSON.parse(json); } catch (e) {}
   ctxRingByTab[tabId] = data;   // recorded even for a background tab, for switchToContextRing below
+  noteCacheStatus(tabById(tabId), data);
   const t = activeTab();
+  if (t && t.id === tabId) updateCachePill();
   if (!t || t.id !== tabId) return;   // a background tab's turn finishing shouldn't repaint this
   ctxRingData = data;
   updateContextRing();
 };
+/* ---- prompt-cache window (composer bar) ----
+   The API keeps a conversation's prompt cached for five minutes or an hour after a request
+   used it, and a message sent after that costs a fresh write of the whole prompt. The pill
+   shows where that stands, as the VS Code extension's footer does: the minutes left while
+   warm, a cold look once the window has run out, with a tooltip saying which. It runs on the
+   clock, so it goes cold by itself while the conversation sits idle.
+   A tab's record, t.cache = {anchorAt, ttlMs, recacheTokens, compacted}, comes from the
+   transcript when a saved conversation is opened (history.js) and from each turn's status
+   (onContextStatus). The sentences are the extension's. */
+function cacheWindow(rec, now) {
+  if (!rec) return { kind: 'unknown' };
+  if (rec.compacted) return { kind: 'cold', reason: 'compacted' };
+  if (typeof rec.anchorAt !== 'number' || typeof rec.ttlMs !== 'number') return { kind: 'unknown' };
+  const left = rec.anchorAt + rec.ttlMs - now;
+  if (left > 0) return { kind: 'warm', minutesLeft: Math.ceil(left / 60000) };
+  return { kind: 'cold', reason: 'expired', idleMs: now - rec.anchorAt };
+}
+/** An idle time as the note gives it: minutes, hours and minutes, or days and hours. */
+function cacheIdle(ms) {
+  const m = Math.max(0, Math.floor(ms / 60000));
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  return h < 24 ? h + 'h ' + (m % 60) + 'm' : Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+function cacheTip(w) {
+  if (w.kind === 'warm') return w.minutesLeft == null ? 'Prompt cache in use.' : 'Prompt cache warm, about ' + w.minutesLeft + ' min left.';
+  if (w.reason === 'compacted') return 'Prompt cache does not cover the compacted conversation.';
+  return 'Prompt cache likely expired (idle ' + cacheIdle(w.idleMs) + ').';
+}
+function updateCachePill() {
+  const btn = document.getElementById('cache-btn');
+  if (!btn) return;
+  const t = activeTab();
+  // A turn under way is using the cache, whatever the last record says.
+  const w = t && t.streaming ? { kind: 'warm', minutesLeft: null } : cacheWindow(t && t.cache, Date.now());
+  const shown = btn.style.display !== 'none';
+  const has = w.kind !== 'unknown';
+  btn.style.display = has ? '' : 'none';
+  if (shown !== has) fitComposerBar();
+  if (!has) { hideCacheTip(); return; }
+  btn.classList.toggle('cold', w.kind === 'cold');
+  document.getElementById('cache-left').textContent = w.kind === 'warm' && w.minutesLeft != null ? w.minutesLeft + 'm' : '';
+  const tip = document.getElementById('cache-tip');
+  if (tip) tip.textContent = cacheTip(w);
+}
+/** The styled popover, glued above the clock like the context ring's. */
+function showCacheTip() {
+  const btn = document.getElementById('cache-btn');
+  const tip = document.getElementById('cache-tip');
+  if (!btn || !tip || btn.style.display === 'none') return;
+  tip.classList.add('open');
+  const r = btn.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 8));
+  tip.style.left = left + 'px';
+  tip.style.top = (r.top - tip.offsetHeight - 6) + 'px';
+}
+function hideCacheTip() {
+  const tip = document.getElementById('cache-tip');
+  if (tip) tip.classList.remove('open');
+}
+/** The record of tab `t` after a turn: what its status says, over what it had. */
+function noteCacheStatus(t, data) {
+  if (!t || !data) return;
+  const prev = t.cache || {};
+  const pick = (a, b) => (typeof a === 'number' ? a : (typeof b === 'number' ? b : null));
+  t.cache = {
+    anchorAt: pick(data.cacheAnchorAt, prev.anchorAt),
+    ttlMs: pick(data.cacheTtlMs, prev.ttlMs),
+    recacheTokens: pick(data.recacheTokens, prev.recacheTokens),
+    compacted: false,
+  };
+}
+/** A compaction nothing has answered yet: the cache holds none of what it made. */
+function noteCacheCompacted(t) {
+  if (!t) return;
+  t.cache = Object.assign({ anchorAt: null, ttlMs: null, recacheTokens: null }, t.cache, { compacted: true });
+  if (t === activeTab()) updateCachePill();
+}
+setInterval(updateCachePill, 15000);
 /** Called on tab switch (tabs.js) so the ring shows THAT tab's own last-known status
  *  immediately, instead of stale data left over from whichever tab was active before. */
 function switchToContextRing(tabId) {
   ctxRingData = ctxRingByTab[tabId] || null;
   updateContextRing();
+  updateCachePill();
 }
 function updateContextRing() {
   const btn = document.getElementById('ctx-ring-btn');

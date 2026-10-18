@@ -11,6 +11,8 @@
  * @property {string} rootId          the supertab (working root) this conversation runs in — its claude cwd
  * @property {HTMLElement} pane       this conversation's transcript container inside #messages
  * @property {boolean} titled         true once the title is fixed (first send or manual rename)
+ * @property {{anchorAt: ?number, ttlMs: ?number, recacheTokens: ?number, compacted: boolean}} [cache] where the prompt cache stands (controls.js)
+ * @property {boolean} [hasResumeNote] the "prompt cache has likely expired" line is on screen; goes when Claude's reply starts
  * @property {string} draft           unsent composer text, restored on tab switch
  * @property {string} model           per-conversation model ("" = Default)
  * @property {number} effortIdx       index into EFFORTS

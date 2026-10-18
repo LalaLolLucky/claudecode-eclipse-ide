@@ -460,6 +460,7 @@ function setStreaming(v) {
   // it here too means no future turn-ending path can forget to.
   if (!v && typeof stopWorkingFor === 'function') stopWorkingFor(t);
   syncComposer();
+  if (typeof updateCachePill === 'function') updateCachePill();   // a turn under way is using the cache
   // What was waiting for the turn to end (/copy typed while Claude was replying).
   if (!v && t && t.afterTurn) {
     const waiting = t.afterTurn; t.afterTurn = null;

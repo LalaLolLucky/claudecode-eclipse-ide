@@ -1526,6 +1526,7 @@ function ensureThink() {
   if (!ensureTurn()) return null;
   if (!curThink) {
     thinkStart = stepStart || Date.now();
+    lastTokens = 0;   // a new block counts from nothing
     const el = document.createElement('div'); el.className = 'a-item think muted live';
     el.innerHTML = '<span class="dot gray"></span>'
       + '<span class="think-head"><span class="think-label">Thinking…</span>'
