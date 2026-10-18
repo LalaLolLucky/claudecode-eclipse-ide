@@ -368,8 +368,8 @@ function renderHistoryList() {
   list.appendChild(archivedGroupRow(archived.length, collapsed, !q));
   if (!collapsed) archived.forEach(s => list.appendChild(historyRow(s, q)));
 }
-/* One conversation's row. Hovered, it offers Rename and — where there is an archive —
-   Archive session, or Unarchive session on a row already in the archive. */
+/* One conversation's row. Hovered, it offers Rename, Delete session and — where there is an
+   archive — Archive session, or Unarchive session on a row already in the archive. */
 function historyRow(s, q) {
   const it = document.createElement('div'); it.className = 'item'; it.dataset.sid = s.sessionId;
   const main = document.createElement('div'); main.className = 'h-main';
@@ -395,6 +395,10 @@ function historyRow(s, q) {
     move.onclick = (e) => { e.stopPropagation(); setHistoryArchived(s, !s.archived); };
     actions.appendChild(move);
   }
+  const del = document.createElement('span'); del.className = 'h-action h-del'; del.title = 'Delete session';
+  del.innerHTML = ICONS.TRASH;
+  del.onclick = (e) => { e.stopPropagation(); try { window._confirmDeleteSession(s.sessionId, stripContext(s.display) || '(untitled)'); } catch (err) {} };
+  actions.appendChild(del);
   it.appendChild(main); it.appendChild(actions);
   it.onclick = () => loadHistory(s.sessionId, s.display);
   return it;
@@ -493,18 +497,21 @@ function startHistoryRename(itemEl, session) {
     else if (e.key === 'Escape') { e.preventDefault(); inp.onblur = null; finish(false); }
   };
 }
-/* Not on a row any more: the rows archive instead (setHistoryArchived). This and its
-   bridge (_deleteSession) remain the way to remove a conversation for good. */
-function deleteHistory(id) {
+/* The view asked "Delete session?" (_confirmDeleteSession) and the user said Delete. A tab
+   showing the conversation goes first, with its process, so nothing writes to the file
+   after it is gone. When it is the last tab of its folder, a blank conversation opens for
+   the view to land on: closing the folder's last tab would close the folder, and with it
+   the view. */
+window.onSessionDeleteConfirmed = function(id) {
+  const open = tabs.find(t => t.sessionId === id);
+  if (open) {
+    if (tabs.filter(x => x.rootId === open.rootId).length === 1) createTab({ rootId: open.rootId });
+    closeTab(open.id);
+  }
   try { if (window._deleteSession) window._deleteSession(id); } catch (e) {}
   histSessions = histSessions.filter(s => s.sessionId !== id);
   renderHistoryList();
-  // If this session is open in a tab, close that tab. closeTab() replaces the
-  // last remaining tab with a fresh blank session, so deleting the only open
-  // conversation just clears the view (VSCode behaviour).
-  const open = tabs.find(t => t.sessionId === id);
-  if (open) closeTab(open.id);
-}
+};
 /* static (non-streaming) reconstruction helpers for loaded history */
 function appendThinkStatic(turn, text) {
   const el = document.createElement('div'); el.className = 'a-item think muted';

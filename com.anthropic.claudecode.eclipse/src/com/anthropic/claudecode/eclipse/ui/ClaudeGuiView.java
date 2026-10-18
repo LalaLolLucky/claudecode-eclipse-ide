@@ -185,6 +185,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private SimpleFunction teleportGitStatusFn;
     @SuppressWarnings("unused") private SimpleFunction loadSessionFn;
     @SuppressWarnings("unused") private SimpleFunction deleteSessionFn;
+    @SuppressWarnings("unused") private SimpleFunction confirmDeleteSessionFn;
     @SuppressWarnings("unused") private SimpleFunction renameSessionFn;
     @SuppressWarnings("unused") private SimpleFunction setSessionsArchivedFn;
     @SuppressWarnings("unused") private SimpleFunction replyIdsFn;
@@ -683,6 +684,32 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 : "[]");
         deleteSessionFn = new SimpleFunction(browser, "_deleteSession", a -> {
             if (a.length > 0 && a[0] instanceof String id) deleteSessionFile(id);
+            return null;
+        });
+        // Asks before a conversation is deleted from the history, and on "Delete" tells the page,
+        // which closes any tab showing it before asking for the file to go (_deleteSession).
+        // asyncExec for the same reason as _confirmCloseView: a modal opened inside a call this
+        // Browser is still executing deadlocks WebView2.
+        confirmDeleteSessionFn = new SimpleFunction(browser, "_confirmDeleteSession", a -> {
+            if (!(a.length > 1 && a[0] instanceof String id && a[1] instanceof String title)) return null;
+            final String shown = title.length() > 80 ? title.substring(0, 80) + "\u2026" : title;
+            Display.getDefault().asyncExec(() -> {
+                try {
+                    if (browser == null || browser.isDisposed()) return;
+                    MessageDialog dlg = new MessageDialog(browser.getShell(),
+                            "Delete session?", null,
+                            "\u201c" + shown + "\u201d will be deleted for good. This can't be undone.",
+                            MessageDialog.WARNING, new String[] { "Delete", "Cancel" }, 1);
+                    // The user's own decision: eclipseDialog lists it and never answers it.
+                    dlg.create();
+                    com.anthropic.claudecode.eclipse.tools.EclipseDialogTool.forUserOnly(dlg.getShell());
+                    if (dlg.open() != 0) return;
+                    executeJS("window.onSessionDeleteConfirmed && window.onSessionDeleteConfirmed("
+                            + new Gson().toJson(id) + ")");
+                } catch (Exception e) {
+                    Activator.logError("Failed to delete the session", e);
+                }
+            });
             return null;
         });
         // Files conversations under "Archived sessions" in the history, or takes them back
