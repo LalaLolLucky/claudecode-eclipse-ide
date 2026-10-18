@@ -18,6 +18,7 @@
  * @property {boolean} [ultracode]    per-conversation Ultracode toggle (default false)
  * @property {boolean} [streaming]    a turn is in flight on this tab's process
  * @property {boolean} [cancelled]    Stop pressed — withTab drops stream callbacks until the next send
+ * @property {boolean} [queuedAfterStop] Stop pressed with a message queued behind the turn: the guard comes off when the stopped turn ends
  * @property {boolean} [compacting]   /compact (or auto-compact) running — gerund pinned to "Compacting…"
  * @property {Object}  [_r]           parked render globals while another tab is loaded (see loadRender)
  * @property {HTMLElement|null} [_compEl] latest "Compacted chat" element awaiting its summary body

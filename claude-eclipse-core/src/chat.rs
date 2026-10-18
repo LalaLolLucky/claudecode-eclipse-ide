@@ -2302,7 +2302,15 @@ fn reader_loop(
         if is_turn_content {
             let reopened = {
                 let mut s = state.lock().unwrap();
-                if !s.awaiting { s.awaiting = true; true } else { false }
+                if !s.awaiting {
+                    s.awaiting = true;
+                    // A turn the user did not ask to stop: the Stop that ended the one before it
+                    // (a message queued behind it still runs) does not apply to this one.
+                    s.cancel.store(false, Ordering::Relaxed);
+                    true
+                } else {
+                    false
+                }
             };
             if reopened {
                 fire_void(&java_vm, &callbacks, "onStreamStart");

@@ -18,7 +18,15 @@ window.onStreamText    = (tabId, t) => withTab(tabId, () => appendAssistant(t));
 /* Turn over → the CLI has written this turn's user line, so the bubble sent a
    moment ago can finally learn which transcript line it owns (its hover actions
    stay hidden until then). */
-window.onStreamEnd     = (tabId) => withTab(tabId, (t) => { t.compacting = false; hideWorking(); endAssistant(); setStreaming(false); backfillMessageIds(t); if (typeof refreshReplies === 'function') refreshReplies(t); refreshTabTitle(t); });
+const streamEnded = (tabId) => withTab(tabId, (t) => { t.compacting = false; hideWorking(); endAssistant(); setStreaming(false); backfillMessageIds(t); if (typeof refreshReplies === 'function') refreshReplies(t); refreshTabTitle(t); });
+/* A turn that Stop ended reports its end like any other, and by then everything of it is being
+   dropped (withTab). A message queued behind it is not: the CLI runs it as the next turn once the
+   stopped one is over, so that is where the guard comes off, and the turn that follows is shown. */
+window.onStreamEnd = (tabId) => {
+  const t = tabById(tabId);
+  if (t && t.cancelled && t.queuedAfterStop) { t.cancelled = false; t.queuedAfterStop = false; return; }
+  streamEnded(tabId);
+};
 window.onToolStart     = (tabId, n) => withTab(tabId, () => addToolLine(n));
 window.onToolEnd       = (tabId, j) => withTab(tabId, (t) => { applyToolResult(j); startTurnAfterQueuedSend(t); });
 /* A running subagent's own current step (chat.rs never gives its OWN tool calls a

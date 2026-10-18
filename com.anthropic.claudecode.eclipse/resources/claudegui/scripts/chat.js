@@ -1636,6 +1636,7 @@ function doCancel() {
   // flag makes withTab() drop EVERY further stream callback for this tab, so once
   // Stop is pressed nothing from the stopped turn ever renders (joebiden18). Cleared
   // when the next turn starts (doSend / onStreamStart).
+  t.queuedAfterStop = (t.queuedSends || 0) > 0;   // a message waiting behind this turn still runs (stream.js, onStreamEnd)
   t.cancelled = true;
   if (window._cancelRequest) window._cancelRequest(t.id);
   // Mark the stop point: if a tool was running, turn only THAT tool line's dot red
