@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an idea or an improvement for the plugin
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: What are you trying to do, and what gets in the way? A concrete situation helps more than a general wish.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like to happen?
+      description: The behavior you have in mind. A screenshot or sketch of what you expect is welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: existing
+    attributes:
+      label: Does Claude Code in VS Code or the terminal already do this?
+      description: If so, how it behaves there. A screenshot helps.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Other ways you handle this today, or other approaches that came to mind.
+  - type: input
+    id: environment
+    attributes:
+      label: Eclipse version and OS
+      description: Only if the idea depends on them.
+      placeholder: e.g. Eclipse 2026-09, macOS 26
