@@ -53,6 +53,9 @@ function mcpToken() { return 'w' + Date.now().toString(36) + '-' + (++mcpSeq); }
     answer, or one for a window since closed) are dropped. */
 window.onMcp = function(tabId, json) {
   let r; try { r = JSON.parse(json); } catch (e) { return; }
+  // The plugins window's catalogue is megabytes: Java says it is there, and it is fetched
+  // here, as a saved conversation is (_takeOpenedSession), not carried as script text.
+  if (r && r.taken && window._takePlugins) { try { r = JSON.parse(_takePlugins(r.token) || 'null'); } catch (e) { return; } }
   const p = r && mcpPending.get(r.token);
   if (!p) return;
   mcpPending.delete(r.token);
@@ -60,12 +63,12 @@ window.onMcp = function(tabId, json) {
   if (r.ok) p.resolve(r.response || {});
   else p.reject(new Error(r.error || 'Unknown error'));
 };
-function mcpAwait(token) {
+function mcpAwait(token, timeoutMs) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       mcpPending.delete(token);
       reject(new Error('Claude Code did not answer in time.'));
-    }, MCP_TIMEOUT_MS);
+    }, timeoutMs || MCP_TIMEOUT_MS);
     mcpPending.set(token, { resolve, reject, timer });
   });
 }

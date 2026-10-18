@@ -165,6 +165,13 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private SimpleFunction mcpFn;
     @SuppressWarnings("unused") private SimpleFunction pluginVersionFn;
     @SuppressWarnings("unused") private SimpleFunction mcpConfigFn;
+    @SuppressWarnings("unused") private SimpleFunction pluginsFn;
+    @SuppressWarnings("unused") private SimpleFunction takePluginsFn;
+    /** Plugins window answers too big to hand over as script text, by the page's token. */
+    private final java.util.concurrent.ConcurrentHashMap<String, String> pluginAnswers =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** An answer longer than this is fetched by the page ({@code _takePlugins}) instead. */
+    private static final int PLUGIN_INLINE_MAX = 64 * 1024;
     @SuppressWarnings("unused") private SimpleFunction cliFn;
     @SuppressWarnings("unused") private SimpleFunction commandsFn;
     @SuppressWarnings("unused") private SimpleFunction refreshModelsFn;
@@ -1180,6 +1187,36 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             }, "claude-mcp-config").start();
             return null;
         });
+        // The plugins window's own requests are the CLI's `claude plugin …`, run in the tab's
+        // folder like the one above, and answered on the same channel under the page's token.
+        pluginsFn = new SimpleFunction(browser, "_plugins", a -> {
+            if (a.length < 3 || !(a[0] instanceof String ti) || !(a[1] instanceof String token)
+                    || !(a[2] instanceof String op))
+                return null;
+            final String root = a.length > 3 && a[3] instanceof String s ? s : "";
+            final ChatProcessManager m = managerFor(ti);
+            new Thread(() -> {
+                String res;
+                try {
+                    m.setRoot(root);
+                    res = m.pluginsRun(token, op);
+                } catch (Throwable t) {
+                    ClaudeCodeView.debug("[plugins] " + token + " failed: " + t);
+                    res = null;
+                }
+                if (res == null) res = mcpError(token, "Not supported by this build.");
+                // The catalogue of the marketplaces is megabytes: the page is told only that
+                // it is there and fetches it, as _takeOpenedSession does for a conversation.
+                if (res.length() > PLUGIN_INLINE_MAX) {
+                    pluginAnswers.put(token, res);
+                    res = "{\"token\":\"" + esc(token) + "\",\"taken\":true}";
+                }
+                pushMcp(ti, res);
+            }, "claude-plugins").start();
+            return null;
+        });
+        takePluginsFn = new SimpleFunction(browser, "_takePlugins", a ->
+            a.length > 0 && a[0] instanceof String token ? pluginAnswers.remove(token) : null);
         // What the CLI's own dialogs show (Memory, Instructions, Status, …) is asked of
         // the tab's process the way the MCP servers window asks, so this too may have to
         // start it; the answer comes back as window.onCliReply under the page's token.
