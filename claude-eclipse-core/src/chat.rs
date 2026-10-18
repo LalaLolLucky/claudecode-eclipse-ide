@@ -3011,6 +3011,14 @@ fn process_event_value(
     // getting appended onto that same bubble (nothing had ever started a fresh one).
     let parent_id = event.get("parent_tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
     let is_subagent = !parent_id.is_empty();
+    // Whatever text is being held back goes out before anything else does, so nothing
+    // can overtake it. Only another text/thinking delta may leave it waiting.
+    let is_text_delta = event["type"].as_str() == Some("stream_event")
+        && event["event"]["type"].as_str() == Some("content_block_delta")
+        && matches!(event["event"]["delta"]["type"].as_str(), Some("text_delta") | Some("thinking_delta"));
+    if !is_text_delta {
+        flush_held_piece(java_vm, callbacks);
+    }
     match event["type"].as_str().unwrap_or("") {
         // Usage/rate-limit signal — forwarded so the GUI can show a warning banner.
         "rate_limit_event" => {
@@ -3273,18 +3281,205 @@ fn process_event_value(
                 cursor.1 = 0;
             }
         }
-        // Fine-grained streaming events (only with --include-partial-messages) —
-        // used solely to drive the live output-token counter ([`TokenCounter`]). Text/thinking/tools
-        // still render from the complete "assistant" events above.
-        // A concurrent background subagent's own token usage must not skew the
-        // top-level turn's live counter — this bar reports the turn the user is
-        // actually watching, not the sum of everything running underneath it.
-        "stream_event" if !is_subagent => {
-            if let Some(n) = tokens.on_event(&event["event"]) {
-                fire_string(java_vm, callbacks, "onTokens", &n.to_string());
+        // Fine-grained streaming events (only with --include-partial-messages): the live
+        // output-token counter ([`TokenCounter`]) and the text/thinking as it is written.
+        // Tools still render from the complete "assistant" events above. A concurrent
+        // background subagent's own token usage must not skew the top-level turn's live
+        // counter — this bar reports the turn the user is actually watching, not the sum
+        // of everything running underneath it.
+        "stream_event" => {
+            if !is_subagent {
+                if let Some(n) = tokens.on_event(&event["event"]) {
+                    // Every delta moves the count, and each send is a script run in the
+                    // browser: between the message's own start and end (which always send)
+                    // the live number is refreshed a few times a second, not per piece.
+                    let from_delta = event["event"]["type"].as_str() == Some("content_block_delta");
+                    let now = std::time::Instant::now();
+                    let due = LAST_TOKENS_SENT.with(|l| {
+                        let due = !from_delta || l.get().map_or(true, |t| now.duration_since(t) >= TOKENS_GAP);
+                        if due { l.set(Some(now)); }
+                        due
+                    });
+                    if due {
+                        fire_string(java_vm, callbacks, "onTokens", &n.to_string());
+                    }
+                }
+            }
+            // Text and thinking flow as they are written. The cursor records how much of
+            // the block went out, so the finished "assistant" event above only sends the
+            // rest (all of it, when no deltas came). A new message starts from zero: a
+            // turn stopped halfway through a block would otherwise leave its count behind
+            // and swallow the start of the next reply. A subagent's pieces go to its own
+            // transcript, as its finished blocks do.
+            let cursor = cursors.entry(parent_id.to_string()).or_insert((0, 0, 0));
+            if let Some((callback, piece)) = stream_piece(&event["event"], cursor) {
+                let ready = HELD_PIECE.with(|h| h.borrow_mut().push(parent_id, callback, &piece, std::time::Instant::now()));
+                for (p, cb, text) in ready {
+                    emit_piece(java_vm, callbacks, &p, cb, &text);
+                }
             }
         }
         _ => {}
+    }
+}
+
+/// Text and thinking pieces arrive a few characters at a time, many times a second.
+/// Each one used to be a call into Java and a script run in the browser, which is
+/// more than the UI thread keeps up with on a long reply. Pieces that follow one
+/// another within [`PIECE_GAP`] are joined and sent together; the first one after a
+/// pause goes out at once, and anything held goes out ahead of the next event of any
+/// other kind (see `process_event_value`).
+const PIECE_GAP: std::time::Duration = std::time::Duration::from_millis(50);
+
+#[derive(Default)]
+struct PieceBatch {
+    held: Option<(String, &'static str, String)>,
+    last_sent: Option<std::time::Instant>,
+}
+
+impl PieceBatch {
+    /// Takes in a piece; returns what is to be sent now (parent id, callback, text).
+    fn push(&mut self, parent: &str, callback: &'static str, text: &str, now: std::time::Instant)
+        -> Vec<(String, &'static str, String)> {
+        let mut out = Vec::new();
+        match &mut self.held {
+            Some((p, cb, t)) if p == parent && *cb == callback => t.push_str(text),
+            _ => {
+                if let Some(old) = self.held.take() {
+                    out.push(old);
+                }
+                self.held = Some((parent.to_string(), callback, text.to_string()));
+            }
+        }
+        let due = self.last_sent.map_or(true, |l| now.duration_since(l) >= PIECE_GAP);
+        if due {
+            if let Some(h) = self.held.take() {
+                out.push(h);
+            }
+            self.last_sent = Some(now);
+        }
+        out
+    }
+
+    fn take(&mut self) -> Option<(String, &'static str, String)> {
+        self.held.take()
+    }
+}
+
+const TOKENS_GAP: std::time::Duration = std::time::Duration::from_millis(150);
+
+thread_local! {
+    static LAST_TOKENS_SENT: std::cell::Cell<Option<std::time::Instant>> = std::cell::Cell::new(None);
+}
+
+thread_local! {
+    // One reader thread per chat process, so what is held belongs to that thread alone.
+    static HELD_PIECE: std::cell::RefCell<PieceBatch> = std::cell::RefCell::new(PieceBatch::default());
+}
+
+fn flush_held_piece(java_vm: &Arc<jni::JavaVM>, callbacks: &Arc<jni::objects::GlobalRef>) {
+    if let Some((p, cb, text)) = HELD_PIECE.with(|h| h.borrow_mut().take()) {
+        emit_piece(java_vm, callbacks, &p, cb, &text);
+    }
+}
+
+/// Sends a piece of text/thinking: to the main reply, or to a subagent's transcript.
+fn emit_piece(java_vm: &Arc<jni::JavaVM>, callbacks: &Arc<jni::objects::GlobalRef>, parent_id: &str, callback: &str, text: &str) {
+    if parent_id.is_empty() {
+        fire_string(java_vm, callbacks, callback, text);
+    } else {
+        let kind = if callback == "onText" { "text" } else { "thinking" };
+        let activity = serde_json::json!({ "parentId": parent_id, "kind": kind, "text": text });
+        fire_string(java_vm, callbacks, "onAgentActivity", &activity.to_string());
+    }
+}
+
+#[cfg(test)]
+mod piece_batch_tests {
+    use super::{PieceBatch, PIECE_GAP};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_first_piece_goes_at_once_and_quick_followers_are_joined() {
+        let t0 = Instant::now();
+        let mut b = PieceBatch::default();
+        assert_eq!(b.push("", "onText", "a", t0), vec![("".to_string(), "onText", "a".to_string())]);
+        assert!(b.push("", "onText", "b", t0 + Duration::from_millis(5)).is_empty());
+        assert!(b.push("", "onText", "c", t0 + Duration::from_millis(10)).is_empty());
+        let out = b.push("", "onText", "d", t0 + PIECE_GAP + Duration::from_millis(1));
+        assert_eq!(out, vec![("".to_string(), "onText", "bcd".to_string())]);
+        assert_eq!(b.take(), None);
+    }
+
+    #[test]
+    fn a_change_of_kind_or_owner_sends_what_was_held_first() {
+        let t0 = Instant::now();
+        let mut b = PieceBatch::default();
+        b.push("", "onText", "a", t0);
+        assert!(b.push("", "onText", "b", t0 + Duration::from_millis(1)).is_empty());
+        let out = b.push("", "onThinking", "t", t0 + Duration::from_millis(2));
+        assert_eq!(out, vec![("".to_string(), "onText", "b".to_string())]);
+        assert_eq!(b.take(), Some(("".to_string(), "onThinking", "t".to_string())));
+        b.push("x", "onText", "q", t0 + Duration::from_millis(3));
+        assert_eq!(b.take().map(|h| h.0), Some("x".to_string()));
+    }
+}
+
+/// What a streaming event adds to the transcript: the callback to fire and the new
+/// piece of text, with the block's byte cursor advanced past it. A `message_start`
+/// zeroes the cursor (see the `stream_event` arm).
+fn stream_piece(ev: &serde_json::Value, cursor: &mut (usize, usize, u64)) -> Option<(&'static str, String)> {
+    match ev["type"].as_str()? {
+        "message_start" => {
+            cursor.0 = 0;
+            cursor.1 = 0;
+            None
+        }
+        "content_block_delta" => {
+            let delta = &ev["delta"];
+            let (callback, t) = match delta["type"].as_str()? {
+                "text_delta" => ("onText", delta["text"].as_str()?),
+                "thinking_delta" => ("onThinking", delta["thinking"].as_str()?),
+                _ => return None,
+            };
+            if t.is_empty() {
+                return None;
+            }
+            if callback == "onText" { cursor.0 += t.len() } else { cursor.1 += t.len() }
+            Some((callback, t.to_string()))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod stream_piece_tests {
+    use super::stream_piece;
+    use serde_json::json;
+
+    #[test]
+    fn deltas_are_relayed_and_counted_and_message_start_resets() {
+        let mut c = (0usize, 0usize, 0u64);
+        let t = json!({"type":"content_block_delta","delta":{"type":"text_delta","text":"héllo"}});
+        assert_eq!(stream_piece(&t, &mut c), Some(("onText", "héllo".to_string())));
+        assert_eq!(c.0, "héllo".len());
+        let k = json!({"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hm"}});
+        assert_eq!(stream_piece(&k, &mut c), Some(("onThinking", "hm".to_string())));
+        assert_eq!(c.1, 2);
+        assert_eq!(stream_piece(&json!({"type":"message_start"}), &mut c), None);
+        assert_eq!((c.0, c.1), (0, 0));
+    }
+
+    #[test]
+    fn other_deltas_and_empty_pieces_say_nothing() {
+        let mut c = (0usize, 0usize, 0u64);
+        for d in [json!({"type":"input_json_delta","partial_json":"{"}),
+                  json!({"type":"signature_delta","signature":"x"}),
+                  json!({"type":"text_delta","text":""})] {
+            let e = json!({"type":"content_block_delta","delta":d});
+            assert_eq!(stream_piece(&e, &mut c), None);
+        }
+        assert_eq!((c.0, c.1), (0, 0));
     }
 }
 
