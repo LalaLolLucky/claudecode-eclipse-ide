@@ -149,7 +149,11 @@ function scheduleGerund() {
 function renderThinkLabel() {
   if (!curThink) return;
   const lbl = curThink.querySelector('.think-label');
-  if (lbl) lbl.textContent = 'Thinking…' + (lastTokens > 0 ? ' · ' + lastTokens.toLocaleString() + ' tokens' : '');
+  if (lbl) lbl.textContent = 'Thinking…' + (lastTokens > 0 ? ' · ' + thinkTokensText(lastTokens) : '');
+}
+/** 850 -> "850 tokens", 1234 -> "1.2k tokens", as the VS Code extension writes the count. */
+function thinkTokensText(n) {
+  return (n < 1000 ? String(n) : (n / 1000).toFixed(1) + 'k') + ' tokens';
 }
 function shuffleGerunds() {
   const arr = activeGerunds();

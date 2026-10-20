@@ -185,8 +185,32 @@ pub(crate) fn run_cli(
     stdin: Option<&str>,
     timeout: Duration,
 ) -> Result<String, String> {
+    run_cli_status(claude_cmd, cwd, args, stdin, timeout).map_err(|f| f.said)
+}
+
+/// Why [`run_cli_status`] failed: what to tell the user, and how the CLI exited when it ran and
+/// failed (None when it never ran or did not finish).
+pub(crate) struct CliFailure {
+    pub(crate) said: String,
+    pub(crate) status: Option<std::process::ExitStatus>,
+}
+
+impl From<String> for CliFailure {
+    fn from(said: String) -> Self {
+        CliFailure { said, status: None }
+    }
+}
+
+/// [`run_cli`], with the exit status of a CLI that ran and failed.
+pub(crate) fn run_cli_status(
+    claude_cmd: &str,
+    cwd: &str,
+    args: &[String],
+    stdin: Option<&str>,
+    timeout: Duration,
+) -> Result<String, CliFailure> {
     if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
-        return Err(format!("Working directory not found: {cwd}"));
+        return Err(format!("Working directory not found: {cwd}").into());
     }
     let mut cmd = crate::launch::claude_command(claude_cmd, args);
     cmd.current_dir(cwd)
@@ -231,9 +255,9 @@ pub(crate) fn run_cli(
             Ok(None) => {
                 crate::launch::kill_process_tree(&mut child);
                 let _ = child.wait();
-                return Err("Claude Code did not finish in time.".into());
+                return Err("Claude Code did not finish in time.".to_string().into());
             }
-            Err(e) => return Err(format!("Could not run Claude Code: {e}")),
+            Err(e) => return Err(format!("Could not run Claude Code: {e}").into()),
         }
     };
     let stdout = out.join().unwrap_or_default();
@@ -242,7 +266,8 @@ pub(crate) fn run_cli(
         return Ok(stdout);
     }
     let said = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
-    Err(if said.is_empty() { format!("Claude Code exited with {status}.") } else { said.to_string() })
+    let said = if said.is_empty() { format!("Claude Code exited with {status}.") } else { said.to_string() };
+    Err(CliFailure { said, status: Some(status) })
 }
 
 // ---------------------------------------------------------------------------

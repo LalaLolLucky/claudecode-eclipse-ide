@@ -124,7 +124,9 @@ function noteCacheStatus(t, data) {
     anchorAt: pick(data.cacheAnchorAt, prev.anchorAt),
     ttlMs: pick(data.cacheTtlMs, prev.ttlMs),
     recacheTokens: pick(data.recacheTokens, prev.recacheTokens),
-    compacted: false,
+    // A turn that compacted and made no call since (a /compact) leaves the cache holding none
+    // of the conversation; the next call's status says how it stands again.
+    compacted: data.compacted === true,
   };
 }
 /** A compaction nothing has answered yet: the cache holds none of what it made. */

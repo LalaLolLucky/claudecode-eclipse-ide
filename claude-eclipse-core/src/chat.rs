@@ -2134,7 +2134,7 @@ fn reader_loop(
                 }
                 fire_void(&java_vm, &callbacks, "onStreamEnd");
                 cursors.clear();
-                tokens = TurnUsage::default();
+                tokens = tokens.for_next_turn();
                 continue;
             }
             "system" => {
@@ -2217,6 +2217,7 @@ fn reader_loop(
                             "postTokens": md["post_tokens"].as_u64().unwrap_or(0),
                         });
                         fire_string(&java_vm, &callbacks, "onCompact", &payload.to_string());
+                        tokens.on_compacted();
                         awaiting_compact_summary = true;
                     }
                     _ => {}
@@ -2399,6 +2400,13 @@ struct TurnUsage {
     cache_anchor_ms: Option<i64>,
     /// How long the cache keeps what the latest call that wrote to it wrote.
     cache_ttl_ms: Option<i64>,
+    /// The conversation was compacted during the turn.
+    compacted: bool,
+    /// This CLI has sent its own running estimate of the thinking (`system/thinking_tokens`).
+    /// Kept from turn to turn: from then on the estimates on the thinking deltas are not used.
+    sends_thinking_estimates: bool,
+    /// What the thinking deltas of the block under way say it has come to so far.
+    delta_thinking_estimate: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -2431,10 +2439,25 @@ impl CallUsage {
 
 impl TurnUsage {
     /// Takes one `stream_event` of the top-level conversation: a message starting is a request
-    /// sent, and its `message_delta` carries the finished call's usage.
-    fn on_stream_event(&mut self, ev: &serde_json::Value) {
+    /// sent, and its `message_delta` carries the finished call's usage. Returns the thinking
+    /// count to show when a thinking delta carries an estimate and the CLI sends none of its
+    /// own, as the VS Code extension counts it: summed over the block, from nothing at each
+    /// message and each block.
+    fn on_stream_event(&mut self, ev: &serde_json::Value) -> Option<u64> {
         match ev["type"].as_str() {
-            Some("message_start") => self.call_started_ms = Some(crate::promptcache::now_ms()),
+            Some("message_start") => {
+                self.call_started_ms = Some(crate::promptcache::now_ms());
+                self.delta_thinking_estimate = 0;
+            }
+            Some("content_block_start") => self.delta_thinking_estimate = 0,
+            Some("content_block_delta") if ev["delta"]["type"] == "thinking_delta" => {
+                let n = ev["delta"]["estimated_tokens"].as_u64()?;
+                if self.sends_thinking_estimates {
+                    return None;
+                }
+                self.delta_thinking_estimate += n;
+                return Some(self.delta_thinking_estimate);
+            }
             Some("message_delta") => {
                 if let Some(call) = CallUsage::of(&ev["usage"]) {
                     self.last_call = Some(call);
@@ -2443,6 +2466,20 @@ impl TurnUsage {
             }
             _ => {}
         }
+        None
+    }
+
+    /// Takes a `system/thinking_tokens` event, the CLI's own running estimate of the thinking
+    /// under way: the count to show.
+    fn on_thinking_tokens(&mut self, event: &serde_json::Value) -> Option<u64> {
+        let n = event["estimated_tokens"].as_u64()?;
+        self.sends_thinking_estimates = true;
+        Some(n)
+    }
+
+    /// The record for the next turn: all of it starts over but what the CLI is known to send.
+    fn for_next_turn(&self) -> TurnUsage {
+        TurnUsage { sends_thinking_estimates: self.sends_thinking_estimates, ..TurnUsage::default() }
     }
 
     /// Takes the `usage` of a main-conversation `assistant` event, the one that says which
@@ -2452,15 +2489,30 @@ impl TurnUsage {
             self.cache_ttl_ms = Some(ms);
         }
     }
+
+    /// Takes a `compact_boundary`: what the calls before it held is gone from the context, and
+    /// the prompt cache holds none of what replaced it. A call after it reports anew.
+    fn on_compacted(&mut self) {
+        self.last_call = None;
+        self.compacted = true;
+    }
 }
 
 /// Builds the GUI status-bar JSON for a completed turn from its `result` event and the usage of
 /// its last API call ([`TurnUsage`]). Context % = (input + cache_read + cache_creation) of that
 /// call / contextWindow · 100; the window size and cost come straight from the result. Returns
-/// None when the turn made no call that reported usage. Only session-specific fields — rate
-/// limits are shared from the CLI statusLine via ClaudeStatusStore, never derived here.
+/// None when the turn made no call that reported usage, unless it compacted the conversation:
+/// no call follows a `/compact`, and the context it leaves is reported as empty, as the VS Code
+/// extension does (its `totalTokens` goes to 0 on the boundary), with `compacted` set. Only
+/// session-specific fields — rate limits are shared from the CLI statusLine via
+/// ClaudeStatusStore, never derived here.
 fn build_status_json(event: &serde_json::Value, model: &str, turn: &TurnUsage) -> Option<String> {
-    let call = turn.last_call?;
+    let compacted = turn.compacted && turn.last_call.is_none();
+    let call = match turn.last_call {
+        Some(call) => call,
+        None if compacted => CallUsage { input: 0, cache_read: 0, cache_create: 0, output: 0 },
+        None => return None,
+    };
     let (input, cache_read, cache_create, output) = (call.input, call.cache_read, call.cache_create, call.output);
     let context_tokens = call.context();
 
@@ -2508,6 +2560,8 @@ fn build_status_json(event: &serde_json::Value, model: &str, turn: &TurnUsage) -
         "cacheAnchorAt": turn.cache_anchor_ms,
         "cacheTtlMs": turn.cache_ttl_ms,
         "recacheTokens": context_tokens,
+        // Compacted, and no call since: the cache holds none of the conversation now.
+        "compacted": compacted,
     });
     Some(payload.to_string())
 }
@@ -3050,8 +3104,9 @@ fn process_event_value(
                 fire_string(java_vm, callbacks, "onSystem", msg);
             } else if event["subtype"].as_str() == Some("thinking_tokens") {
                 // The CLI's own running estimate of the thinking under way, as the VS Code
-                // extension shows it. A model that omits its thinking sends none.
-                if let Some(n) = event["estimated_tokens"].as_u64() {
+                // extension shows it. CLI 2.1.301 sends it whether the thinking is shown or left
+                // out; one that does not is counted from the thinking deltas ([`TurnUsage`]).
+                if let Some(n) = tokens.on_thinking_tokens(&event) {
                     fire_string(java_vm, callbacks, "onTokens", &n.to_string());
                 }
             } else if event["subtype"].as_str() == Some("task_notification") {
@@ -3312,7 +3367,9 @@ fn process_event_value(
         // conversation the user is watching.
         "stream_event" => {
             if !is_subagent {
-                tokens.on_stream_event(&event["event"]);
+                if let Some(n) = tokens.on_stream_event(&event["event"]) {
+                    fire_string(java_vm, callbacks, "onTokens", &n.to_string());
+                }
             }
             // Text and thinking flow as they are written. The cursor records how much of
             // the block went out, so the finished "assistant" event above only sends the
@@ -4145,6 +4202,108 @@ mod turn_usage_tests {
     fn a_turn_with_no_call_that_reported_usage_leaves_the_status_alone() {
         let result = json!({"total_cost_usd": 0.0, "usage": {"input_tokens":0}});
         assert!(build_status_json(&result, "m", &TurnUsage::default()).is_none());
+    }
+
+    /// The `result` of a `/compact` as CLI 2.1.301 sends it: no call of its own, a usage of
+    /// zeros, and the session's cost and window.
+    fn compact_result() -> serde_json::Value {
+        json!({
+            "total_cost_usd": 0.0059,
+            "usage": {"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0},
+            "modelUsage": {"claude-haiku-5-5": {"contextWindow": 1000000}},
+        })
+    }
+
+    #[test]
+    fn a_compaction_with_no_call_after_it_empties_the_context_and_says_so() {
+        // A /compact is a turn of its own (a fresh TurnUsage); an automatic one comes after
+        // the calls of the turn it interrupts.
+        let mut manual = TurnUsage::default();
+        manual.on_compacted();
+        let mut automatic = three_calls();
+        automatic.on_compacted();
+        for u in [manual, automatic] {
+            let status: serde_json::Value = serde_json::from_str(
+                &build_status_json(&compact_result(), "claude-haiku-5-5", &u).expect("a status")).unwrap();
+            assert_eq!(status["contextPct"].as_f64(), Some(0.0));
+            assert_eq!(status["inputTokens"], 0);
+            assert_eq!(status["contextWindow"], 1000000);
+            assert_eq!(status["costUsd"], 0.0059);
+            assert_eq!(status["compacted"], true);
+        }
+    }
+
+    #[test]
+    fn a_call_after_a_compaction_reports_its_own_context() {
+        let mut u = three_calls();
+        u.on_compacted();
+        u.on_stream_event(&call_end(2, 38644, 2983, 6));
+        let status: serde_json::Value = serde_json::from_str(
+            &build_status_json(&compact_result(), "claude-haiku-5-5", &u).unwrap()).unwrap();
+        assert_eq!(status["cacheReadTokens"], 38644);
+        assert_eq!(status["recacheTokens"], 41629);
+        assert_eq!(status["compacted"], false);
+    }
+
+    fn block_start() -> serde_json::Value {
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}})
+    }
+
+    /// A thinking delta as CLI 2.1.301 relays it: with the thinking shown, its text and a null
+    /// estimate; with the thinking left out, no text and an estimate of the tokens it stands for.
+    fn thinking_delta(text: &str, estimate: Option<u64>) -> serde_json::Value {
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":text,"estimated_tokens":estimate}})
+    }
+
+    fn typed_estimate(n: u64) -> serde_json::Value {
+        json!({"type":"system","subtype":"thinking_tokens","estimated_tokens":n,"estimated_tokens_delta":n})
+    }
+
+    #[test]
+    fn the_clis_own_estimate_is_the_count_shown() {
+        let mut u = TurnUsage::default();
+        assert_eq!(u.on_thinking_tokens(&typed_estimate(50)), Some(50));
+        assert_eq!(u.on_thinking_tokens(&typed_estimate(250)), Some(250));
+        assert_eq!(u.on_thinking_tokens(&json!({"type":"system","subtype":"thinking_tokens"})), None);
+    }
+
+    #[test]
+    fn a_cli_that_sends_no_estimate_of_its_own_is_counted_from_the_deltas() {
+        // The deltas of the Sonnet 5.5 probe with the thinking left out: 50, 200 and 150.
+        let mut u = TurnUsage::default();
+        assert_eq!(u.on_stream_event(&block_start()), None);
+        assert_eq!(u.on_stream_event(&thinking_delta("", Some(50))), Some(50));
+        assert_eq!(u.on_stream_event(&thinking_delta("", Some(200))), Some(250));
+        assert_eq!(u.on_stream_event(&thinking_delta("", Some(150))), Some(400));
+    }
+
+    #[test]
+    fn each_thinking_block_and_each_message_counts_from_nothing() {
+        let mut u = TurnUsage::default();
+        u.on_stream_event(&thinking_delta("", Some(300)));
+        u.on_stream_event(&block_start());
+        assert_eq!(u.on_stream_event(&thinking_delta("", Some(40))), Some(40));
+        u.on_stream_event(&json!({"type":"message_start","message":{"usage":{}}}));
+        assert_eq!(u.on_stream_event(&thinking_delta("", Some(7))), Some(7));
+    }
+
+    #[test]
+    fn a_delta_with_its_text_and_no_estimate_says_nothing() {
+        let mut u = TurnUsage::default();
+        assert_eq!(u.on_stream_event(&thinking_delta("I", None)), None);
+        assert_eq!(u.on_stream_event(&json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"No"}})), None);
+    }
+
+    #[test]
+    fn once_the_cli_sends_its_own_the_deltas_are_not_counted_in_this_turn_or_the_next() {
+        let mut u = TurnUsage::default();
+        assert_eq!(u.on_stream_event(&thinking_delta("", Some(50))), Some(50));
+        assert_eq!(u.on_thinking_tokens(&typed_estimate(50)), Some(50));
+        assert_eq!(u.on_stream_event(&thinking_delta("", Some(200))), None);
+
+        let mut next = u.for_next_turn();
+        assert_eq!(next.on_stream_event(&thinking_delta("", Some(90))), None);
+        assert!(next.last_call.is_none() && next.cache_ttl_ms.is_none(), "the rest starts over");
     }
 }
 

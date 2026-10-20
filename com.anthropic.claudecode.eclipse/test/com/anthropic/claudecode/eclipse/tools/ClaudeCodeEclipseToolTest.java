@@ -91,9 +91,10 @@ class ClaudeCodeEclipseToolTest {
         JsonObject schema = new ClaudeCodeEclipseTool().inputSchema();
         JsonArray modules = schema.getAsJsonObject("properties").getAsJsonObject("module").getAsJsonArray("enum");
 
-        assertEquals(2, modules.size());
+        assertEquals(3, modules.size());
         assertEquals("claudeCodeView", modules.get(0).getAsString());
         assertEquals("claudeTerminal", modules.get(1).getAsString());
+        assertEquals("claudeIdeServer", modules.get(2).getAsString());
     }
 
     @Test

@@ -6,6 +6,7 @@ import java.util.List;
 import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.Constants;
 import com.anthropic.claudecode.eclipse.NativeCore;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -62,6 +63,18 @@ final class SessionArchive {
             return NativeCore.sessionArchiveSet(storePath(), idsJson, archived);
         } catch (Throwable t) {
             return false;
+        }
+    }
+
+    /** Drops a deleted conversation from the record, archived or not. */
+    static void forget(String id) {
+        try {
+            JsonArray ids = new JsonArray();
+            ids.add(id);
+            NativeCore.sessionArchiveForget(storePath(), ids.toString());
+        } catch (Throwable t) {
+            // A native library built before this: the id stays in the record, and no row
+            // shows it, since the history lists only conversations that have a file.
         }
     }
 

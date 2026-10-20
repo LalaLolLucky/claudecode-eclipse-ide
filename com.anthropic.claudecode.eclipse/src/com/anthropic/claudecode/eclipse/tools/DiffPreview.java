@@ -44,17 +44,7 @@ public final class DiffPreview {
                 CompareItem left  = new CompareItem(name, change.original, false);
                 CompareItem right = new CompareItem(name, change.proposed, editable);
 
-                CompareEditorInput input = new CompareEditorInput(cfg) {
-                    @Override
-                    protected Object prepareInput(IProgressMonitor monitor) {
-                        return new DiffNode(null, Differencer.CHANGE, null, left, right);
-                    }
-
-                    // Nothing here is saved, so the editor is never "unsaved": closing it by
-                    // hand must not ask whether to keep the reader's changes to the proposal.
-                    @Override
-                    public boolean isDirty() { return false; }
-                };
+                CompareEditorInput input = new PreviewInput(cfg, left, right);
                 input.setTitle(label);
                 CompareUI.openCompareEditor(input);
                 ref[0] = input;
@@ -85,6 +75,36 @@ public final class DiffPreview {
             }
             return change.proposed;
         });
+    }
+
+    /**
+     * Whether {@code input} is a preview's, opened by {@link #open}. Such an editor belongs to its
+     * approval card, which closes it when the card is answered ({@link #close}).
+     */
+    public static boolean isPreview(Object input) {
+        return input instanceof PreviewInput;
+    }
+
+    /** A preview's input: what {@link #isPreview} knows it by. */
+    static final class PreviewInput extends CompareEditorInput {
+        private final CompareItem left;
+        private final CompareItem right;
+
+        PreviewInput(CompareConfiguration cfg, CompareItem left, CompareItem right) {
+            super(cfg);
+            this.left = left;
+            this.right = right;
+        }
+
+        @Override
+        protected Object prepareInput(IProgressMonitor monitor) {
+            return new DiffNode(null, Differencer.CHANGE, null, left, right);
+        }
+
+        // Nothing here is saved, so the editor is never "unsaved": closing it by
+        // hand must not ask whether to keep the reader's changes to the proposal.
+        @Override
+        public boolean isDirty() { return false; }
     }
 
     /** Closes a preview opened by {@link #open}. Safe to call with null. */

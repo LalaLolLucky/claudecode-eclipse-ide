@@ -11,8 +11,9 @@ import com.google.gson.JsonObject;
 /**
  * Drives this plug-in's own views. One tool with a module per view, so a view gains its
  * actions without adding to the tool list: {@code module} picks the view and {@code action}
- * what to do in it. The Claude Code view ({@link ClaudeCodeViewModule}) and the Claude
- * Terminal ({@link ClaudeTerminalModule}) each have one.
+ * what to do in it. The Claude Code view ({@link ClaudeCodeViewModule}), the Claude
+ * Terminal ({@link ClaudeTerminalModule}) and the Claude IDE Server view
+ * ({@link ClaudeIdeServerModule}) each have one.
  */
 public class ClaudeCodeEclipseTool implements McpTool {
 
@@ -34,7 +35,7 @@ public class ClaudeCodeEclipseTool implements McpTool {
     private final Map<String, Module> modules = new LinkedHashMap<>();
 
     public ClaudeCodeEclipseTool() {
-        this(new ClaudeCodeViewModule(), new ClaudeTerminalModule());
+        this(new ClaudeCodeViewModule(), new ClaudeTerminalModule(), new ClaudeIdeServerModule());
     }
 
     ClaudeCodeEclipseTool(Module... modules) {

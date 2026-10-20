@@ -1475,8 +1475,14 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             return null;
         });
         // The page has drawn an approval card: its diff preview, if it has one, opens now.
+        // Deferred, as every page call that opens something is, so the browser is never
+        // re-entered: opening the compare editor runs a progress dialog's event loop, and on
+        // WebKitGTK every execute() made from inside that loop, while the page still waits on
+        // this call, blocks until SWT's timeout and freezes Eclipse (issue #215).
         approvalShownFn = new SimpleFunction(browser, "_approvalShown", a -> {
-            if (a.length >= 1 && a[0] instanceof String reqId) openPreview(reqId);
+            if (a.length >= 1 && a[0] instanceof String reqId) {
+                Display.getDefault().asyncExec(() -> openPreview(reqId));
+            }
             return null;
         });
         answerQuestionFn = new SimpleFunction(browser, "_answerQuestion", a -> {
@@ -4139,19 +4145,28 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         catch (Throwable t) { return "{\"error\":\"This build's native core has no message delete.\"}"; }
     }
 
-    /** Delete one local session file (Rust core; Java file-delete as fallback). */
+    /** Delete one local session file, and with it what the archive recorded of it: a
+     *  conversation deleted from under "Archived sessions" is not kept in the archive. */
     private void deleteSessionFile(String id) {
-        try { if (NativeCore.sessionDelete(activeRoot(), id)) return; }
+        if (removeSessionFile(id)) SessionArchive.forget(id);
+    }
+
+    /** Removes one local session file (Rust core; Java file-delete as fallback). Answers
+     *  whether it was removed. */
+    private boolean removeSessionFile(String id) {
+        try { if (NativeCore.sessionDelete(activeRoot(), id)) return true; }
         catch (Throwable ignored) {}
         try {
-            if (id == null || id.isEmpty() || id.contains("/") || id.contains("\\") || id.contains("..")) return;
+            if (id == null || id.isEmpty() || id.contains("/") || id.contains("\\") || id.contains("..")) return false;
             String home = Activator.isWindows() ? System.getenv("USERPROFILE") : System.getenv("HOME");
             if (home == null || home.isEmpty()) home = System.getProperty("user.home");
-            if (home == null) return;
+            if (home == null) return false;
             java.nio.file.Path p = java.nio.file.Paths.get(
                     home, ".claude", "projects", projectHash(activeRoot()), id + ".jsonl");
-            java.nio.file.Files.deleteIfExists(p);
-        } catch (Exception ignored) {}
+            return java.nio.file.Files.deleteIfExists(p);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     /**

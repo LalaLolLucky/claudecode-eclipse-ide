@@ -26,8 +26,11 @@ function mdUnstash(s) {
   }
   return s;
 }
-/* Links and images only to places that cannot run script. `u` is already escaped. */
+/* Links and images only to places that cannot run script. `u` is already escaped. A finished
+   piece held back (\u0000n\u0000) is never part of one: put back inside the attribute, its own
+   quotes would end it, and what follows would be read as attributes of the tag. */
 function mdSafeUrl(u) {
+  if (u.indexOf('\u0000') >= 0) return '#';
   const raw = u.replace(/&amp;/g, '&').replace(/[\u0000- ]/g, '');
   const m = /^([a-z][a-z0-9+.\-]*):/i.exec(raw);
   if (!m) return u;
@@ -39,6 +42,13 @@ function mdSafeUrl(u) {
 
 /* ---------- inline ---------- */
 const MD_INLINE_TAGS = 'sub|sup|kbd|mark|ins|del|b|i|u|s|em|strong|small|br';
+/* Python's own decorators, which an @mention would otherwise take. */
+const MD_DECORATORS = /^(property|staticmethod|classmethod|dataclass|abstractmethod|cached_property|contextmanager|override|overload|wraps|lru_cache|cache)$/;
+/* The Java annotations prose names most (the language's, JUnit's, Spring's, Lombok's), which an
+   @mention would otherwise take. A handle with a capital, @LalaLolLucky, is still a mention. */
+const MD_ANNOTATIONS = /^(Override|Deprecated|SuppressWarnings|FunctionalInterface|SafeVarargs|Retention|Target|Documented|Inherited|Test|ParameterizedTest|RepeatedTest|TestFactory|BeforeEach|AfterEach|BeforeAll|AfterAll|Before|After|BeforeClass|AfterClass|Ignore|Disabled|DisplayName|Nested|Mock|Spy|InjectMocks|Captor|Autowired|Inject|Component|Service|Repository|Controller|RestController|Configuration|Bean|Transactional|Entity|Nullable|NonNull|Nonnull|NotNull|Getter|Setter|Builder|Slf4j|JsonProperty|JsonIgnore)$/;
+/* Preprocessor and C# directives, which a #tag would otherwise take. */
+const MD_DIRECTIVES = /^(include|define|undef|if|ifdef|ifndef|elif|elifdef|elifndef|else|endif|pragma|error|warning|line|import|region|endregion|nullable|using)$/;
 
 /* A pair of markers counts only when it does not sit inside a word: "10~20 and 30~40", "a==b and c==d"
    and "C++/Java and C++/Rust" are not formatting. */
@@ -60,23 +70,25 @@ function mdInlineRun(s) {
     if (c.length > 2 && c[0] === ' ' && c[c.length - 1] === ' ' && /\S/.test(c)) c = c.slice(1, -1);
     return mdStash('<code class="ic">' + escapeHtml(c) + '</code>');
   });
-  // inline math: $x$, but not "$5 and $6"
-  s = s.replace(/\$([^\s$](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g, (_, t) => mdStash(mdMath(t, false)));
+  // inline math: $x$, but not "$5 and $6", nor shell variables run together ("$PATH:$HOME",
+  // "${A}/${B}"): a closing $ is not followed by a digit, a letter, a brace or another $
+  s = s.replace(/\$([^\s$](?:[^$\n]*?[^\s$\\])?)\$(?![\w${])/g, (_, t) => mdStash(mdMath(t, false)));
   s = escapeHtml(s);
 
-  // <https://…> and <me@example.com>
-  s = s.replace(/&lt;((?:https?:\/\/|mailto:)[^\s]*?)&gt;/g, (_, u) => mdStash('<a href="' + mdSafeUrl(u) + '">' + u + '</a>'));
-  s = s.replace(/&lt;([^\s@&]+@[^\s@&]+\.[A-Za-z]+)&gt;/g, (_, u) => mdStash('<a href="mailto:' + u + '">' + u + '</a>'));
+  // <https://…> and <me@example.com>. What goes into an attribute (a URL, an alt, a title) may
+  // not take in a finished piece (\u0000n\u0000): see mdSafeUrl.
+  s = s.replace(/&lt;((?:https?:\/\/|mailto:)[^\s\u0000]*?)&gt;/g, (_, u) => mdStash('<a href="' + mdSafeUrl(u) + '">' + u + '</a>'));
+  s = s.replace(/&lt;([^\s@&\u0000]+@[^\s@&\u0000]+\.[A-Za-z]+)&gt;/g, (_, u) => mdStash('<a href="mailto:' + u + '">' + u + '</a>'));
   // the few HTML tags that are allowed through
   s = s.replace(new RegExp('&lt;(\\/?)(' + MD_INLINE_TAGS + ')\\s*(\\/?)&gt;', 'gi'),
     (_, c, t) => mdStash('<' + c + t.toLowerCase() + '>'));
-  s = s.replace(/&lt;abbr\s+title=&quot;([^&"]*)&quot;\s*&gt;/gi, (_, t) => mdStash('<abbr title="' + t + '">'));
+  s = s.replace(/&lt;abbr\s+title=&quot;([^&"\u0000]*)&quot;\s*&gt;/gi, (_, t) => mdStash('<abbr title="' + t + '">'));
   s = s.replace(/&lt;\/abbr&gt;/gi, () => mdStash('</abbr>'));
 
   // images and links ([text](url "title"))
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;(.*?)&quot;)?\)/g, (_, alt, src, title) =>
+  s = s.replace(/!\[([^\]\u0000]*)\]\(([^)\s\u0000]+)(?:\s+&quot;([^\u0000]*?)&quot;)?\)/g, (_, alt, src, title) =>
     mdStash('<img alt="' + alt + '" src="' + mdSafeUrl(src) + '"' + (title ? ' title="' + title + '"' : '') + '>'));
-  s = s.replace(/\[((?:[^\[\]]|\[[^\]]*\])+)\]\(([^)\s]+)(?:\s+&quot;(.*?)&quot;)?\)/g, (m, text, url, title) => {
+  s = s.replace(/\[((?:[^\[\]]|\[[^\]]*\])+)\]\(([^)\s\u0000]+)(?:\s+&quot;([^\u0000]*?)&quot;)?\)/g, (m, text, url, title) => {
     const open = '<a href="' + mdSafeUrl(url) + '"' + (title ? ' title="' + title + '"' : '') + '>';
     return text.indexOf('://') >= 0 ? mdStash(open + text + '</a>') : mdStash(open) + text + mdStash('</a>');
   });
@@ -118,12 +130,16 @@ function mdInlineRun(s) {
   s = s.replace(/\+\+(?=\S)([\s\S]*?\S)\+\+/g, (m, t, at, whole) => mdBounded(m, at, whole) ? '<ins>' + t + '</ins>' : m);
 
   // bare URLs
-  s = s.replace(/(^|[\s(>])((?:https?:\/\/|www\.)[^\s<]*[^\s<.,;:!?)\]'"])/g, (_, p, u) =>
+  s = s.replace(/(^|[\s(>])((?:https?:\/\/|www\.)[^\s<\u0000]*[^\s<.,;:!?)\]'"\u0000])/g, (_, p, u) =>
     p + mdStash('<a href="' + (/^www\./i.test(u) ? 'https://' : '') + mdSafeUrl(u) + '">' + u + '</a>'));
-  // @mentions, #123 issues, #tags
-  s = s.replace(/(^|[\s(])@([A-Za-z0-9][A-Za-z0-9_-]*)/g, (_, p, n) => p + mdStash('<span class="md-mention">@' + n + '</span>'));
+  // @mentions, #123 issues, #tags. Code talked about in prose is not one: a Java annotation
+  // (@Override, @Test) or a decorator (@property, @app.route(...)), and a preprocessor or C#
+  // directive (#include, #region).
+  s = s.replace(/(^|[\s(])@([A-Za-z0-9][A-Za-z0-9_-]*)(?![\w-]|\(|\.\w)/g, (m, p, n) =>
+    MD_ANNOTATIONS.test(n) || MD_DECORATORS.test(n) ? m : p + mdStash('<span class="md-mention">@' + n + '</span>'));
   s = s.replace(/(^|[\s(])#(\d+)\b/g, (_, p, n) => p + mdStash('<span class="md-issue">#' + n + '</span>'));
-  s = s.replace(/(^|[\s(])#([A-Za-z][\w-]*)/g, (_, p, n) => p + mdStash('<span class="md-tag">#' + n + '</span>'));
+  s = s.replace(/(^|[\s(])#([A-Za-z][\w-]*)/g, (m, p, n) =>
+    MD_DIRECTIVES.test(n) ? m : p + mdStash('<span class="md-tag">#' + n + '</span>'));
 
   // abbreviations, in the text only (not inside a tag or a finished piece)
   const abbrs = Object.keys(MD.abbrs);

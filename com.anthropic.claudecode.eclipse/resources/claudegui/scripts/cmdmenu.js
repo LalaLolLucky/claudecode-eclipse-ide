@@ -180,7 +180,6 @@ function cmdMenuRows() {
 
     { id: 'styles', sec: 'Customize', label: 'Output styles', icon: 'LINES', run: () => openOutputStyles() },
     { id: 'mcp', sec: 'Customize', label: 'MCP servers', icon: 'PLUG', run: () => openMcpServers() },
-    { id: 'plugins', sec: 'Customize', label: 'Manage plugins', icon: 'ADDON', run: () => openPlugins() },
     { id: 'hooks', sec: 'Customize', label: 'Hooks', icon: 'HOOK', run: () => openHooksDialog() },
     { id: 'permissions', sec: 'Customize', label: 'Permissions', icon: 'SHIELD', run: () => openPermissionsDialog() },
     { id: 'status', sec: 'Customize', label: 'Status', icon: 'INFO', run: () => openStatusDialog() },
@@ -191,6 +190,7 @@ function cmdMenuRows() {
       tip: 'Edit CLAUDE.md files', run: () => openMemoryDialog('instructions') },
     { id: 'marketplace', sec: 'Customize', label: 'Eclipse Marketplace', icon: 'BAG',
       show: () => hasMarketplace(), run: () => ide('marketplace') },
+    { id: 'plugins', sec: 'Customize', label: 'Manage plugins', icon: 'ADDON', run: () => openPlugins() },
     // The tab's own conversation moves to the Terminal (tabs.js, openTabInTerminal). No row
     // for a tab under another folder: the Terminal runs in the workspace folder, where
     // that conversation is not to be found.

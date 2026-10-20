@@ -4,9 +4,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import org.eclipse.jface.action.Action;
+import org.eclipse.jface.action.IToolBarManager;
 import org.eclipse.jface.util.IPropertyChangeListener;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.StyledText;
+import org.eclipse.swt.dnd.Clipboard;
+import org.eclipse.swt.dnd.TextTransfer;
+import org.eclipse.swt.dnd.Transfer;
 import org.eclipse.swt.graphics.Color;
 import org.eclipse.swt.graphics.Font;
 import org.eclipse.swt.graphics.GC;
@@ -19,11 +24,14 @@ import org.eclipse.swt.widgets.Button;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
+import org.eclipse.ui.ISharedImages;
 import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.ui.PartInitException;
+import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.part.ViewPart;
 
 import com.anthropic.claudecode.eclipse.Activator;
+import com.anthropic.claudecode.eclipse.Constants;
 import com.anthropic.claudecode.eclipse.NativeCore;
 import com.anthropic.claudecode.eclipse.bridge.Bridge;
 import com.anthropic.claudecode.eclipse.editor.UiHelper;
@@ -34,8 +42,19 @@ public class ClaudeCodeView extends ViewPart {
 
     private static final int INDICATOR_SIZE = 12;
 
-    /** The open instance, so {@link #debug} can reach this view's log from anywhere. */
+    /** The open instance, so {@link #debug} can reach this view's log from anywhere. Set once
+     *  its banner is all in ({@link #goLive}); guarded by {@link #LOCK}. */
     private static ClaudeCodeView active;
+    /** Guards the hand-over from {@link #PENDING} to {@link #active}, so no line is lost or shown twice. */
+    private static final Object LOCK = new Object();
+    /** Debug-mode lines that came while no view could show them: before it was first shown,
+     *  while it was closed, or while its banner was still being written. */
+    private static final PendingLog PENDING = new PendingLog(2_000, 512 * 1024);
+    /** This view was closed: it never goes live after that. Guarded by {@link #LOCK}. */
+    private boolean disposed;
+    /** The view as created, live or still writing its banner: what {@link #toolLog} reads.
+     *  UI thread only. */
+    private static ClaudeCodeView created;
     private StyledText logArea;
     private Label serverIndicator;
     private Label serverLabel;
@@ -83,7 +102,10 @@ public class ClaudeCodeView extends ViewPart {
         createStatusBar(container);
         createButtonRow(container);
         createLogArea(container, display);
-        active = this;
+        createToolBar();
+        created = this;
+        // Not live yet: Debug-mode lines wait in PENDING until the banner below is all in,
+        // last line included (logEnvironmentThenHint), so the banner always comes first.
 
         appendLog("Claude Code for Eclipse IDE (Unofficial) v3.2.21\n");
         appendLog("──────────────────────────────────────────────────\n\n");
@@ -242,6 +264,48 @@ public class ClaudeCodeView extends ViewPart {
         });
     }
 
+    /**
+     * Copy Logs and Clear Logs, in the view's toolbar where the Claude Terminal and the Claude
+     * Code view keep their session buttons, with the icons the Terminal's own Copy and Clear
+     * use. Both act on the whole log as the view shows it.
+     */
+    private void createToolBar() {
+        IToolBarManager toolBar = getViewSite().getActionBars().getToolBarManager();
+        Action copyLogs = new Action("Copy Logs") {
+            @Override
+            public void run() { copyLogs(); }
+        };
+        copyLogs.setToolTipText("Copy Logs");
+        copyLogs.setImageDescriptor(PlatformUI.getWorkbench().getSharedImages()
+                .getImageDescriptor(ISharedImages.IMG_TOOL_COPY));
+        Action clearLogs = new Action("Clear Logs") {
+            @Override
+            public void run() { clearLogs(); }
+        };
+        clearLogs.setToolTipText("Clear Logs");
+        clearLogs.setImageDescriptor(Activator.getImageDescriptor(Constants.IMG_CLEAR_REFRESH));
+        toolBar.add(copyLogs);
+        toolBar.add(clearLogs);
+    }
+
+    /** Puts the whole log on the clipboard, as text. An empty log puts nothing there. */
+    private void copyLogs() {
+        if (logArea == null || logArea.isDisposed()) return;
+        String text = logArea.getText();
+        if (text.isEmpty()) return;
+        Clipboard clipboard = new Clipboard(logArea.getDisplay());
+        try {
+            clipboard.setContents(new Object[] { text }, new Transfer[] { TextTransfer.getInstance() });
+        } finally {
+            clipboard.dispose();
+        }
+    }
+
+    /** Empties the log. What comes after is written as before. */
+    private void clearLogs() {
+        if (logArea != null && !logArea.isDisposed()) logArea.setText("");
+    }
+
     private void createLogArea(Composite parent, Display display) {
         logArea = new StyledText(parent, SWT.MULTI | SWT.V_SCROLL | SWT.H_SCROLL | SWT.READ_ONLY | SWT.BORDER);
         logArea.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
@@ -387,7 +451,7 @@ public class ClaudeCodeView extends ViewPart {
      * Logs the platform, Eclipse, Node and Claude Code versions, then the launch hint.
      * The Node and Claude versions each come from running a {@code --version}, so they
      * are read off the UI thread and both blocks are logged once they are in, keeping
-     * the hint last.
+     * the hint last. That ends the banner, and the view goes live ({@link #goLive}).
      */
     private void logEnvironmentThenHint() {
         String platform = platformName();
@@ -395,19 +459,42 @@ public class ClaudeCodeView extends ViewPart {
         String claudeCmd = ClaudeGuiView.configuredClaudeCmd();
         Display display = Display.getCurrent();
         Thread t = new Thread(() -> {
-            String node = CliVersionService.nodeVersion();
-            String claude = CliVersionService.installedVersion(claudeCmd);
+            // A version that cannot be read shows as N/A: the banner must always end, or the
+            // view would never go live.
+            String node = null;
+            String claude = null;
+            try { node = CliVersionService.nodeVersion(); } catch (Throwable ignored) {}
+            try { claude = CliVersionService.installedVersion(claudeCmd); } catch (Throwable ignored) {}
+            String nodeVersion = node;
+            String claudeVersion = claude;
             if (display.isDisposed()) return;
             display.asyncExec(() -> {
                 appendLog("Platform: " + orNA(platform) + "\n");
                 appendLog("Eclipse version: " + orNA(eclipse) + "\n");
-                appendLog("Node version: " + orNA(node) + "\n");
-                appendLog("Claude Code version: " + orNA(claude) + "\n\n");
+                appendLog("Node version: " + orNA(nodeVersion) + "\n");
+                appendLog("Claude Code version: " + orNA(claudeVersion) + "\n\n");
                 appendLog("Click 'Launch Claude Terminal' to open the Claude Terminal.\n\n");
+                goLive();
             });
         }, "claude-env-info");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * The banner is all in: the Debug-mode lines kept while nobody could see them follow it,
+     * oldest first, and from here on {@link #debug} writes straight to this view. Taken and
+     * switched over under {@link #LOCK}, so a line that comes meanwhile is either among those
+     * taken or goes in after them. A view closed before its banner ended stays closed.
+     */
+    private void goLive() {
+        String earlier;
+        synchronized (LOCK) {
+            if (disposed) return;
+            earlier = PENDING.drainAll();
+            active = this;
+        }
+        if (!earlier.isEmpty()) appendLog(earlier);
     }
 
     private static String orNA(String s) {
@@ -589,22 +676,58 @@ public class ClaudeCodeView extends ViewPart {
     /**
      * Writes a diagnostic line to this view's log on behalf of code elsewhere in the
      * plug-in, on the same terms the bridge tracing already uses: only while Debug mode
-     * is on, and only into the console the user turned Debug mode on to read. Silent when
-     * the view is closed, which is the same as the rest of the log — it is a live console,
-     * not a file.
+     * is on, and only into the console the user turned Debug mode on to read. A line that
+     * comes while the view cannot show it (not shown yet since startup, closed, or still
+     * writing its banner) is kept in {@link #PENDING}, within its bounds, and appears below
+     * the banner once the view goes live. Nothing is written to disk.
      */
     public static void debug(String message) {
         if (!DebugModeUi.isDebugEnabled()) return;
-        ClaudeCodeView view = active;
-        if (view == null) return;
+        ClaudeCodeView view;
+        synchronized (LOCK) {
+            view = active;
+            if (view == null) {
+                PENDING.add(message);
+                return;
+            }
+        }
         Display.getDefault().asyncExec(() -> {
             if (active == view) view.appendLog(message + "\n");
         });
     }
 
+    /** Forgets the lines kept for a view not shown yet: Debug mode was switched off. */
+    public static void discardPending() {
+        PENDING.clear();
+    }
+
+    /**
+     * For the claudeCodeEclipse tool: what the view shows, then the lines kept for it while it
+     * could not show them (not opened yet, closed, or its banner still being written), in the
+     * order they would appear. "" when there is neither. UI thread.
+     */
+    public static String toolLog() {
+        StringBuilder log = new StringBuilder();
+        ClaudeCodeView view = created;
+        if (view != null && view.logArea != null && !view.logArea.isDisposed()) {
+            log.append(view.logArea.getText());
+        }
+        log.append(PENDING.snapshot());
+        return log.toString();
+    }
+
+    /** For the claudeCodeEclipse tool: whether the view is open. UI thread. */
+    public static boolean toolViewOpen() {
+        return created != null;
+    }
+
     @Override
     public void dispose() {
-        if (active == this) active = null;
+        synchronized (LOCK) {
+            disposed = true;
+            if (active == this) active = null;
+        }
+        if (created == this) created = null;
         if (themeChangeListener != null) {
             try {
                 org.eclipse.jface.resource.JFaceResources.getColorRegistry()

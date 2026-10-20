@@ -44,6 +44,12 @@ public class CloseAllDiffTabsTool implements McpTool {
                 int closed = 0;
                 for (IEditorReference ref : page.getEditorReferences()) {
                     try {
+                        // An approval's diff preview is its card's, which closes it once the card
+                        // is answered. Claude Code asks for this at the start of every turn, and on
+                        // a new conversation's first turn that can land while the preview is still
+                        // opening: closed halfway, it left the editor area unable to show any
+                        // compare editor after it.
+                        if (DiffPreview.isPreview(ref.getEditorInput())) continue;
                         var editor = ref.getEditor(false);
                         if (editor instanceof CompareEditor) {
                             page.closeEditor(editor, false);

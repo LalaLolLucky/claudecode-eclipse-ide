@@ -1427,6 +1427,23 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionA
     finish_export(&mut env, "sessionArchiveSet", result, jni::sys::JNI_FALSE)
 }
 
+/// Drops the conversations of `ids_json`, a JSON array of session ids, from the archive's
+/// record altogether: they were deleted. Returns whether the record holds none of them now.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionArchiveForget(
+    mut env: JNIEnv,
+    _class: JClass,
+    store_path: JString,
+    ids_json: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let store = jstr(&mut env, &store_path);
+        let ids = jstr(&mut env, &ids_json);
+        archive::forget(&store, &ids) as jboolean
+    }));
+    finish_export(&mut env, "sessionArchiveForget", result, jni::sys::JNI_FALSE)
+}
+
 // ===========================================================================
 // Bookmark JNI entry points (replies the user marked, per conversation)
 // ===========================================================================

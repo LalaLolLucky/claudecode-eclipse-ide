@@ -45,6 +45,7 @@ public class DebugModeSourceProvider extends AbstractSourceProvider {
                 fireSourceChanged(ISources.WORKBENCH, VARIABLE, Boolean.valueOf(debug));
                 if (!debug) {
                     DebugModeUi.closeServerViewIfOpen();
+                    ClaudeCodeView.discardPending();
                 }
             }
             if (Constants.PREF_TERMINAL_ONLY.equals(event.getProperty())) {

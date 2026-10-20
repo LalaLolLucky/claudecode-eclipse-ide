@@ -179,6 +179,26 @@ fn set_at(store_path: &str, ids: &[String], archived: bool, now_ms: u64) -> bool
     write_store(path, &store)
 }
 
+/// Drops the conversations of `ids_json` (a JSON array of ids) from the store altogether,
+/// archived or remembered as unarchived: they were deleted, and nothing is to list them again.
+/// Returns whether the store holds none of them now; one that never held them is not written.
+pub fn forget(store_path: &str, ids_json: &str) -> bool {
+    if store_path.is_empty() {
+        return false;
+    }
+    let ids: Vec<String> = serde_json::from_str(ids_json).unwrap_or_default();
+    let path = Path::new(store_path);
+    let _one_at_a_time = STORE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut store = read_store(path);
+    let before = (store.archived.len(), store.unarchived_at.len());
+    store.archived.retain(|id| !ids.contains(id));
+    store.unarchived_at.retain(|id, _| !ids.contains(id));
+    if (store.archived.len(), store.unarchived_at.len()) == before {
+        return true;
+    }
+    write_store(path, &store)
+}
+
 // ---------------------------------------------------------------------------
 // The store
 // ---------------------------------------------------------------------------
@@ -526,5 +546,27 @@ mod tests {
         let store = read_store(&path);
         assert_eq!(store.archived, ids(&["b"]));
         assert!(store.unarchived_at.contains_key("a"));
+    }
+
+    #[test]
+    fn a_deleted_conversation_is_dropped_from_the_store_altogether() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("archive.json");
+        assert!(write_store(&path, &store(&["gone", "kept"], &[("gone", NOW), ("other", NOW)])));
+
+        assert!(forget(path.to_str().unwrap(), "[\"gone\"]"));
+
+        let s = read_store(&path);
+        assert_eq!(s.archived, ids(&["kept"]));
+        assert_eq!(s.unarchived_at.keys().cloned().collect::<Vec<_>>(), ids(&["other"]));
+    }
+
+    #[test]
+    fn forgetting_what_the_store_does_not_hold_writes_nothing() {
+        assert!(!forget("", "[\"x\"]"));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("archive.json");
+        assert!(forget(path.to_str().unwrap(), "[\"never-archived\"]"));
+        assert!(!path.exists());
     }
 }

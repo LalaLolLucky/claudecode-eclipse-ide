@@ -247,7 +247,14 @@ fn edit_config_logged(claude_cmd: &str, cwd: &str, token: &str, op_json: &str) -
 
 fn run_claude(claude_cmd: &str, cwd: &str, args: &[String], log: &mut Vec<String>) -> Result<(), String> {
     log.push(format!("[mcp] claude {} (in {cwd})", redacted(args)));
-    crate::plugins::run_cli(claude_cmd, cwd, args, None, CONFIG_TIMEOUT).map(|_| ())
+    crate::plugins::run_cli_status(claude_cmd, cwd, args, None, CONFIG_TIMEOUT).map(|_| ()).map_err(|f| {
+        // A CLI that ran and failed, with how it exited. Not what it said: that can repeat the
+        // arguments, which the line above redacts.
+        if let Some(status) = f.status {
+            log.push(format!("[mcp] claude mcp failed ({status})"));
+        }
+        f.said
+    })
 }
 
 // ---------------------------------------------------------------------------

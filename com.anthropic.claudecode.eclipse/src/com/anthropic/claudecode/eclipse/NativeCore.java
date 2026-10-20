@@ -879,6 +879,15 @@ public final class NativeCore {
      */
     public static native boolean sessionArchiveSet(String storePath, String idsJson, boolean archived);
 
+    /**
+     * Drops the conversations of {@code idsJson}, a JSON array of session ids, from the
+     * record at {@code storePath} altogether, archived or remembered as unarchived: they
+     * were deleted.
+     *
+     * @return true when the record holds none of them now
+     */
+    public static native boolean sessionArchiveForget(String storePath, String idsJson);
+
     // ── Bookmarks (replies the user marked, per conversation) ────────────────
 
     /**
