@@ -5,7 +5,8 @@
 //!   reconnect, sign-in — is asked of the tab's live process over the control
 //!   channel it already has (`mcp_status`, `mcp_toggle`, `mcp_reconnect`,
 //!   `mcp_authenticate`, `mcp_clear_auth`). Replies come back on the reader thread
-//!   and reach the page as `onMcp`, matched by a token the page chose.
+//!   and reach the page as `onMcp`, matched by a token the page chose. The plugins
+//!   window sends its `reload_plugins` the same way, once it has changed a plugin.
 //! * **What is configured** — adding and removing a server — is the CLI's own
 //!   `claude mcp add|remove`, run in the conversation's folder, so the files it
 //!   writes (`~/.claude.json`, `.mcp.json`) are written by the thing that owns
@@ -13,12 +14,7 @@
 //!
 //! Not `mcp.rs`: that is the IDE's own MCP server, the one this window hides.
 
-use std::io::Read;
-use std::process::Stdio;
-use std::time::{Duration, Instant};
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::time::Duration;
 
 /// Request ids of the window's control requests: this prefix, then the page's token.
 pub(crate) const REQUEST_PREFIX: &str = "eclipse-mcp-";
@@ -26,8 +22,8 @@ pub(crate) const REQUEST_PREFIX: &str = "eclipse-mcp-";
 /// The control requests the page may send. Deliberately not `mcp_set_servers`: that
 /// replaces every server set that way, `claude-in-chrome` included, behind the
 /// browser banner's back.
-const ALLOWED_SUBTYPES: [&str; 5] =
-    ["mcp_status", "mcp_toggle", "mcp_reconnect", "mcp_authenticate", "mcp_clear_auth"];
+const ALLOWED_SUBTYPES: [&str; 6] =
+    ["mcp_status", "mcp_toggle", "mcp_reconnect", "mcp_authenticate", "mcp_clear_auth", "reload_plugins"];
 
 /// Our own server (`--mcp-config`). Hidden from the window and refused as a name,
 /// as the extension does with `claude-vscode`: disabling it would cut the plugin off
@@ -250,58 +246,8 @@ fn edit_config_logged(claude_cmd: &str, cwd: &str, token: &str, op_json: &str) -
 }
 
 fn run_claude(claude_cmd: &str, cwd: &str, args: &[String], log: &mut Vec<String>) -> Result<(), String> {
-    if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
-        return Err(format!("Working directory not found: {cwd}"));
-    }
     log.push(format!("[mcp] claude {} (in {cwd})", redacted(args)));
-    let mut cmd = crate::launch::claude_command(claude_cmd, args);
-    cmd.current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
-    for (k, v) in crate::shell_env::captured_env().to_inject() {
-        cmd.env(k, v);
-    }
-    let mut child = cmd.spawn().map_err(|e| format!("Could not run Claude Code: {e}"))?;
-
-    // Both pipes drained while it runs, so a chatty CLI cannot fill one and stall.
-    let drain = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut s = String::new();
-            if let Some(mut p) = pipe {
-                let _ = p.read_to_string(&mut s);
-            }
-            s
-        })
-    };
-    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < CONFIG_TIMEOUT => std::thread::sleep(Duration::from_millis(50)),
-            Ok(None) => {
-                crate::launch::kill_process_tree(&mut child);
-                let _ = child.wait();
-                return Err("Claude Code did not finish in time.".into());
-            }
-            Err(e) => return Err(format!("Could not run Claude Code: {e}")),
-        }
-    };
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
-    if status.success() {
-        return Ok(());
-    }
-    log.push(format!("[mcp] claude mcp failed ({status})"));
-    let said = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
-    Err(if said.is_empty() { format!("Claude Code exited with {status}.") } else { said.to_string() })
+    crate::plugins::run_cli(claude_cmd, cwd, args, None, CONFIG_TIMEOUT).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +316,7 @@ mod tests {
         assert_eq!(v["type"], "control_request");
         assert_eq!(v["request_id"], "eclipse-mcp-t1");
         assert_eq!(v["request"]["enabled"], false);
+        assert!(request_line("t1", &json!({"subtype":"reload_plugins"})).is_some(), "the plugins window's, after a change");
         assert!(request_line("t1", &json!({"subtype":"mcp_set_servers","servers":{}})).is_none());
         assert!(request_line("t1", &json!({"subtype":"interrupt"})).is_none());
         assert!(request_line("bad\"id", &json!({"subtype":"mcp_status"})).is_none());

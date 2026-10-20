@@ -428,12 +428,27 @@ function appendAssistant(t) {
   }
   curText += t;
   curBody._replyText = curText;   // Claude's own words: what bookmarks.js marks the reply with once it has finished
-  curBody.querySelector('.a-body').innerHTML = renderMarkdown(curText);
-  relinkTurn(curTurn);
+  scheduleBodyRender(curBody);
+}
+/* The text arrives a few characters at a time, many times a second. Re-rendering all of the
+   markdown for each piece grows with the length of the reply and froze the whole window, so
+   the drawing is done at most every BODY_RENDER_MS, from the element's own latest text (it
+   still lands if the turn moves on or another tab is shown in between). */
+const BODY_RENDER_MS = 80;
+function renderBodyNow(el) {
+  if (el._rt) { clearTimeout(el._rt); el._rt = 0; }
+  const body = el.querySelector('.a-body');
+  if (body) body.innerHTML = renderMarkdown(el._replyText || '');
+  if (el.parentNode) relinkTurn(el.parentNode);
   scrollBottom();
+}
+function scheduleBodyRender(el) {
+  if (el._rt) return;
+  el._rt = setTimeout(() => { el._rt = 0; renderBodyNow(el); }, BODY_RENDER_MS);
 }
 function endAssistant() {
   finalizeThink();
+  if (curBody && curBody._rt) renderBodyNow(curBody);
   markToolsDone(curTurn);   // every tool in this turn ran to completion → green dots
   // Re-synced here, not just left to the last relinkTurn a streaming chunk triggered:
   // the summary's own dot would otherwise stay stuck on "running" after markToolsDone
@@ -1549,9 +1564,18 @@ function appendThinking(t) {
   // in the collapsible body so the chevron reveals what the model is thinking.
   if (t) {
     curThinkText += t;
-    const body = el.querySelector('.think-body');
-    if (body) body.textContent = curThinkText;
+    el._thinkText = curThinkText;
     el.classList.add('has-body');
+    if (!el._rt) {   // drawn at most every BODY_RENDER_MS, like the reply text
+      el._rt = setTimeout(() => {
+        el._rt = 0;
+        const body = el.querySelector('.think-body');
+        if (body) body.textContent = el._thinkText;
+        if (el.parentNode) relinkTurn(el.parentNode);
+        scrollBottom();
+      }, BODY_RENDER_MS);
+    }
+    return;
   }
   relinkTurn(curTurn);
   scrollBottom();
@@ -1637,6 +1661,7 @@ function doCancel() {
   // flag makes withTab() drop EVERY further stream callback for this tab, so once
   // Stop is pressed nothing from the stopped turn ever renders (joebiden18). Cleared
   // when the next turn starts (doSend / onStreamStart).
+  t.queuedAfterStop = (t.queuedSends || 0) > 0;   // a message waiting behind this turn still runs (stream.js, onStreamEnd)
   t.cancelled = true;
   if (window._cancelRequest) window._cancelRequest(t.id);
   // Mark the stop point: if a tool was running, turn only THAT tool line's dot red

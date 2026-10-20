@@ -180,6 +180,7 @@ function cmdMenuRows() {
 
     { id: 'styles', sec: 'Customize', label: 'Output styles', icon: 'LINES', run: () => openOutputStyles() },
     { id: 'mcp', sec: 'Customize', label: 'MCP servers', icon: 'PLUG', run: () => openMcpServers() },
+    { id: 'plugins', sec: 'Customize', label: 'Manage plugins', icon: 'ADDON', run: () => openPlugins() },
     { id: 'hooks', sec: 'Customize', label: 'Hooks', icon: 'HOOK', run: () => openHooksDialog() },
     { id: 'permissions', sec: 'Customize', label: 'Permissions', icon: 'SHIELD', run: () => openPermissionsDialog() },
     { id: 'status', sec: 'Customize', label: 'Status', icon: 'INFO', run: () => openStatusDialog() },

@@ -13,6 +13,7 @@ mod launch;
 mod lock_file;
 mod mcp;
 mod mcp_servers;
+mod plugins;
 mod mentions;
 mod promptcache;
 mod server;
@@ -1511,6 +1512,33 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_sessionB
         jout(&mut env, json, "{}")
     }));
     finish_export(&mut env, "sessionBookmarkTexts", result, std::ptr::null_mut())
+}
+
+// ===========================================================================
+// Plugins window JNI entry point
+// ===========================================================================
+
+/// Runs one request of the plugins window as `claude plugin …` in `cwd`: the lists, a change
+/// to a plugin or a marketplace, a plugin's options. Returns `{"token","ok","response"}` or
+/// `{"token","ok":false,"error"}`.
+///
+/// **Blocking** — runs the CLI, up to two minutes. Off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_pluginsRun(
+    mut env: JNIEnv,
+    _class: JClass,
+    claude_cmd: JString,
+    cwd: JString,
+    token: JString,
+    op: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut text = |s: JString| jstr(&mut env, &s);
+        let (claude_cmd, cwd, token, op) = (text(claude_cmd), text(cwd), text(token), text(op));
+        let json = plugins::run(&claude_cmd, &cwd, &token, &op);
+        jout(&mut env, json, "")
+    }));
+    finish_export(&mut env, "pluginsRun", result, std::ptr::null_mut())
 }
 
 // ===========================================================================

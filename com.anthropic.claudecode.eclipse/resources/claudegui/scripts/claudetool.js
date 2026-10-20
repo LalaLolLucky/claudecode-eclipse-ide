@@ -652,6 +652,7 @@
         // left alone: no hideWorking and no setStreaming here.
         const target = rtab;
         loadRender(t);
+        t.queuedAfterStop = (t.queuedSends || 0) > 0;
         t.cancelled = true;
         if (window._cancelRequest) window._cancelRequest(t.id);
         const stoppedTool = markInterrupted();

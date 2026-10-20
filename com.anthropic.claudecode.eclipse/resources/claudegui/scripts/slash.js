@@ -7,6 +7,7 @@ const SLASH_COMMANDS = [
   { cmd: '/clear',   desc: 'Start a new session (tab)' },
   { cmd: '/compact', desc: 'Clear conversation history but keep a summary in context' },
   { cmd: '/mcp',     desc: 'Manage MCP servers' },
+  { cmd: '/plugins', desc: 'Manage Claude Code plugins', aliases: ['plugin', 'marketplace'] },
   { cmd: '/model',   desc: 'Switch model' },
   { cmd: '/resume',  desc: 'Open session history', aliases: ['continue'] },
   { cmd: '/context', desc: 'Show context window usage for this conversation', dialog: true },
@@ -113,6 +114,7 @@ function handleSlashCommand(text) {
   // The CLI's /mcp is another terminal-only picker; this is the extension's window for it.
   // No echo, like /resume: a window opened, nothing was sent.
   if (cmd === '/mcp') { openMcpServers(); return true; }
+  if (cmd === '/plugins') { openPlugins(); return true; }
   if (cmd === '/help') {
     const ht = activeTab();
     addUserMessage(text, null, null, null, nowIso());

@@ -328,6 +328,12 @@ public class ChatProcessManager {
         return NativeCore.mcpEditConfig(claudeCmd(), workspaceRoot(), token, opJson);
     }
 
+    /** One request of the plugins window as {@code claude plugin …}, run in this tab's
+     *  folder. <b>Blocking</b>, up to two minutes. See {@link NativeCore#pluginsRun}. */
+    public String pluginsRun(String token, String opJson) {
+        return NativeCore.pluginsRun(claudeCmd(), workspaceRoot(), token, opJson);
+    }
+
     /** Asks this tab's process for what one of the CLI's dialogs shows, starting the
      *  process first if the tab has none, as {@link #mcpRequest} does. The reply
      *  arrives on the onCliReply callback under the same token.

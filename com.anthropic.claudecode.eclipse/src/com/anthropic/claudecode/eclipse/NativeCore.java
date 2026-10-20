@@ -411,6 +411,18 @@ public final class NativeCore {
     public static native String mcpEditConfig(String claudeCmd, String cwd, String token, String opJson);
 
     /**
+     * One request of the plugins window, run as the CLI's own {@code claude plugin …} in
+     * {@code cwd} (the conversation's folder): the installed and the available plugins, the
+     * marketplaces, installing, updating, enabling, disabling and uninstalling a plugin,
+     * adding, removing and refreshing a marketplace, and a plugin's options.
+     *
+     * <p><b>Blocking</b> — runs the CLI, up to two minutes. Off the UI thread.
+     *
+     * @return {@code {"token","ok":true,"response"}} or {@code {"token","ok":false,"error"}}
+     */
+    public static native String pluginsRun(String claudeCmd, String cwd, String token, String opJson);
+
+    /**
      * Asks this tab's live process for what one of the CLI's dialogs shows
      * ({@code get_memory_dialog}, {@code get_skills_dialog}, {@code get_status},
      * {@code get_chrome_dialog}, {@code get_chrome_browsers}, {@code get_hooks_listing},
