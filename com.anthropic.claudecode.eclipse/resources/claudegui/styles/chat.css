@@ -802,3 +802,56 @@ html.hide-pre-compact .pane > .pre-compact + .turn:not(.pre-compact) { margin-to
   box-shadow: 0 2px 10px var(--shadow); line-height: 0; }
 .rc-qr-img svg { width: 208px; height: 208px; display: block; }
 .rc-qr-cap { color: var(--fg-dim); font-size: 11.5px; text-align: center; }
+
+/* ---- more markdown: alerts, containers, math, diagrams, definition lists, footnotes ---- */
+.a-body mark { background: rgba(217,164,65,.35); color: inherit; padding: 0 2px; border-radius: 2px; }
+.a-body ins { text-decoration: underline; text-decoration-color: var(--green); }
+.a-body kbd { font: 11px var(--mono, monospace); background: var(--bg-chip); border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 4px; padding: 0 5px; color: var(--fg); }
+.a-body abbr[title] { text-decoration: underline dotted; cursor: help; }
+.a-body sub, .a-body sup { font-size: .75em; line-height: 0; }
+.a-body details { margin: 6px 0; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; }
+.a-body details > summary { cursor: pointer; color: var(--fg); }
+.a-body details[open] > summary { margin-bottom: 4px; }
+.a-body dl { margin: 6px 0; }
+.a-body dt { font-weight: 600; color: var(--fg); margin-top: 4px; }
+.a-body dd { margin: 0 0 0 20px; color: var(--fg-soft); }
+.a-body .md-align-center { text-align: center; } .a-body .md-align-right { text-align: right; }
+.a-body .md-wiki { color: var(--link); border-bottom: 1px dashed var(--link); }
+.a-body .md-mention, .a-body .md-issue, .a-body .md-tag { color: var(--mention-chip-fg); background: var(--mention-chip-bg);
+  border-radius: 4px; padding: 0 4px; }
+.a-body .md-toc { margin: 6px 0; padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-soft); }
+.a-body .md-toc ul { margin: 2px 0 2px 16px; }
+.a-body .md-footnotes { margin-top: 10px; font-size: 12px; color: var(--fg-soft); }
+.a-body .md-footnotes hr { margin: 6px 0; }
+.a-body .md-footnotes ol { margin: 4px 0 4px 20px; }
+.a-body .fn-ref a, .a-body .fn-back { color: var(--link); text-decoration: none; }
+.a-body .md-alert, .a-body .md-box { --mdc: var(--link); margin: 8px 0; padding: 6px 12px; border-left: 3px solid var(--mdc);
+  border-radius: 0 6px 6px 0; background: color-mix(in srgb, var(--mdc) 10%, transparent); }
+.a-body .md-alert-title, .a-body .md-box-title { font-weight: 600; color: var(--mdc); margin-bottom: 2px; }
+.a-body .md-alert-tip, .a-body .md-box-tip, .a-body .md-box-success { --mdc: var(--green); }
+.a-body .md-alert-important { --mdc: #a371f7; }
+.a-body .md-alert-warning, .a-body .md-box-warning { --mdc: #d9a441; }
+.a-body .md-alert-caution, .a-body .md-box-danger, .a-body .md-box-caution, .a-body .md-box-error { --mdc: var(--red); }
+.a-body .df-add { color: var(--green); } .a-body .df-del { color: var(--red); }
+.a-body .df-hunk { color: var(--hunk); } .a-body .df-file { color: var(--fg-dim); }
+.a-body .md-math { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; font-size: 1.05em; white-space: nowrap; }
+.a-body .md-math-block { display: block; text-align: center; margin: 8px 0; font-size: 1.2em; overflow-x: auto; }
+.a-body .md-math i { font-style: italic; } .a-body .md-math .mrm { font-style: normal; }
+.a-body .md-math .mfrac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; margin: 0 2px; }
+.a-body .md-math .mnum { border-bottom: 1px solid currentColor; padding: 0 3px; }
+.a-body .md-math .mden { padding: 0 3px; }
+.a-body .md-math .msqrt .mrad { border-top: 1px solid currentColor; padding: 0 2px; }
+.a-body .md-math .mover { border-top: 1px solid currentColor; } .a-body .md-math .mund { border-bottom: 1px solid currentColor; }
+.a-body .md-math .macc { display: inline-flex; flex-direction: column; align-items: center; line-height: 1; }
+.a-body .md-math .macm { font-size: .7em; }
+.a-body .md-math .ms { display: inline-flex; flex-direction: column; vertical-align: middle; font-size: .8em; line-height: 1.1; }
+.a-body .md-math .ms sup, .a-body .md-math .ms sub { font-size: 1em; line-height: 1.1; vertical-align: baseline; }
+.a-body .md-mermaid { margin: 8px 0; overflow-x: auto; text-align: center; }
+.a-body .md-mermaid svg { max-width: 100%; height: auto; }
+.a-body .md-mermaid .mm-node { fill: var(--bg-chip); stroke: var(--fg-dim); stroke-width: 1.2; }
+.a-body .md-mermaid .mm-edge { fill: none; stroke: var(--fg-dim); stroke-width: 1.4; }
+.a-body .md-mermaid .mm-edge.dot { stroke-dasharray: 4 3; } .a-body .md-mermaid .mm-edge.thick { stroke-width: 2.6; }
+.a-body .md-mermaid .mm-head { fill: var(--fg-dim); }
+.a-body .md-mermaid .mm-lbl { fill: var(--bg); }
+.a-body .md-mermaid .mm-text { fill: var(--fg); font: 12px sans-serif; } .a-body .md-mermaid .mm-text.sm { font-size: 11px; fill: var(--fg-soft); }

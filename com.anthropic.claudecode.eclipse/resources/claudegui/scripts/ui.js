@@ -155,6 +155,12 @@ function openLinkExternally(e) {
   const href = a.getAttribute('href') || '';
   e.preventDefault();   // not stopPropagation: menus still need to see the click and close
   if (/^https?:\/\//i.test(href) && window._openExternal) _openExternal(href);
+  else if (href.length > 1 && href[0] === '#') {   // a heading, footnote or table-of-contents link: within the same message
+    const root = a.closest('.a-body');
+    const id = decodeURIComponent(href.slice(1));
+    const target = root && Array.from(root.querySelectorAll('[id]')).find(el => el.id === id);
+    if (target) target.scrollIntoView({ block: 'start' });
+  }
 }
 document.addEventListener('click', openLinkExternally, true);
 document.addEventListener('auxclick', (e) => { if (e.button === 1) openLinkExternally(e); }, true);
