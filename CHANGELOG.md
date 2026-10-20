@@ -4,7 +4,31 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.21] — 2026-10-17 *(current)*
+## [3.2.22] — 2026-10-20 *(current)*
+
+### Added
+- **Manage Plugins:** install, update, turn on or off and remove plugins, and add, update or remove marketplaces, from "Manage plugins" in the command menu or `/plugins` ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #207).
+- "Delete session" beside "Archive session" on History rows, archived ones too; it asks first ([@jmoraleda](https://github.com/jmoraleda), PR #209).
+- A clock in the composer bar shows how long the prompt cache stays warm, and turns the accent colour once it has run out ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #206).
+- Replies render much more Markdown: tables with alignment, task lists, footnotes, alerts, definition lists, math, Mermaid flowcharts and more ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #208).
+
+### Changed
+- The token count beside "Thinking…" counts only the thinking under way, and starts over with each thought ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #206).
+
+### Added (Development tools)
+- **Copy Logs and Clear Logs** in the Claude IDE Server view.
+- `claudeCodeEclipse`: read the Claude IDE Server view's log.
+
+### Fixed
+- Linux: Eclipse no longer freezes when Claude asks to edit a file and the change's diff preview opens (issue #215).
+- Replies stream as they are written, instead of appearing a block at a time ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #207).
+- A message queued behind a turn you stop is sent once the turn ends ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #207).
+- The context figure in the status bar matches `/context`; a long turn no longer reads 100% ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #206).
+- The "prompt cache has likely expired" note on a reopened conversation goes away once Claude replies ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #206).
+
+---
+
+## [3.2.21] — 2026-10-17
 
 ### Added
 - **Edit before you approve:** change a Bash command on its permission card, or a proposed Write or Edit in its diff preview, and the edited version is what runs. Off by default: tick "Enable editable commands on permission card" in the Preferences ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #203).
