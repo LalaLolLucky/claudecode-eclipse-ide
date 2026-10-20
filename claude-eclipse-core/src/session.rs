@@ -1598,7 +1598,7 @@ fn after_compactions(items: &[serde_json::Value]) -> impl Iterator<Item = (u64, 
 // ---------------------------------------------------------------------------
 
 /// What [`open_session`] answers when there is nothing to read.
-const NOTHING_OPENED: &str = r#"{"items":[],"note":"","cut":null,"earlier":null}"#;
+const NOTHING_OPENED: &str = r#"{"items":[],"note":"","cache":null,"cut":null,"earlier":null}"#;
 
 /// A saved conversation for the view to draw, from one reading of its transcript: its
 /// render items as [`load_session_history`] gives them, each reply also carrying the
@@ -1616,7 +1616,7 @@ const NOTHING_OPENED: &str = r#"{"items":[],"note":"","cut":null,"earlier":null}
 /// `cut.nth` says which of the conversation's compactions the last one is, counted from 1:
 /// what [`message_ids`] and [`reply_ids`] call `compactions` on the lines that follow it.
 ///
-/// `{"items":[…], "note":"…", "cut":{"uuid","at","nth"}|null,
+/// `{"items":[…], "note":"…", "cache":{anchorAt,ttlMs,recacheTokens,compacted}|null, "cut":{"uuid","at","nth"}|null,
 ///   "earlier":{"replies":[uuid…],"model":"…","thinking":bool}|null}`
 pub fn open_session(workspace_root: &str, session_id: &str, from_last_compaction: bool) -> String {
     let Some((dir, bytes)) = read_transcript(workspace_root, session_id) else {
@@ -1633,6 +1633,7 @@ pub fn open_session(workspace_root: &str, session_id: &str, from_last_compaction
     serde_json::json!({
         "items": items_of(&dir, session_id, lines_of(&bytes[start..]), Pass::OPEN),
         "note": crate::promptcache::note_of_lines(lines_of(&bytes)),
+        "cache": crate::promptcache::record_json_of_lines(lines_of(&bytes)),
         "cut": cut.map(|cut| serde_json::json!({ "uuid": cut.uuid, "at": cut.at, "nth": nth })),
         "earlier": earlier.map(|part| serde_json::json!({
             "replies": part.replies, "model": part.model, "thinking": part.thinking,

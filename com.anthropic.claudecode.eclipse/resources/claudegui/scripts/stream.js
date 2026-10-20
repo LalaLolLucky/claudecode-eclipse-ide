@@ -13,13 +13,13 @@
 /** @param {string} tabId @param {(t: Tab) => void} fn */
 function withTab(tabId, fn) { const t = tabById(tabId); if (!t || t.cancelled) return; loadRender(t); fn(t); }
 window.onStreamStart   = (tabId) => withTab(tabId, () => { setStreaming(true); ensureWorking(); });
-window.onThinking      = (tabId, t) => withTab(tabId, () => appendThinking(t));
-window.onStreamText    = (tabId, t) => withTab(tabId, () => appendAssistant(t));
+window.onThinking      = (tabId, text) => withTab(tabId, (t) => { dropResumeNote(t); appendThinking(text); });
+window.onStreamText    = (tabId, text) => withTab(tabId, (t) => { dropResumeNote(t); appendAssistant(text); });
 /* Turn over → the CLI has written this turn's user line, so the bubble sent a
    moment ago can finally learn which transcript line it owns (its hover actions
    stay hidden until then). */
 window.onStreamEnd     = (tabId) => withTab(tabId, (t) => { t.compacting = false; hideWorking(); endAssistant(); setStreaming(false); backfillMessageIds(t); if (typeof refreshReplies === 'function') refreshReplies(t); refreshTabTitle(t); });
-window.onToolStart     = (tabId, n) => withTab(tabId, () => addToolLine(n));
+window.onToolStart     = (tabId, n) => withTab(tabId, (t) => { dropResumeNote(t); addToolLine(n); });
 window.onToolEnd       = (tabId, j) => withTab(tabId, (t) => { applyToolResult(j); startTurnAfterQueuedSend(t); });
 /* A running subagent's own current step (chat.rs never gives its OWN tool calls a
    top-level onToolStart — that would interleave a bogus line into the main
@@ -68,6 +68,7 @@ window.onCompact = (tabId, json) => withTab(tabId, (t) => {
     t.compacting = false;
     compactionOver(t);
   } else if (info.phase === 'boundary') {
+    noteCacheCompacted(t);
     const freed = Math.max(0, (info.preTokens || 0) - (info.postTokens || 0));
     // An automatic compaction comes in the middle of a turn. What Claude writes after it
     // belongs under its line, as a reload shows it — not in the turn above, which is

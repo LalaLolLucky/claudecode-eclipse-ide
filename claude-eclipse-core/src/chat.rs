@@ -1679,7 +1679,7 @@ fn run_turn(
     // lineage didn't own it at the moment (see process_event_value).
     let mut cursors: std::collections::HashMap<String, (usize, usize, u64)> = std::collections::HashMap::new();
     // Live output-token counter state (from --include-partial-messages).
-    let mut tokens = TokenCounter::default();
+    let mut tokens = TurnUsage::default();
 
     for line in reader.lines() {
         if cancel.load(Ordering::Relaxed) {
@@ -1945,7 +1945,7 @@ fn reader_loop(
     let reader = BufReader::new(stdout);
     // See run_turn's own declaration of this for why it's keyed per lineage, not a bare pair.
     let mut cursors: std::collections::HashMap<String, (usize, usize, u64)> = std::collections::HashMap::new();
-    let mut tokens = TokenCounter::default();
+    let mut tokens = TurnUsage::default();
     // Raw model id from the init event (e.g. "claude-opus-4-8") — reported to the
     // GUI status bar, which maps it to a display name.
     let mut current_model = String::new();
@@ -2129,12 +2129,12 @@ fn reader_loop(
                 // Derive the session-specific status-bar data (model, context %,
                 // cost) from this turn's usage and fire it to the GUI status bar.
                 // Account-global rate limits come from the shared store, not here.
-                if let Some(status) = build_status_json(&event, &current_model) {
+                if let Some(status) = build_status_json(&event, &current_model, &tokens) {
                     fire_string(&java_vm, &callbacks, "onStatus", &status);
                 }
                 fire_void(&java_vm, &callbacks, "onStreamEnd");
                 cursors.clear();
-                tokens = TokenCounter::default();
+                tokens = TurnUsage::default();
                 continue;
             }
             "system" => {
@@ -2374,74 +2374,87 @@ fn reader_loop(
     }
 }
 
-/// The live output-token count shown beside "Thinking…", kept for one turn.
+/// What the status bar takes from a turn, kept for its length: the last API call's usage, and
+/// where the prompt cache stands after it.
 ///
-/// A turn is several API messages when Claude uses tools, and each message counts its own
-/// output tokens from zero. So the count is a running total: what the finished messages
-/// came to, plus the message under way. That message's tokens are exact at its start and
-/// its end (`message_start`, `message_delta`) and an estimate between, a quarter of a
-/// token for each character that streams. Text, thinking and tool arguments all stream, and
-/// all of them are counted; the estimate used to move for text alone, so it stood still
-/// through thinking and while a tool call was being written.
+/// A turn is several API calls when Claude uses tools, and the `result` event's `usage` is the
+/// SUM of them, each call's cached prompt counted again: a turn of three calls over a 36k prompt
+/// reads 109k there. What fills the context window is the last call's own usage, which is what
+/// the VS Code extension and the CLI's status line show, so that is kept as the calls stream by.
 #[derive(Default)]
-struct TokenCounter {
-    /// Output tokens of the messages of this turn that have ended.
-    done: u64,
-    /// The message under way: what the CLI last said it came to, which is exact.
-    base: u64,
-    /// Characters streamed in it since then.
-    chars: u64,
+struct TurnUsage {
+    /// The latest call of the main conversation that reported any usage.
+    last_call: Option<CallUsage>,
+    /// When the call under way was sent, taken as when its message started.
+    call_started_ms: Option<i64>,
+    /// When the last call that reported usage was sent: the cache's lifetime runs from there.
+    cache_anchor_ms: Option<i64>,
+    /// How long the cache keeps what the latest call that wrote to it wrote.
+    cache_ttl_ms: Option<i64>,
 }
 
-impl TokenCounter {
-    /// Takes one `stream_event` of the top-level conversation and returns the count to
-    /// show, or None when the event does not move it.
-    fn on_event(&mut self, ev: &serde_json::Value) -> Option<u64> {
-        match ev["type"].as_str()? {
-            "message_start" => {
-                // The message before this one is over, with what it ended on.
-                self.done += self.current();
-                self.base = ev["message"]["usage"]["output_tokens"].as_u64().unwrap_or(0);
-                self.chars = 0;
+#[derive(Clone, Copy)]
+struct CallUsage {
+    input: u64,
+    cache_read: u64,
+    cache_create: u64,
+    output: u64,
+}
+
+impl CallUsage {
+    /// What one call's `usage` object says, or None when it says nothing (a synthetic message
+    /// reports all zeros).
+    fn of(usage: &serde_json::Value) -> Option<CallUsage> {
+        let n = |k: &str| usage[k].as_u64().unwrap_or(0);
+        let call = CallUsage {
+            input: n("input_tokens"),
+            cache_read: n("cache_read_input_tokens"),
+            cache_create: n("cache_creation_input_tokens"),
+            output: n("output_tokens"),
+        };
+        (call.context() > 0).then_some(call)
+    }
+
+    /// The tokens the call held in the context window: what it sent, cached or not.
+    fn context(&self) -> u64 {
+        self.input + self.cache_read + self.cache_create
+    }
+}
+
+impl TurnUsage {
+    /// Takes one `stream_event` of the top-level conversation: a message starting is a request
+    /// sent, and its `message_delta` carries the finished call's usage.
+    fn on_stream_event(&mut self, ev: &serde_json::Value) {
+        match ev["type"].as_str() {
+            Some("message_start") => self.call_started_ms = Some(crate::promptcache::now_ms()),
+            Some("message_delta") => {
+                if let Some(call) = CallUsage::of(&ev["usage"]) {
+                    self.last_call = Some(call);
+                    self.cache_anchor_ms = self.call_started_ms.or(self.cache_anchor_ms);
+                }
             }
-            "content_block_delta" => {
-                let d = &ev["delta"];
-                // The signature that closes a thinking block is not output text.
-                let text = match d["type"].as_str()? {
-                    "text_delta" => d["text"].as_str()?,
-                    "thinking_delta" => d["thinking"].as_str()?,
-                    "input_json_delta" => d["partial_json"].as_str()?,
-                    _ => return None,
-                };
-                self.chars += text.chars().count() as u64;
-            }
-            "message_delta" => {
-                self.base = ev["usage"]["output_tokens"].as_u64()?;
-                self.chars = 0;
-            }
-            _ => return None,
+            _ => {}
         }
-        Some(self.done + self.current())
     }
 
-    /// The message under way, as far as it is known.
-    fn current(&self) -> u64 {
-        self.base + self.chars / 4
+    /// Takes the `usage` of a main-conversation `assistant` event, the one that says which
+    /// lifetime the call cached under.
+    fn on_assistant_usage(&mut self, usage: &serde_json::Value) {
+        if let Some(ms) = crate::promptcache::lifetime_ms_of_usage(usage) {
+            self.cache_ttl_ms = Some(ms);
+        }
     }
 }
 
-/// Builds the GUI status-bar JSON for a completed turn from its `result` event.
-/// Context % = (input + cache_read + cache_creation) / contextWindow · 100; the
-/// window size and cost come straight from the result. Returns None when there's
-/// no usable usage data. Only session-specific fields — rate limits are shared
-/// from the CLI statusLine via ClaudeStatusStore, never derived here.
-fn build_status_json(event: &serde_json::Value, model: &str) -> Option<String> {
-    let usage = &event["usage"];
-    let input = usage["input_tokens"].as_u64().unwrap_or(0);
-    let cache_read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
-    let cache_create = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
-    let output = usage["output_tokens"].as_u64().unwrap_or(0);
-    let context_tokens = input + cache_read + cache_create;
+/// Builds the GUI status-bar JSON for a completed turn from its `result` event and the usage of
+/// its last API call ([`TurnUsage`]). Context % = (input + cache_read + cache_creation) of that
+/// call / contextWindow · 100; the window size and cost come straight from the result. Returns
+/// None when the turn made no call that reported usage. Only session-specific fields — rate
+/// limits are shared from the CLI statusLine via ClaudeStatusStore, never derived here.
+fn build_status_json(event: &serde_json::Value, model: &str, turn: &TurnUsage) -> Option<String> {
+    let call = turn.last_call?;
+    let (input, cache_read, cache_create, output) = (call.input, call.cache_read, call.cache_create, call.output);
+    let context_tokens = call.context();
 
     // Context window size from modelUsage (per-model), falling back to the
     // largest reported window across models in this result.
@@ -2459,11 +2472,6 @@ fn build_status_json(event: &serde_json::Value, model: &str) -> Option<String> {
         }
     }
     let cost = event["total_cost_usd"].as_f64().unwrap_or(0.0);
-
-    // Nothing meaningful to show yet.
-    if context_tokens == 0 && window == 0 && cost == 0.0 {
-        return None;
-    }
 
     // Clamped to [0, 100]: a ratio above 100% is never legitimate for display (it means
     // `window` resolved to the wrong, too-small model entry — e.g. modelUsage briefly
@@ -2485,6 +2493,13 @@ fn build_status_json(event: &serde_json::Value, model: &str) -> Option<String> {
         "cacheCreationTokens": cache_create,
         "cacheReadTokens": cache_read,
         "costUsd": cost,
+        // Where the prompt cache stands: it was last used at `cacheAnchorAt` and keeps what it
+        // holds for `cacheTtlMs`; `recacheTokens` is what the next message writes again if it
+        // has run out. The window of a turn that wrote nothing to the cache is not known
+        // (null), and the page keeps the one it had.
+        "cacheAnchorAt": turn.cache_anchor_ms,
+        "cacheTtlMs": turn.cache_ttl_ms,
+        "recacheTokens": context_tokens,
     });
     Some(payload.to_string())
 }
@@ -2932,7 +2947,7 @@ fn process_event(
     java_vm: &Arc<jni::JavaVM>,
     callbacks: &Arc<jni::objects::GlobalRef>,
     cursors: &mut std::collections::HashMap<String, (usize, usize, u64)>,
-    tokens: &mut TokenCounter,
+    tokens: &mut TurnUsage,
 ) {
     let event: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -2992,7 +3007,7 @@ fn process_event_value(
     java_vm: &Arc<jni::JavaVM>,
     callbacks: &Arc<jni::objects::GlobalRef>,
     cursors: &mut std::collections::HashMap<String, (usize, usize, u64)>,
-    tokens: &mut TokenCounter,
+    tokens: &mut TurnUsage,
 ) {
     // A message belonging to a subagent's own nested conversation (Task/Agent tool),
     // multiplexed onto this SAME stream alongside the top-level conversation's own
@@ -3017,6 +3032,12 @@ fn process_event_value(
                 }
                 let msg = event["message"].as_str().unwrap_or("Connected");
                 fire_string(java_vm, callbacks, "onSystem", msg);
+            } else if event["subtype"].as_str() == Some("thinking_tokens") {
+                // The CLI's own running estimate of the thinking under way, as the VS Code
+                // extension shows it. A model that omits its thinking sends none.
+                if let Some(n) = event["estimated_tokens"].as_u64() {
+                    fire_string(java_vm, callbacks, "onTokens", &n.to_string());
+                }
             } else if event["subtype"].as_str() == Some("task_notification") {
                 // A background agent's REAL completion — confirmed against the actual
                 // live stream (not just a saved-file guess, see the two wrong shapes
@@ -3145,6 +3166,9 @@ fn process_event_value(
         // Partial events have cumulative text; compute deltas to avoid duplicates.
         "assistant" => {
             let is_partial = event.get("partial").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !is_subagent {
+                tokens.on_assistant_usage(&event["message"]["usage"]);
+            }
             // A synthetic assistant message standing in for a backend error (rate
             // limit, 529 overload, …) — the CLI marks it isApiErrorMessage and also
             // ends the turn with a matching is_error result, which already fires
@@ -3266,15 +3290,12 @@ fn process_event_value(
             }
         }
         // Fine-grained streaming events (only with --include-partial-messages) —
-        // used solely to drive the live output-token counter ([`TokenCounter`]). Text/thinking/tools
-        // still render from the complete "assistant" events above.
-        // A concurrent background subagent's own token usage must not skew the
-        // top-level turn's live counter — this bar reports the turn the user is
-        // actually watching, not the sum of everything running underneath it.
+        // used solely to note each call's usage ([`TurnUsage`]). Text/thinking/tools still
+        // render from the complete "assistant" events above.
+        // A concurrent background subagent's own usage must not stand in for the top-level
+        // turn's: the status bar reports the conversation the user is watching.
         "stream_event" if !is_subagent => {
-            if let Some(n) = tokens.on_event(&event["event"]) {
-                fire_string(java_vm, callbacks, "onTokens", &n.to_string());
-            }
+            tokens.on_stream_event(&event["event"]);
         }
         _ => {}
     }
@@ -3861,88 +3882,84 @@ Last 7d · 1048 requests · 17 sessions
 }
 
 #[cfg(test)]
-mod token_counter_tests {
-    use super::TokenCounter;
+mod turn_usage_tests {
+    use super::{build_status_json, CallUsage, TurnUsage};
     use serde_json::json;
 
-    fn start(base: u64) -> serde_json::Value { json!({"type":"message_start","message":{"usage":{"output_tokens":base}}}) }
-    fn end(n: u64) -> serde_json::Value { json!({"type":"message_delta","usage":{"output_tokens":n}}) }
-    fn text(s: &str) -> serde_json::Value { json!({"type":"content_block_delta","delta":{"type":"text_delta","text":s}}) }
-    fn thinking(s: &str) -> serde_json::Value { json!({"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":s}}) }
-    fn args(s: &str) -> serde_json::Value { json!({"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":s}}) }
-    fn signature() -> serde_json::Value { json!({"type":"content_block_delta","delta":{"type":"signature_delta","signature":"EqQBCkYI"}}) }
+    fn call_end(input: u64, read: u64, create: u64, out: u64) -> serde_json::Value {
+        json!({"type":"message_delta","usage":{"input_tokens":input,"cache_read_input_tokens":read,
+            "cache_creation_input_tokens":create,"output_tokens":out}})
+    }
 
-    #[test]
-    fn it_moves_while_claude_thinks_and_while_a_tool_call_is_written() {
-        let mut c = TokenCounter::default();
-        assert_eq!(c.on_event(&start(4)), Some(4));
-        // 40 characters of thinking is about 10 tokens more.
-        assert_eq!(c.on_event(&thinking(&"a".repeat(40))), Some(14));
-        assert_eq!(c.on_event(&args(&"b".repeat(20))), Some(19));
+    /// The real turn of a probe: three calls over a 36k prompt, the first writing it to the cache.
+    fn three_calls() -> TurnUsage {
+        let mut u = TurnUsage::default();
+        u.on_stream_event(&call_end(10, 0, 36309, 176));
+        u.on_stream_event(&call_end(5, 36309, 222, 78));
+        u.on_stream_event(&call_end(5, 36531, 119, 78));
+        u
     }
 
     #[test]
-    fn a_signature_is_not_output_text() {
-        let mut c = TokenCounter::default();
-        c.on_event(&start(4));
-        assert_eq!(c.on_event(&signature()), None, "it does not move the count");
+    fn the_context_is_the_last_calls_not_the_sum_of_them() {
+        let last = three_calls().last_call.unwrap();
+        assert_eq!(last.context(), 36655);
+        assert_eq!(last.output, 78);
     }
 
     #[test]
-    fn the_count_is_a_total_for_the_turn_and_does_not_start_over_with_each_message() {
-        // The real shape of a turn with one tool call: two messages, 112 then 10 tokens.
-        let mut c = TokenCounter::default();
-        c.on_event(&start(4));
-        assert_eq!(c.on_event(&end(112)), Some(112));
-        // The second message starts at 1: the turn is at 113, not back to 1.
-        assert_eq!(c.on_event(&start(1)), Some(113));
-        assert_eq!(c.on_event(&text(&"c".repeat(16))), Some(117));
-        assert_eq!(c.on_event(&end(10)), Some(122), "the CLI's own total for that turn was 122");
+    fn a_call_that_reports_nothing_does_not_replace_the_last_one() {
+        let mut u = three_calls();
+        u.on_stream_event(&call_end(0, 0, 0, 0));
+        u.on_stream_event(&json!({"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}));
+        assert_eq!(u.last_call.unwrap().context(), 36655);
+        assert!(CallUsage::of(&json!({})).is_none());
     }
 
     #[test]
-    fn the_estimate_is_replaced_by_the_exact_count_at_the_end_of_a_message() {
-        let mut c = TokenCounter::default();
-        c.on_event(&start(1));
-        c.on_event(&text(&"d".repeat(400)));      // an estimate of 100 more
-        assert_eq!(c.on_event(&end(37)), Some(37), "the exact figure wins, even when it is lower");
+    fn the_status_is_built_from_that_call_and_the_results_cost_and_window() {
+        let result = json!({
+            "total_cost_usd": 0.0557,
+            // The result's own usage is the sum of the turn's calls and is not used for the context.
+            "usage": {"input_tokens":20,"cache_read_input_tokens":72840,"cache_creation_input_tokens":36650,"output_tokens":332},
+            "modelUsage": {"claude-haiku-4-5": {"contextWindow": 200000}},
+        });
+        let status: serde_json::Value = serde_json::from_str(
+            &build_status_json(&result, "claude-haiku-4-5", &three_calls()).unwrap()).unwrap();
+        assert_eq!(status["contextPct"].as_f64().unwrap().floor(), 18.0);
+        assert_eq!(status["contextWindow"], 200000);
+        assert_eq!(status["cacheReadTokens"], 36531);
+        assert_eq!(status["costUsd"], 0.0557);
     }
 
     #[test]
-    fn it_ignores_what_is_not_a_token_event_and_a_bare_delta_without_usage() {
-        let mut c = TokenCounter::default();
-        assert_eq!(c.on_event(&json!({"type":"content_block_start","content_block":{"type":"text"}})), None);
-        assert_eq!(c.on_event(&json!({"type":"message_stop"})), None);
-        assert_eq!(c.on_event(&json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}})), None);
-        assert_eq!(c.on_event(&json!({})), None);
+    fn the_cache_window_runs_from_the_last_call_and_names_the_lifetime_it_wrote_under() {
+        let mut u = TurnUsage::default();
+        u.on_stream_event(&json!({"type":"message_start"}));
+        u.on_stream_event(&call_end(5, 36531, 119, 78));
+        u.on_assistant_usage(&json!({"cache_creation":{"ephemeral_5m_input_tokens":119,"ephemeral_1h_input_tokens":0}}));
+        let result = json!({"total_cost_usd": 0.1, "modelUsage": {"m": {"contextWindow": 200000}}});
+        let status: serde_json::Value = serde_json::from_str(&build_status_json(&result, "m", &u).unwrap()).unwrap();
+        assert_eq!(status["cacheTtlMs"], 300_000);
+        assert_eq!(status["recacheTokens"], 36655);
+        let anchor = status["cacheAnchorAt"].as_i64().unwrap();
+        assert!((crate::promptcache::now_ms() - anchor).abs() < 60_000, "it is the time the call was sent");
+
+        // A call that wrote nothing names no lifetime: null, and the page keeps the one it had.
+        let mut read_only = TurnUsage::default();
+        read_only.on_stream_event(&json!({"type":"message_start"}));
+        read_only.on_stream_event(&call_end(5, 36650, 0, 78));
+        read_only.on_assistant_usage(&json!({"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}));
+        let status: serde_json::Value = serde_json::from_str(&build_status_json(&result, "m", &read_only).unwrap()).unwrap();
+        assert!(status["cacheTtlMs"].is_null());
+        read_only.on_assistant_usage(&json!({"cache_creation":{"ephemeral_1h_input_tokens":50,"ephemeral_5m_input_tokens":0}}));
+        assert_eq!(read_only.cache_ttl_ms, Some(3_600_000));
     }
 
     #[test]
-    fn a_new_counter_for_the_next_turn_starts_from_nothing() {
-        let mut c = TokenCounter::default();
-        c.on_event(&start(4));
-        c.on_event(&end(100));
-        let mut next = TokenCounter::default();   // what reader_loop does when a turn's result arrives
-        assert_eq!(next.on_event(&start(3)), Some(3));
-    }
-
-    #[test]
-    fn the_real_turn_from_a_live_cli_ends_on_the_cli_total() {
-        // Every event of a real turn (thinking, one Bash call, a one-line answer), reduced to
-        // what the counter reads. The CLI reported 122 output tokens for it.
-        let events: Vec<serde_json::Value> = serde_json::from_str(include_str!("test_data/token_turn.json")).unwrap();
-        let mut c = TokenCounter::default();
-        let mut last = 0;
-        let mut seen = Vec::new();
-        for e in &events {
-            if let Some(n) = c.on_event(e) {
-                assert!(n >= last || e["type"] == "message_delta", "it only falls when an exact figure replaces an estimate");
-                last = n;
-                seen.push(n);
-            }
-        }
-        assert_eq!(last, 122);
-        assert!(seen.windows(2).filter(|w| w[0] != w[1]).count() > 4, "it moves through the turn, not only at its ends: {seen:?}");
+    fn a_turn_with_no_call_that_reported_usage_leaves_the_status_alone() {
+        let result = json!({"total_cost_usd": 0.0, "usage": {"input_tokens":0}});
+        assert!(build_status_json(&result, "m", &TurnUsage::default()).is_none());
     }
 }
 

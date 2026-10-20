@@ -85,6 +85,25 @@ pub(crate) fn note_of_lines(lines: impl Iterator<Item = impl AsRef<str>>) -> Str
     note(&window(record_of(lines).as_ref(), now_ms())).unwrap_or_default()
 }
 
+/// What the transcript says about the cache as of its last reply, for the page to run the
+/// clock on: `{anchorAt, ttlMs, recacheTokens, compacted}`, any of the first three null when
+/// the transcript does not say. None when it has no reply to go by.
+pub(crate) fn record_json_of_lines(lines: impl Iterator<Item = impl AsRef<str>>) -> Option<serde_json::Value> {
+    let record = record_of(lines)?;
+    Some(serde_json::json!({
+        "anchorAt": record.anchor_at,
+        "ttlMs": record.lifetime.map(Lifetime::ms),
+        "recacheTokens": record.recache_tokens,
+        "compacted": record.compacted_at.is_some(),
+    }))
+}
+
+/// How long the cache keeps what a request wrote, going by the `usage` of its reply (the CLI's
+/// own `assistant` event): an hour or five minutes, None when the request wrote nothing.
+pub(crate) fn lifetime_ms_of_usage(usage: &serde_json::Value) -> Option<i64> {
+    serde_json::from_value::<Usage>(usage.clone()).ok()?.named_lifetime().map(Lifetime::ms)
+}
+
 /// The sentence for a window, None when it calls for none.
 fn note(window: &Window) -> Option<String> {
     match window {
@@ -388,7 +407,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
@@ -487,6 +506,28 @@ mod tests {
         assert_eq!(at(5 * 1000 + 250), "2026-07-30T10:00:05.250Z");
         assert_eq!(at(22 * DAY + 15 * HOUR), "2026-08-22T01:00:00.000Z");
         assert_eq!(at(64 * DAY), "2026-10-02T10:00:00.000Z");
+    }
+
+    #[test]
+    fn the_record_is_handed_to_the_page_to_run_the_clock_on() {
+        let lines = [user(0), reply("msg_1", 5_000, HOUR_USAGE)];
+        assert_eq!(
+            record_json_of_lines(lines.iter()),
+            Some(serde_json::json!({ "anchorAt": T0, "ttlMs": HOUR, "recacheTokens": 70649, "compacted": false }))
+        );
+        let compacted = [user(0), reply("msg_1", 5_000, FIVE_MINUTE_USAGE), summary(9_000)];
+        assert_eq!(record_json_of_lines(compacted.iter()).unwrap()["compacted"], true);
+        assert_eq!(record_json_of_lines(std::iter::empty::<String>()), None);
+    }
+
+    #[test]
+    fn the_lifetime_a_reply_names_is_read_from_its_usage() {
+        let five: serde_json::Value = serde_json::from_str(FIVE_MINUTE_USAGE).unwrap();
+        let hour: serde_json::Value = serde_json::from_str(HOUR_USAGE).unwrap();
+        let read_only: serde_json::Value = serde_json::from_str(READ_ONLY_USAGE).unwrap();
+        assert_eq!(lifetime_ms_of_usage(&five), Some(5 * MINUTE));
+        assert_eq!(lifetime_ms_of_usage(&hour), Some(HOUR));
+        assert_eq!(lifetime_ms_of_usage(&read_only), None);
     }
 
     #[test]

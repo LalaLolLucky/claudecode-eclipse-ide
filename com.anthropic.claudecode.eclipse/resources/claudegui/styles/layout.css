@@ -359,6 +359,13 @@ body { min-width: 150px; }
 .ctx-ring-track { fill: none; stroke: var(--border-soft); stroke-width: 2; }
 .ctx-ring-fill { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round;
   stroke-dasharray: 50.27; stroke-dashoffset: 50.27; transition: stroke-dashoffset .2s linear; }
+/* Prompt-cache window (composer bar): the clock, and the minutes left while the cache holds the
+   conversation; the clock alone, in the accent colour, once it has run out. No button around it. */
+.cache-ind { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px; flex-shrink: 0;
+  font-size: 12px; color: var(--fg-dim); cursor: default; }
+.cache-ind svg { display: block; flex-shrink: 0; }
+.cache-ind .cache-left:empty { display: none; }
+.cache-ind.cold { color: var(--accent); }
 .file-chip { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
   font-size: 12px; color: var(--fg-dim); border-radius: 6px; cursor: default; max-width: 220px; }
 .file-chip svg { opacity: .8; flex-shrink: 0; }
