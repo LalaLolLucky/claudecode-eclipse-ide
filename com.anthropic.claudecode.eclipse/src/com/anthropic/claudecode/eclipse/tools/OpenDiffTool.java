@@ -38,6 +38,7 @@ import org.eclipse.ui.IWorkbenchPartReference;
 
 import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.Constants;
+import com.anthropic.claudecode.eclipse.editor.EditorParts;
 import com.anthropic.claudecode.eclipse.editor.UiHelper;
 import com.anthropic.claudecode.eclipse.mcp.McpTool;
 import com.anthropic.claudecode.eclipse.mcp.McpToolResult;
@@ -99,6 +100,7 @@ public class OpenDiffTool implements McpTool {
     @Override
     public McpToolResult execute(JsonObject params) {
         String filePath = EditorUtils.requireString(params, "old_file_path", "filePath");
+        if (EditorParts.isNonDiskPath(filePath)) return McpToolResult.error(EditorParts.notOnDiskMessage(filePath));
         String newContent = EditorUtils.requireString(params, "new_file_contents", "newContent");
         String rawTabLabel = EditorUtils.getString(params, "tab_name", "tabLabel");
         String tabLabel = rawTabLabel != null ? rawTabLabel

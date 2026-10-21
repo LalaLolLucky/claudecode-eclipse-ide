@@ -1,8 +1,10 @@
 package com.anthropic.claudecode.eclipse.editor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Proxy;
 import java.net.URI;
@@ -171,5 +173,45 @@ class EditorPartsTest {
     void anyOtherInputGivesNoPath() {
         assertNull(EditorParts.pathOf(fake(IEditorInput.class, Map.of())));
         assertNull(EditorParts.pathOf((IEditorInput) null));
+    }
+    // ---- non-disk paths ----
+
+    @Test
+    void aUriOfAnotherFileSystemIsNotADiskPath() {
+        assertTrue(EditorParts.isNonDiskPath("semanticfs:/E10_900_user_de/.adt/programs/zdemo.prog"));
+        assertTrue(EditorParts.isNonDiskPath("semanticfs:/E10/%2FDMO%2FCL_FLIGHT.aclass"));
+        assertTrue(EditorParts.isNonDiskPath("http://example.com/a"));
+    }
+
+    @Test
+    void everyKindOfDiskPathIsADiskPath() {
+        for (String path : new String[] { "/home/me/work/A.java", "/home/me/a:b/c.txt", "C:\\ws\\A.java", "D:/ws/a.txt",
+                "\\\\server\\share\\x.txt", "file:/C:/ws/notes.txt", "FILE:///tmp/x", "relative/A.java", "", "9:x" }) {
+            assertFalse(EditorParts.isNonDiskPath(path), path);
+        }
+        assertFalse(EditorParts.isNonDiskPath(null));
+    }
+
+    @Test
+    void aNonDiskPathGivesItsUriAndADiskPathGivesNone() {
+        String path = "semanticfs:/E10_900_user_de/zdemo.prog";
+        assertEquals(URI.create(path), EditorParts.nonDiskUriOf(path));
+        assertNull(EditorParts.nonDiskUriOf("/home/me/A.java"));
+        assertNull(EditorParts.nonDiskUriOf("C:\\ws\\A.java"));
+        assertNull(EditorParts.nonDiskUriOf(null));
+    }
+
+    @Test
+    void aNonDiskPathThatIsNotAValidUriGivesNoUriButIsStillNotADiskPath() {
+        String path = "semanticfs:/E10/a file with spaces.prog";
+        assertTrue(EditorParts.isNonDiskPath(path));
+        assertNull(EditorParts.nonDiskUriOf(path));
+    }
+
+    @Test
+    void theMessageForANonDiskPathNamesThePathAndTheFileSystem() {
+        String message = EditorParts.notOnDiskMessage("semanticfs:/E10/zdemo.prog");
+        assertTrue(message.startsWith("semanticfs:/E10/zdemo.prog is not a file on disk"), message);
+        assertTrue(message.contains("\"semanticfs\" file system"), message);
     }
 }

@@ -1,15 +1,19 @@
 package com.anthropic.claudecode.eclipse.tools;
 
+import java.net.URI;
 import java.nio.file.Path;
 
 import org.eclipse.core.filesystem.EFS;
 import org.eclipse.core.filesystem.IFileStore;
+import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.jface.text.IDocument;
 import org.eclipse.ui.IEditorPart;
 import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.ui.ide.IDE;
 import org.eclipse.ui.texteditor.ITextEditor;
 
+import com.anthropic.claudecode.eclipse.editor.EditorParts;
 import com.anthropic.claudecode.eclipse.editor.UiHelper;
 import com.anthropic.claudecode.eclipse.mcp.McpTool;
 import com.anthropic.claudecode.eclipse.mcp.McpToolResult;
@@ -77,10 +81,20 @@ public class OpenFileTool implements McpTool {
                     return McpToolResult.error("No active workbench page");
                 }
 
-                IFileStore fileStore = EFS.getLocalFileSystem().getStore(Path.of(filePath).toUri());
-                IEditorPart editor = IDE.openEditorOnFileStore(page, fileStore);
+                IEditorPart editor;
+                if (EditorParts.isNonDiskPath(filePath)) {
+                    // A file another file system keeps (ABAP's semanticfs:): named by the URI
+                    // getOpenEditors reports, and opened through the workspace, not the disk.
+                    editor = openByUri(page, filePath);
+                    if (editor == null) return McpToolResult.error("No file found for: " + filePath);
+                } else {
+                    IFileStore fileStore = EFS.getLocalFileSystem().getStore(Path.of(filePath).toUri());
+                    editor = IDE.openEditorOnFileStore(page, fileStore);
+                }
 
-                if (editor instanceof ITextEditor textEditor && line > 0) {
+                // A multi-page editor's text is the page it is showing, not the editor itself.
+                ITextEditor textEditor = EditorParts.textEditorOf(editor);
+                if (textEditor != null && line > 0) {
                     IDocument doc = textEditor.getDocumentProvider().getDocument(textEditor.getEditorInput());
                     if (doc != null) {
                         int lineOffset = doc.getLineOffset(line - 1);
@@ -108,5 +122,19 @@ public class OpenFileTool implements McpTool {
                 return McpToolResult.error("Failed to open file: " + e.getMessage());
             }
         });
+    }
+
+    /**
+     * Opens the file a non-disk URI names: the workspace's own file when it has one (what the
+     * file's own editor, such as ADT's, expects to be given), else whatever the file system
+     * behind the URI has there. Null when there is no such file.
+     */
+    private static IEditorPart openByUri(IWorkbenchPage page, String path) throws Exception {
+        URI uri = EditorParts.nonDiskUriOf(path);
+        if (uri == null) return null;
+        IFile[] files = ResourcesPlugin.getWorkspace().getRoot().findFilesForLocationURI(uri);
+        if (files.length > 0) return IDE.openEditor(page, files[0]);
+        IFileStore store = EFS.getStore(uri);
+        return store.fetchInfo().exists() ? IDE.openEditorOnFileStore(page, store) : null;
     }
 }
