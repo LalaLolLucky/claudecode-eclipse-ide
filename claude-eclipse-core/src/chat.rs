@@ -167,6 +167,11 @@ struct ProcHandle {
     /// the ones it never recorded can be sent to its replacement ([`unrecorded_messages`]).
     #[cfg(target_os = "freebsd")]
     sent: Mutex<Vec<(String, String)>>,
+    /// FreeBSD: set while a Remote Control switch-on written to this process waits for
+    /// its reply. A CLI that froze between turns is then still looked at by
+    /// [`watch_for_hang`], before the page gives up, and its replacement is asked again.
+    #[cfg(target_os = "freebsd")]
+    rc_switching_on: AtomicBool,
     /// FreeBSD: whether Claude's latest reply on this process has ended (`end_turn`),
     /// so a freeze after it costs nothing but the turn's end ([`end_turn_quietly`]).
     #[cfg(target_os = "freebsd")]
@@ -1065,6 +1070,8 @@ impl ChatManager {
         static RC_SEQ: AtomicU64 = AtomicU64::new(1);
         let (_req_id, line) =
             crate::bridge::rc_request_line(RC_SEQ.fetch_add(1, Ordering::Relaxed), enabled);
+        #[cfg(target_os = "freebsd")]
+        p.rc_switching_on.store(enabled, Ordering::Relaxed);
         p.write_line(&line).is_ok()
     }
 
@@ -1948,6 +1955,8 @@ fn spawn_persistent(
         #[cfg(target_os = "freebsd")]
         sent: Mutex::new(Vec::new()),
         #[cfg(target_os = "freebsd")]
+        rc_switching_on: AtomicBool::new(false),
+        #[cfg(target_os = "freebsd")]
         reply_done: AtomicBool::new(false),
         #[cfg(target_os = "freebsd")]
         progressed: AtomicBool::new(false),
@@ -2034,20 +2043,30 @@ fn epoch_secs() -> u64 {
 #[cfg(target_os = "freebsd")]
 fn watch_for_hang(proc: Arc<ProcHandle>, state: Arc<Mutex<ChatState>>) {
     const EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+    // Between turns under Remote Control: a message from the phone or claude.ai can
+    // come at any moment, and a frozen CLI never passes it on, so nothing else would
+    // notice. Looked at more often, and without waiting for a silence first.
+    const RC_IDLE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
     const QUIET_SECS: u64 = 45;
     let pid = proc.child.lock().unwrap().id();
     let mut parked_before = false;
+    let mut every = EVERY;
     loop {
-        std::thread::sleep(EVERY);
+        std::thread::sleep(every);
         if !proc.alive.load(Ordering::Relaxed) {
             return;
         }
         let quiet_for = epoch_secs().saturating_sub(proc.last_output.load(Ordering::Relaxed));
-        let in_turn = {
+        // Read on its own: retire_proc takes this lock before the state's.
+        let rc_on = proc.rc_session.lock().unwrap().is_some();
+        let (in_turn, switching_on, current) = {
             let s = state.lock().unwrap();
-            s.awaiting && s.proc.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, &proc))
+            let current = s.proc.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, &proc));
+            (current && s.awaiting, current && proc.rc_switching_on.load(Ordering::Relaxed), current)
         };
-        if quiet_for < QUIET_SECS || !in_turn {
+        let rc_idle = current && rc_on && !in_turn;
+        every = if rc_idle { RC_IDLE_EVERY } else { EVERY };
+        if !(in_turn || switching_on || rc_idle) || (!rc_idle && quiet_for < QUIET_SECS) {
             parked_before = false;
             continue;
         }
@@ -2055,14 +2074,21 @@ fn watch_for_hang(proc: Arc<ProcHandle>, state: Arc<Mutex<ChatState>>) {
         if parked && parked_before {
             const MAX_FRUITLESS_RESTARTS: u32 = 3;
             let resume = proc.conversation();
+            // Between turns, with Remote Control on or a switch-on waiting, there is no
+            // message to send again and nothing to carry on from: the replacement just
+            // takes the bridge back over, or is asked for Remote Control again
+            // ([`recover_from_hang`]).
+            //
             // Before the CLI has named its session nothing is recorded anywhere, so a
             // new process starts the conversation over with everything that was sent.
-            let unrecorded = if resume.is_empty() {
+            let unrecorded = if !in_turn {
+                Vec::new()
+            } else if resume.is_empty() {
                 proc.sent.lock().unwrap().clone()
             } else {
                 unrecorded_messages(&proc, &resume)
             };
-            if proc.reply_done.load(Ordering::Relaxed) && unrecorded.is_empty() {
+            if in_turn && proc.reply_done.load(Ordering::Relaxed) && unrecorded.is_empty() {
                 // Frozen between finishing its reply and saying the turn was over:
                 // nothing is left to do, so the turn just ends.
                 if crate::is_debug() {
@@ -2078,7 +2104,7 @@ fn watch_for_hang(proc: Arc<ProcHandle>, state: Arc<Mutex<ChatState>>) {
                 }
                 (s.hang_streak, s.cancel.load(Ordering::Relaxed))
             };
-            if cancelled {
+            if in_turn && cancelled {
                 // Stop was pressed, and a frozen CLI never acts on its interrupt: end it
                 // the way Stop would have, without a word.
                 if crate::is_debug() {
@@ -2088,8 +2114,8 @@ fn watch_for_hang(proc: Arc<ProcHandle>, state: Arc<Mutex<ChatState>>) {
                 return;
             }
             // A conversation that was never recorded has nothing to carry on from.
-            let carry_on = if resume.is_empty() { None } else { hang_carry_on_line() };
-            if streak >= MAX_FRUITLESS_RESTARTS || (unrecorded.is_empty() && carry_on.is_none()) {
+            let carry_on = if !in_turn || resume.is_empty() { None } else { hang_carry_on_line() };
+            if streak >= MAX_FRUITLESS_RESTARTS || (in_turn && unrecorded.is_empty() && carry_on.is_none()) {
                 if crate::is_debug() {
                     crate::elog!("[hang-watch] pid {}: frozen, nothing written for {}s ({} restarts in a row \
                                got nowhere); ending it", pid, quiet_for, streak);
@@ -2139,6 +2165,14 @@ fn recover_from_hang(
             state.lock().unwrap().proc = Some(Arc::clone(&p));
             restore_chrome(state, &p, &r.claude_cmd, resume, &r.java_vm, &r.callbacks);
             restore_remote_control(state, &p, resume, &r.java_vm, &r.callbacks);
+            if old.rc_switching_on.load(Ordering::Relaxed) {
+                // The page still waits for the switch-on the frozen one never read; this
+                // one's answer reaches it the same way.
+                static HANG_RC_SEQ: AtomicU64 = AtomicU64::new(1 << 40);
+                let (_, line) = crate::bridge::rc_request_line(HANG_RC_SEQ.fetch_add(1, Ordering::Relaxed), true);
+                p.rc_switching_on.store(true, Ordering::Relaxed);
+                let _ = p.write_line(&line);
+            }
             // A failed write surfaces as the new reader's EOF, like any dead process.
             if unrecorded.is_empty() {
                 if let Some(line) = carry_on {
@@ -2334,6 +2368,8 @@ fn reader_loop(
                     }
                     let reply = crate::bridge::rc_parse_reply(inner);
                     let json = crate::bridge::rc_reply_json(&reply);
+                    #[cfg(target_os = "freebsd")]
+                    proc.rc_switching_on.store(false, Ordering::Relaxed);
                     if crate::is_debug() {
                         crate::elog!("[remote-control] {}", json);
                     }
