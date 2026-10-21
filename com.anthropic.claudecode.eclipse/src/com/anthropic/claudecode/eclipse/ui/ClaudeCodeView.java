@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.eclipse.jface.action.Action;
 import org.eclipse.jface.action.IToolBarManager;
+import org.eclipse.jface.action.Separator;
 import org.eclipse.jface.util.IPropertyChangeListener;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.StyledText;
@@ -62,6 +63,8 @@ public class ClaudeCodeView extends ViewPart {
     private Label bridgeLabel;
     private Button launchButton;
     private Button serverToggleButton;
+    /** Checked: a new log line leaves the scroll position where it is ({@link #appendLog}). */
+    private Action scrollLockAction;
     private ScheduledExecutorService statusPoller;
     private volatile boolean launching = false;
 
@@ -267,7 +270,8 @@ public class ClaudeCodeView extends ViewPart {
     /**
      * Copy Logs and Clear Logs, in the view's toolbar where the Claude Terminal and the Claude
      * Code view keep their session buttons, with the icons the Terminal's own Copy and Clear
-     * use. Both act on the whole log as the view shows it.
+     * use. Both act on the whole log as the view shows it. Scroll Lock follows them past a
+     * separator, as in those views, and starts from the same preference.
      */
     private void createToolBar() {
         IToolBarManager toolBar = getViewSite().getActionBars().getToolBarManager();
@@ -286,6 +290,17 @@ public class ClaudeCodeView extends ViewPart {
         clearLogs.setImageDescriptor(Activator.getImageDescriptor(Constants.IMG_CLEAR_REFRESH));
         toolBar.add(copyLogs);
         toolBar.add(clearLogs);
+        toolBar.add(new Separator());
+
+        // Read by appendLog on each line, so nothing needs doing when it is toggled.
+        scrollLockAction = new Action("Scroll Lock", Action.AS_CHECK_BOX) {};
+        scrollLockAction.setToolTipText("Scroll Lock");
+        scrollLockAction.setImageDescriptor(Activator.getImageDescriptor(Constants.IMG_SCROLL_LOCK));
+        // A configured default for a newly created view instance (Preferences > Claude Code),
+        // not a remembered last state, as in ClaudeGuiView and ClaudeCliView.
+        scrollLockAction.setChecked(Activator.getDefault().getPreferenceStore()
+                .getBoolean(Constants.PREF_SCROLL_LOCK_DEFAULT));
+        toolBar.add(scrollLockAction);
     }
 
     /** Puts the whole log on the clipboard, as text. An empty log puts nothing there. */
@@ -587,7 +602,8 @@ public class ClaudeCodeView extends ViewPart {
     private void appendLog(String text) {
         if (logArea != null && !logArea.isDisposed()) {
             logArea.append(text);
-            logArea.setTopIndex(logArea.getLineCount() - 1);
+            if (scrollLockAction == null || !scrollLockAction.isChecked())
+                logArea.setTopIndex(logArea.getLineCount() - 1);
         }
     }
 

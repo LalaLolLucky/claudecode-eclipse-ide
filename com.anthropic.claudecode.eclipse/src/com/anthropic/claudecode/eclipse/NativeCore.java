@@ -1189,6 +1189,18 @@ public final class NativeCore {
     public static native String freebsdHangCarryOn();
 
     /**
+     * Windows npm installs only: clears the folders an earlier update left in npm's
+     * {@code node_modules\@anthropic-ai}, which make the next {@code claude update} fail
+     * once. {@code claudeCmd} is the resolved {@code claude.cmd}. Deletes each one, or
+     * renames it aside when a running chat still holds it. A native library from before
+     * this entry point throws {@link UnsatisfiedLinkError}.
+     *
+     * @return {@code {"npm":bool,"removed":[..],"setAside":[..],"kept":[..]}};
+     *         {@code {"npm":false}} on other platforms
+     */
+    public static native String npmClearUpdateLeftovers(String claudeCmd);
+
+    /**
      * Linux only: true when there is nothing to record from — ALSA finds no sound card,
      * and no default capture device (a sound server's, say) opens without one. Always
      * false on other platforms.

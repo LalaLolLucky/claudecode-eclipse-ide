@@ -15,6 +15,7 @@ mod mcp;
 mod mcp_servers;
 mod plugins;
 mod mentions;
+mod npm_update;
 mod promptcache;
 mod server;
 mod session;
@@ -2248,6 +2249,26 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_freebsdH
         jout(&mut env, prompt, "")
     }));
     finish_export(&mut env, "freebsdHangCarryOn", result, std::ptr::null_mut())
+}
+
+// ===========================================================================
+// CLI update JNI entry point
+// ===========================================================================
+
+/// Windows npm installs only: clears the folders an earlier update left in npm's
+/// `@anthropic-ai` folder, so the next `claude update` can move the package aside.
+/// A JSON report; `{"npm":false}` elsewhere. See `npm_update`.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_npmClearUpdateLeftovers(
+    mut env: JNIEnv,
+    _class: JClass,
+    claude_cmd: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let claude_cmd = jstr(&mut env, &claude_cmd);
+        jout(&mut env, npm_update::clear_leftovers_json(&claude_cmd), r#"{"npm":false}"#)
+    }));
+    finish_export(&mut env, "npmClearUpdateLeftovers", result, std::ptr::null_mut())
 }
 
 // ---------------------------------------------------------------------------

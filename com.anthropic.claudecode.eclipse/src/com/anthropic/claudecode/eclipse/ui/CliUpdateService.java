@@ -7,13 +7,17 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.anthropic.claudecode.eclipse.Activator;
+import com.anthropic.claudecode.eclipse.NativeCore;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 /**
  * Runs the CLI's own updater ({@code claude update}) on the user's behalf.
@@ -38,6 +42,11 @@ import com.google.gson.JsonObject;
  * at {@code /usr/local/bin/claude} that sets {@code DISABLE_UPDATES=1}. There
  * {@code claude update} prints "Updates are disabled by your administrator" and
  * exits 0, so the only real updater is {@code sudo claude-freebsd --update}.
+ *
+ * <p>On Windows, an npm install first gets the folder an earlier update left behind
+ * cleared, and a failed run is retried once ({@link #updateWindows}). npm cannot delete
+ * that folder while a chat tab runs the old version, and its presence made every first
+ * attempt fail. Other platforms delete open files, so npm never leaves it there.
  *
  * <p>An exit status of 0 is not trusted on its own: the installed version is read
  * before and after, and a run that leaves it unchanged is reported as a failure
@@ -98,6 +107,8 @@ public final class CliUpdateService {
             if (managed != null) o.addProperty("managed", managed);
             o.addProperty("version", version);
             o.addProperty("hint", hint);
+            // The banner's one line; output stays whole for the "is managed by" check.
+            if (!ok) o.addProperty("reason", failureLine(output));
             return o.toString();
         }
     }
@@ -149,6 +160,94 @@ public final class CliUpdateService {
         return null;
     }
 
+    /** A line saying what went wrong, in the words the CLI and npm use. */
+    private static final Pattern FAILURE = Pattern.compile(
+            "(?i)\\b(?:fail(?:ed|ure)?|error|cannot|can't|could not|unable|denied|not permitted|EBUSY|EPERM|EACCES)\\b");
+
+    /**
+     * The line of {@code output} that says why an update failed: the first one that reads
+     * as a failure, else the last one. Never simply the first: {@code claude update} starts
+     * by printing the version it is updating from, so the banner used to say "Update failed
+     * — Current version: 2.1.301" whatever the reason was.
+     */
+    static String failureLine(String output) {
+        if (output == null) return "";
+        String last = "";
+        for (String line : ANSI.matcher(output).replaceAll("").split("\\R")) {
+            String t = line.trim();
+            if (t.isEmpty()) continue;
+            if (FAILURE.matcher(t).find()) return t;
+            last = t;
+        }
+        return last;
+    }
+
+    /** Whether a {@link NativeCore#npmClearUpdateLeftovers} report names an npm install. */
+    static boolean isNpmInstall(String report) {
+        try {
+            JsonElement root = JsonParser.parseString(report);
+            if (!root.isJsonObject()) return false;
+            JsonElement npm = root.getAsJsonObject().get("npm");
+            return npm != null && npm.isJsonPrimitive() && npm.getAsJsonPrimitive().isBoolean()
+                    && npm.getAsBoolean();
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * {@code claude update} on Windows. On an npm install, npm cannot delete the folder it
+     * moved the old version into while a chat tab still runs that version, and the next
+     * update's first attempt fails on that folder (see {@link NativeCore#npmClearUpdateLeftovers}).
+     * So the folder is cleared first. If the update still fails, it is cleared again and run
+     * once more, which is what clicking Retry used to do. There is no retry when the CLI no
+     * longer starts: a failed install can leave npm's placeholder as {@code claude.exe}, and
+     * {@code claude update} would then not run at all.
+     *
+     * @param clearLeftovers clears the folders; true when the install is npm's
+     * @param update         one run of {@code claude update}
+     * @param cliStillRuns   whether {@code claude --version} still answers
+     */
+    static Result updateWindows(BooleanSupplier clearLeftovers, Supplier<Result> update,
+            BooleanSupplier cliStillRuns) {
+        boolean npm = clearLeftovers.getAsBoolean();
+        Result r = update.get();
+        if (r.ok || !npm || r.output.contains("is managed by") || !cliStillRuns.getAsBoolean()) return r;
+        clearLeftovers.getAsBoolean();
+        return update.get();
+    }
+
+    /** Clears npm's leftovers for {@code cmd}; true when it is an npm install. */
+    private static boolean clearNpmLeftovers(String cmd) {
+        try {
+            String report = NativeCore.npmClearUpdateLeftovers(cmd);
+            ClaudeCodeView.debug("[cli] npm update leftovers: " + report);
+            return isNpmInstall(report);
+        } catch (UnsatisfiedLinkError e) {
+            return false;   // a native library from before the clearing: update as before
+        } catch (Throwable t) {
+            ClaudeCodeView.debug("[cli] clearing npm update leftovers failed: " + t);
+            return false;
+        }
+    }
+
+    /** {@code claude update}, the way each platform needs it. */
+    private static Result runUpdate(String cmd) {
+        if (isFreeBSDManaged(cmd)) return updateFreeBSD();
+        List<String> argv = List.of(cmd, "update");
+        if (Activator.isWindows()) {
+            return updateWindows(() -> clearNpmLeftovers(cmd), () -> {
+                Result r = run(argv, TIMEOUT_MINUTES);
+                ClaudeCodeView.debug("[cli] claude update " + (r.ok ? "exited 0" : "failed: " + failureLine(r.output)));
+                return r;
+            }, () -> !CliVersionService.installedVersion(cmd).isEmpty());
+        }
+        if (Activator.isMacOS()) return run(argv, TIMEOUT_MINUTES);
+        if (Activator.isLinux()) return run(argv, TIMEOUT_MINUTES);
+        if (Activator.isFreeBSD()) return run(argv, TIMEOUT_MINUTES);   // not a claude-freebsd install
+        return run(argv, TIMEOUT_MINUTES);
+    }
+
     /**
      * Runs the update on a background thread and reports the outcome. On success
      * the cached version info is invalidated so the next check reflects the new
@@ -164,7 +263,7 @@ public final class CliUpdateService {
         final String cmd = CliVersionService.resolveOnPath(raw);
         runAsync("claude-cli-update", () -> {
             String before = CliVersionService.installedVersion(cmd);
-            Result r = isFreeBSDManaged(cmd) ? updateFreeBSD() : run(List.of(cmd, "update"), TIMEOUT_MINUTES);
+            Result r = runUpdate(cmd);
             Managed m = managedCommand(r.output);
             pendingManaged = m;
             if (m != null) return new Result(r.ok, r.output, m.shown, "", r.hint);
@@ -226,7 +325,7 @@ public final class CliUpdateService {
             return new Result(true, r.output, after, r.hint);
         }
         if (!CliVersionService.isOlder(before, after)) {
-            String said = firstLine(r.output);
+            String said = failureLine(r.output);
             String msg = "still on " + after + (said.isEmpty() ? "" : " (" + said + ")");
             return new Result(false, msg, after, r.hint);
         }
@@ -336,13 +435,5 @@ public final class CliUpdateService {
         } catch (Throwable ex) {
             return new Result(false, String.valueOf(ex.getMessage()));
         }
-    }
-
-    private static String firstLine(String s) {
-        if (s == null) return "";
-        for (String line : s.split("\\R")) {
-            if (!line.isBlank()) return line.trim();
-        }
-        return "";
     }
 }

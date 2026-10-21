@@ -154,7 +154,10 @@ window.onCliUpdateDone = function (json) {
   updateRunState = 'failed';
   if (btn) { btn.classList.remove('busy'); btn.textContent = 'Retry'; }
   if (txt) {
-    const detail = (res && res.output) ? (' — ' + String(res.output).split('\n')[0]) : '';
+    // res.reason is the line saying what failed (CliUpdateService.failureLine); the first
+    // line of `claude update`'s output is only the version it started from.
+    const why = (res && (res.reason || (res.output && String(res.output).split('\n')[0]))) || '';
+    const detail = why ? (' — ' + why) : '';
     const hint = (res && res.hint) ? res.hint : 'claude update';
     txt.textContent = 'Update failed' + detail + '. You can also run "' + hint + '" in a terminal.';
   }
