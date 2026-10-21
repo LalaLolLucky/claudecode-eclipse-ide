@@ -63,6 +63,14 @@ function openAdvisorCard(echoText) {
   scope.textContent = 'Advisor is a global setting — it applies to every conversation and workspace '
     + 'on this machine and is shared with the Claude Terminal, not just this session.';
   card.appendChild(scope);
+  // The organization's managed settings set the advisor, and win over the user's file: the
+  // choices are shown, and cannot be made.
+  const locked = managedSetting('advisorModel', owner);
+  if (locked) {
+    const lock = document.createElement('div'); lock.className = 'adv-note adv-scope';
+    lock.textContent = 'The advisor is ' + MANAGED_NOTE.charAt(0).toLowerCase() + MANAGED_NOTE.slice(1) + ', so it cannot be changed here.';
+    card.appendChild(lock);
+  }
 
   let curIdx = OPTS.findIndex(([, v]) => v === advisorChoice);
   if (curIdx < 0) curIdx = OPTS.length - 1;   // unknown/absent value → No advisor
@@ -82,7 +90,7 @@ function openAdvisorCard(echoText) {
   card._choose = (i) => confirm(i);
   card._dismiss = cancel;
   function confirm(i) {
-    if (resolved) return;
+    if (resolved || locked) return;
     const label = OPTS[i][0], value = OPTS[i][1];
     if (window._advisorSet) window._advisorSet(value);         // ~/.claude/settings.json
     try { localStorage.setItem('claude-advisor', value); } catch (e) {}
@@ -119,6 +127,7 @@ function openAdvisorCard(echoText) {
       opt.appendChild(chk);
     }
     opt.onclick = () => confirm(i);
+    if (locked) opt.style.opacity = '.6';
     opt.onmouseenter = () => { sel = i; paint(); };
     card.appendChild(opt);
   });

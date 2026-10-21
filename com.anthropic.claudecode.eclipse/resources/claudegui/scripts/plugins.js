@@ -421,14 +421,19 @@ function plInstalledRow(p, st) {
     acts.appendChild(plButton('Uninstall', () => plUninstall(p), { danger: true }));
     acts.appendChild(plButton('Cancel', () => { st.confirm = null; plFillList(); }));
   } else {
+    // The organization's own plugins: it turns them on and off, updates and removes them,
+    // and the CLI refuses the scope to anyone else.
+    const managed = p.scope === 'managed';
+    const byOrg = 'Your organization manages this plugin';
     const sw = plEl('button', 'pl-switch' + (p.enabled ? ' on' : '')); sw.type = 'button';
-    sw.title = p.enabled ? 'Disable' : 'Enable'; sw.disabled = any; sw.onclick = () => plToggle(p);
+    sw.title = managed ? byOrg : (p.enabled ? 'Disable' : 'Enable'); sw.disabled = any || managed; sw.onclick = () => plToggle(p);
     sw.setAttribute('role', 'switch'); sw.setAttribute('aria-checked', String(p.enabled));
     sw.appendChild(plEl('span', 'pl-knob'));
     acts.appendChild(sw);
-    acts.appendChild(plIconButton(ICONS.GEAR, 'Options', () => plConfigure(p.id), any));
-    acts.appendChild(plIconButton(PL_REFRESH, 'Update', () => plUpdate(p), any));
-    acts.appendChild(plIconButton(ICONS.TRASH, 'Uninstall', () => { st.confirm = { id: p.id }; plFillList(); }, any));
+    acts.appendChild(plIconButton(ICONS.GEAR, managed ? byOrg : 'Options', () => plConfigure(p.id), any || managed));
+    acts.appendChild(plIconButton(PL_REFRESH, managed ? byOrg : 'Update', () => plUpdate(p), any || managed));
+    acts.appendChild(plIconButton(ICONS.TRASH, managed ? 'Your organization manages it. Ask your admin to remove it.' : 'Uninstall',
+      () => { st.confirm = { id: p.id }; plFillList(); }, any || managed));
   }
   row.appendChild(acts);
   if (own) row.classList.add('busy');

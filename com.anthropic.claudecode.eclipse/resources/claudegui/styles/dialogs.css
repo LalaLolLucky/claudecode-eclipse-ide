@@ -193,6 +193,9 @@
 #cli-win .cw-copy:hover { background: var(--bg-hover); color: var(--fg); }
 #cli-win .cw-a { color: var(--link); cursor: pointer; }
 #cli-win .cw-a:hover { text-decoration: underline; }
+/* A caution, between .cw-msg's error and .cw-note's aside: the menu works, with a catch. */
+#cli-win .cw-warn { border: 1px solid var(--warn-border); border-radius: 6px; padding: 7px 10px; font-size: 12.5px;
+  line-height: 1.45; margin-bottom: 10px; color: var(--warn-fg); background: var(--warn-bg); word-break: break-word; }
 /* Good news, where .cw-msg is bad. */
 #cli-win .cw-ok { border: 1px solid var(--green); border-radius: 6px; padding: 7px 10px; font-size: 12.5px;
   line-height: 1.45; margin-bottom: 10px; color: var(--green); }

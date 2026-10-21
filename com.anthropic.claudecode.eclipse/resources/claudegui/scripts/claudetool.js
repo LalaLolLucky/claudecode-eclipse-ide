@@ -23,7 +23,7 @@
     const ids = [];
     document.querySelectorAll('#modes-menu .item[data-mode]').forEach(el => {
       const id = el.getAttribute('data-mode');
-      if (id !== 'bypassPermissions' || bypassAllowed()) ids.push(id);
+      if ((id !== 'bypassPermissions' || bypassAllowed()) && !modeBlockedBy(id)) ids.push(id);
     });
     return ids;
   }
@@ -127,6 +127,9 @@
       const mode = String(req.mode);
       if (mode === 'bypassPermissions' && !bypassAllowed()) {
         refuse("Bypass permissions is turned off in this Eclipse's preferences.");
+      }
+      if (modeBlockedBy(mode, t)) {
+        refuse("The '" + mode + "' mode is " + modeBlockedText(modeBlockedBy(mode, t)).toLowerCase() + '.');
       }
       if (modeIds().indexOf(mode) < 0) {
         refuse("Unknown mode '" + req.mode + "'. Use one of: " + modeIds().join(', ') + '.');
@@ -256,6 +259,7 @@
      same request /remote-control makes, for a tab that need not be in front. */
   function remoteControlOn(t) {
     if (t.remoteControlUrl || t.rcConnecting) return;
+    if (remoteControlLock(t)) refuse(remoteControlLock(t));
     beginConnecting(t);
     rcSend(t, true);
   }

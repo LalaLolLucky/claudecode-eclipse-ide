@@ -127,8 +127,9 @@ const EXIT_GRACE: Duration = Duration::from_secs(5);
 
 /// What of the CLI's `initialize` answer is handed on: what the menus are drawn
 /// from. Not `account` (who is signed in) and not `pid`. The last is not the CLI's
-/// own key: it is the one setting kept of its settings answer ([`flagged_message_switch`]).
-const KEPT_KEYS: [&str; 8] = [
+/// own keys: they are what is kept of its settings answer ([`flagged_message_switch`],
+/// [`blocked_modes`], [`settings_policy`]).
+const KEPT_KEYS: [&str; 13] = [
     "commands",
     "models",
     "output_style",
@@ -137,6 +138,11 @@ const KEPT_KEYS: [&str; 8] = [
     "fast_mode_disabled_reason",
     "feedback_mode",
     "switch_models_on_flag",
+    "blocked_modes",
+    "settings_policy",
+    "unavailable_models",
+    "remote_control_available",
+    "product_feedback_disabled",
 ];
 
 /// The control-request line for one of the page's requests to a live process, or
@@ -261,6 +267,60 @@ fn flagged_message_switch(settings: &serde_json::Value) -> serde_json::Value {
         Some(on) => serde_json::Value::Bool(on),
         None => serde_json::Value::Null,
     }
+}
+
+/// The permission modes the settings in effect turn off, each with whose doing it is:
+/// `{"auto":"managed","bypassPermissions":"settings"}`, a mode left out when nothing
+/// bars it. The same two switches the VS Code extension reads (`permissions.
+/// disableBypassPermissionsMode`, and `disableAutoMode` at either level), and the
+/// effective settings decide; the managed layer is only asked who set it, for the words.
+fn blocked_modes(settings: &serde_json::Value) -> serde_json::Value {
+    let off = |value: &serde_json::Value| value.as_str() == Some("disable");
+    let barred = |layer: &serde_json::Value, mode: &str| match mode {
+        "bypassPermissions" => off(&layer["permissions"]["disableBypassPermissionsMode"]),
+        _ => off(&layer["permissions"]["disableAutoMode"]) || off(&layer["disableAutoMode"]),
+    };
+    let managed = settings["sources"]
+        .as_array()
+        .and_then(|all| all.iter().find(|s| s["source"].as_str() == Some("policySettings")))
+        .map(|s| &s["settings"]);
+    let mut out = serde_json::Map::new();
+    for mode in ["auto", "bypassPermissions"] {
+        if barred(&settings["effective"], mode) {
+            let by = if managed.is_some_and(|layer| barred(layer, mode)) { "managed" } else { "settings" };
+            out.insert(mode.into(), by.into());
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+/// The settings a menu of ours writes or reads in the user's own files, which the
+/// organization's managed settings may set as well and then win. When the managed layer
+/// sets one, the menu shows it locked.
+const MANAGED_WATCHED: [&str; 3] = ["switchModelsOnFlag", "outputStyle", "advisorModel"];
+
+/// What the settings in effect say that locks or limits a menu, as derived facts and
+/// never the settings themselves: `{"managed":[…],"remote_control_lock":reason|null,
+/// "remote_control_off":bool,"max_effort":level|null}`. `managed` is the
+/// [`MANAGED_WATCHED`] keys the managed layer sets; the lock is the reason the CLI gives
+/// for Remote Control being locked by the organization; `max_effort` is `maxEffortLevel`,
+/// which the CLI clamps every effort to.
+fn settings_policy(settings: &serde_json::Value) -> serde_json::Value {
+    let managed_layer = settings["sources"]
+        .as_array()
+        .and_then(|all| all.iter().find(|s| s["source"].as_str() == Some("policySettings")))
+        .map(|s| &s["settings"]);
+    let managed: Vec<&str> = MANAGED_WATCHED
+        .into_iter()
+        .filter(|key| managed_layer.is_some_and(|layer| !layer[*key].is_null()))
+        .collect();
+    let text = |value: &serde_json::Value| value.as_str().filter(|t| !t.is_empty()).map(str::to_owned);
+    serde_json::json!({
+        "managed": managed,
+        "remote_control_lock": text(&settings["remote_control_policy_lock_reason"]),
+        "remote_control_off": settings["effective"]["disableRemoteControl"].as_bool() == Some(true),
+        "max_effort": text(&settings["effective"]["maxEffortLevel"]),
+    })
 }
 
 /// What [`fetch_commands`] returns: `{"ok":true}` with the [`KEPT_KEYS`] of the
@@ -442,6 +502,8 @@ fn ask(child: &mut Child) -> Result<serde_json::Value, String> {
         if let Ok(Ok(settings)) = answer_to(&rx, Instant::now() + SETTINGS_TIMEOUT, SETTINGS_REQUEST_ID) {
             if let Some(kept) = answer.as_object_mut() {
                 kept.insert("switch_models_on_flag".into(), flagged_message_switch(&settings));
+                kept.insert("blocked_modes".into(), blocked_modes(&settings));
+                kept.insert("settings_policy".into(), settings_policy(&settings));
             }
         }
     }
@@ -492,15 +554,31 @@ fn signed_in(printed: &str) -> Option<bool> {
     said["loggedIn"].as_bool()
 }
 
+/// What of the printed status is kept besides who is signed in: the login method the
+/// organization forces, when it is one the sign-in screen knows, and whether the login
+/// is a cloud provider's (Bedrock, Vertex, Foundry or a gateway), which has no sign-in
+/// here at all, with which provider it is when it is one the Account window names.
+fn login_policy(printed: &str) -> serde_json::Value {
+    let said: serde_json::Value = serde_json::from_str(printed.trim()).unwrap_or_default();
+    let forced = said["forcedLoginMethod"].as_str().filter(|m| ["claudeai", "console", "gateway"].contains(m));
+    let third_party = said["authMethod"].as_str() == Some("third_party");
+    let provider = said["apiProvider"].as_str().filter(|p| third_party && ["bedrock", "vertex", "foundry", "gateway"].contains(p));
+    serde_json::json!({ "forcedLoginMethod": forced, "thirdParty": third_party, "apiProvider": provider })
+}
+
 /// What the status errand hands on in place of what the CLI printed: `{"loggedIn":bool}`
-/// as the errand's output, whether the CLI left with success or not (it need not when
-/// nobody is signed in), or the failure as it was when it does not say.
+/// (and [`login_policy`]) as the errand's output, whether the CLI left with success or not
+/// (it need not when nobody is signed in), or the failure as it was when it does not say.
 fn auth_status(result: Result<String, String>) -> Result<String, String> {
     let printed = match &result {
         Ok(text) | Err(text) => text,
     };
     match signed_in(printed) {
-        Some(yes) => Ok(serde_json::json!({ "loggedIn": yes }).to_string()),
+        Some(yes) => {
+            let mut kept = login_policy(printed);
+            kept["loggedIn"] = yes.into();
+            Ok(kept.to_string())
+        }
         None => Err(result.err().unwrap_or_else(|| "Claude Code did not say whether anyone is signed in.".into())),
     }
 }
@@ -889,6 +967,40 @@ mod tests {
     }
 
     #[test]
+    fn the_modes_the_settings_turn_off_are_named_with_whose_doing_it_is() {
+        let managed = |settings: serde_json::Value| json!({"source":"policySettings","settings":settings});
+        let user = |settings: serde_json::Value| json!({"source":"userSettings","settings":settings});
+        // A managed file bars both: the effective settings say so, and so does the managed layer.
+        let both = json!({"disableAutoMode":"disable","permissions":{"disableBypassPermissionsMode":"disable"}});
+        assert_eq!(
+            blocked_modes(&json!({"effective":both,"sources":[user(json!({})), managed(both.clone())]})),
+            json!({"auto":"managed","bypassPermissions":"managed"})
+        );
+        // The same switches in the user's own file are theirs, not the organization's;
+        // Auto is barred at either level of the settings.
+        let mine = json!({"permissions":{"disableAutoMode":"disable","disableBypassPermissionsMode":"disable"}});
+        assert_eq!(
+            blocked_modes(&json!({"effective":mine,"sources":[user(mine.clone())]})),
+            json!({"auto":"settings","bypassPermissions":"settings"})
+        );
+        // One of the two, and a managed layer that says nothing of it.
+        let auto_only = json!({"disableAutoMode":"disable"});
+        assert_eq!(
+            blocked_modes(&json!({"effective":auto_only,"sources":[user(auto_only.clone()), managed(json!({"model":"opus"}))]})),
+            json!({"auto":"settings"})
+        );
+        // Anything but "disable" leaves a mode alone, and an answer that does not say bars none.
+        for silent in [
+            json!({"effective":{"permissions":{"disableBypassPermissionsMode":"allow"},"disableAutoMode":true}}),
+            json!({"effective":{"model":"opus"},"sources":[]}),
+            json!({}),
+            json!(null),
+        ] {
+            assert_eq!(blocked_modes(&silent), json!({}), "{silent}");
+        }
+    }
+
+    #[test]
     fn an_answer_that_is_an_error_carries_what_the_cli_said() {
         let refused = r#"{"type":"control_response","response":{"subtype":"error","request_id":"eclipse-once-init","error":"Not logged in"}}"#;
         assert_eq!(init_reply(refused), Some(Err("Not logged in".to_string())));
@@ -907,6 +1019,11 @@ mod tests {
             "fast_mode_disabled_reason": null,
             "feedback_mode": {"kind":"bundle"},
             "switch_models_on_flag": false,
+            "blocked_modes": {"auto":"managed"},
+            "settings_policy": {"managed":["advisorModel"]},
+            "unavailable_models": [{"value":"opus","displayName":"Opus"}],
+            "remote_control_available": false,
+            "product_feedback_disabled": true,
             "account": {"email":"someone@example.com"},
             "pid": 4242,
             "agents": []
@@ -922,7 +1039,12 @@ mod tests {
                 "fast_mode_state": "off",
                 "fast_mode_disabled_reason": null,
                 "feedback_mode": {"kind":"bundle"},
-                "switch_models_on_flag": false
+                "switch_models_on_flag": false,
+                "blocked_modes": {"auto":"managed"},
+                "settings_policy": {"managed":["advisorModel"]},
+                "unavailable_models": [{"value":"opus","displayName":"Opus"}],
+                "remote_control_available": false,
+                "product_feedback_disabled": true
             })
         );
     }
@@ -971,6 +1093,7 @@ mod tests {
         assert!(answer.get("account").is_none() && answer.get("pid").is_none(), "more than the menus need");
         let switch = &answer["switch_models_on_flag"];
         assert!(answer.get("switch_models_on_flag").is_some() && (switch.is_null() || switch.is_boolean()), "{switch}");
+        assert!(answer["blocked_modes"].is_object(), "{}", answer["blocked_modes"]);
         assert!(took < FETCH_TIMEOUT, "took {took:?}");
         assert!(!ran.exists(), "the folder's SessionStart hook ran");
         eprintln!("{} commands in {took:?}", commands.len());
@@ -1011,11 +1134,52 @@ mod tests {
   "email": "someone@example.com",
   "orgName": "Example"
 }"#;
+        let kept = |result: Result<String, String>| parsed(&auth_status(result).unwrap());
         assert_eq!(signed_in(printed), Some(true));
-        assert_eq!(auth_status(Ok(printed.into())), Ok(r#"{"loggedIn":true}"#.to_string()));
+        assert_eq!(kept(Ok(printed.into())), json!({"loggedIn":true,"forcedLoginMethod":null,"thirdParty":false,"apiProvider":null}));
         // Signed out, the CLI may leave with a failure and the same kind of answer.
-        assert_eq!(auth_status(Err(r#"{"loggedIn":false,"authMethod":"none"}"#.into())), Ok(r#"{"loggedIn":false}"#.to_string()));
-        assert_eq!(auth_status(Ok(r#"{"loggedIn":false}"#.into())), Ok(r#"{"loggedIn":false}"#.to_string()));
+        assert_eq!(kept(Err(r#"{"loggedIn":false,"authMethod":"none"}"#.into())), json!({"loggedIn":false,"forcedLoginMethod":null,"thirdParty":false,"apiProvider":null}));
+        assert_eq!(kept(Ok(r#"{"loggedIn":false}"#.into())), json!({"loggedIn":false,"forcedLoginMethod":null,"thirdParty":false,"apiProvider":null}));
+    }
+
+    #[test]
+    fn the_login_the_organization_forces_and_a_cloud_providers_login_are_kept() {
+        let kept = |printed: &str| parsed(&auth_status(Ok(printed.into())).unwrap());
+        assert_eq!(kept(r#"{"loggedIn":false,"forcedLoginMethod":"console"}"#)["forcedLoginMethod"], json!("console"));
+        assert_eq!(kept(r#"{"loggedIn":false,"forcedLoginMethod":"gateway"}"#)["forcedLoginMethod"], json!("gateway"));
+        // A method the sign-in screen has no button for is not passed on.
+        assert_eq!(kept(r#"{"loggedIn":false,"forcedLoginMethod":"sso"}"#)["forcedLoginMethod"], json!(null));
+        let vertex = kept(r#"{"loggedIn":true,"authMethod":"third_party","apiProvider":"vertex","email":"x@example.com"}"#);
+        assert_eq!(vertex, json!({"loggedIn":true,"forcedLoginMethod":null,"thirdParty":true,"apiProvider":"vertex"}));
+        // A provider the window has no name for is not passed on, and neither is one on a login that is not a cloud's.
+        assert_eq!(kept(r#"{"loggedIn":true,"authMethod":"third_party","apiProvider":"acme"}"#)["apiProvider"], json!(null));
+        assert_eq!(kept(r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"vertex"}"#)["apiProvider"], json!(null));
+    }
+
+    #[test]
+    fn what_the_settings_say_that_locks_a_menu_is_kept_as_facts_and_never_as_settings() {
+        let managed = json!({"source":"policySettings","settings":{
+            "switchModelsOnFlag":false,"advisorModel":"opus","env":{"SECRET":"x"},"model":"opus"}});
+        let user = json!({"source":"userSettings","settings":{"outputStyle":"Concise"}});
+        let policy = settings_policy(&json!({
+            "effective":{"disableRemoteControl":true,"maxEffortLevel":"high","env":{"SECRET":"x"}},
+            "sources":[user, managed],
+            "remote_control_policy_lock_reason":"Remote Control is turned off by your organization."
+        }));
+        // Only the watched keys the managed layer sets: not the user's outputStyle, not env or model.
+        assert_eq!(policy["managed"], json!(["switchModelsOnFlag", "advisorModel"]));
+        assert_eq!(policy["remote_control_lock"], json!("Remote Control is turned off by your organization."));
+        assert_eq!(policy["remote_control_off"], json!(true));
+        assert_eq!(policy["max_effort"], json!("high"));
+        assert!(!policy.to_string().contains("SECRET"));
+        // Nothing said, nothing locked.
+        for silent in [json!({}), json!(null), json!({"effective":{"maxEffortLevel":""},"remote_control_policy_lock_reason":""})] {
+            assert_eq!(
+                settings_policy(&silent),
+                json!({"managed":[],"remote_control_lock":null,"remote_control_off":false,"max_effort":null}),
+                "{silent}"
+            );
+        }
     }
 
     #[test]
@@ -1033,7 +1197,7 @@ mod tests {
         assert!(!status.reads_input && !status.in_folder);
     }
 
-    /// The real thing, reading only: the answer is the one field and nothing of who.
+    /// The real thing, reading only: the answer is whether, and the login policy, and nothing of who.
     #[test]
     #[ignore = "starts the installed Claude Code CLI"]
     fn the_installed_cli_says_whether_anyone_is_signed_in_and_no_more() {
@@ -1041,7 +1205,9 @@ mod tests {
         assert_eq!(answer["ok"], json!(true), "{answer}");
         let said = parsed(answer["output"].as_str().unwrap_or(""));
         assert!(said["loggedIn"].is_boolean(), "{said}");
-        assert_eq!(said.as_object().map(|o| o.len()), Some(1), "more than whether: {said}");
+        let mut keys: Vec<&String> = said.as_object().expect("an object").keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["apiProvider", "forcedLoginMethod", "loggedIn", "thirdParty"], "more than the login: {said}");
     }
 
     #[test]

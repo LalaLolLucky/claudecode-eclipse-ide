@@ -25,6 +25,18 @@ function offersFor(t) {
   }
   return o || null;
 }
+/** What the settings in effect lock or limit for the tab's folder (settings_policy in
+    cli_ask.rs), as last heard: `managed` keys, `remote_control_lock`, `remote_control_off`,
+    `max_effort`. Empty until heard, which locks nothing. */
+function settingsPolicyFor(t) {
+  const o = offersFor(t || activeTab());
+  return (o && o.settings_policy) || {};
+}
+/** Whether the organization's managed settings set `key`, which then wins over what a menu writes. */
+function managedSetting(key, t) {
+  return (settingsPolicyFor(t).managed || []).indexOf(key) >= 0;
+}
+const MANAGED_NOTE = "Set by your organization's managed settings";
 /** Whether an ask for the tab's folder is in flight. */
 function offersLoading(t) {
   const at = cliOffersAsked.get(t ? rootPathOf(t) : '');
@@ -65,6 +77,10 @@ function offersChanged(root) {
   const t = activeTab();
   if (!t || rootPathOf(t) !== root) return;
   if (cmdMenu.loaderShown && cmdMenuIsOpen()) cmdMenuRender(true);
+  // …and how far up the settings let the effort go.
+  if (typeof applyEffortPolicy === 'function') applyEffortPolicy();
+  // …and which permission modes the settings turn off.
+  if (typeof applyModeLimits === 'function') { applyModeLimits(); enforceModeLimits(t); }
   // What each model can do came with the offers: Ultracode follows it.
   if (typeof ultracodeFollowsModel === 'function') ultracodeFollowsModel();
   // …and which models there are: the model chooser is built from them.
@@ -106,6 +122,7 @@ window.onFastMode = function(tabId, json) {
   const t = tabs.find(x => x.id === tabId);
   if (!t || !r) return;
   t.fastMode = r.state === 'on';
+  t.fastReason = r.disabledReason || '';
   refreshFastBolt();
 };
 function refreshFastBolt() {
@@ -120,6 +137,16 @@ function refreshFastBolt() {
   }
   const t = activeTab();
   if (bolt) bolt.classList.toggle('on', !!(t && t.fastMode));
+}
+/** Why fast mode cannot be switched on for the tab, when the reason is a lock rather than
+    a choice or a hiccup (`preference` and `network_error` are the user's own and a passing
+    one): the provider has none, or the organization turned it off. '' when it can. */
+function fastModeLock(t) {
+  const o = offersFor(t);
+  const reason = String((t && t.fastReason) || (o && o.fast_mode_disabled_reason) || '');
+  if (reason === 'not_first_party') return "Fast mode isn't available with your login provider";
+  if (/^org_/.test(reason)) return 'Fast mode has been disabled by your organization';
+  return '';
 }
 /** Whether the tab's model can run in fast mode; yes when the CLI has not said. */
 function modelSupportsFast(t) {
@@ -171,12 +198,14 @@ function cmdMenuRows() {
     { id: 'flagswitch', sec: 'Model', label: 'Switch models when a message is flagged', icon: 'FLAG', toggle: true,
       tip: 'When safeguards flag a message, automatically switch to a different model to keep chatting. '
         + 'When off, your session will pause instead.',
+      disabled: () => managedSetting('switchModelsOnFlag', t), why: () => MANAGED_NOTE,
       on: () => flaggedSwitchOn(t), run: () => setFlaggedSwitch(t, !flaggedSwitchOn(t)) },
     { id: 'account', sec: 'Model', label: 'Account & usage…', icon: 'USER',
       tip: 'View account info and usage', run: () => openAccount() },
     { id: 'fast', sec: 'Model', label: 'Toggle fast mode', icon: 'BOLT',
       tip: 'Toggle fast mode for faster responses (Opus only)',
-      show: () => modelSupportsFast(t), run: () => sendSlashToCli('/fast') },
+      show: () => modelSupportsFast(t), disabled: () => !!fastModeLock(t), why: () => fastModeLock(t),
+      run: () => sendSlashToCli('/fast') },
 
     { id: 'styles', sec: 'Customize', label: 'Output styles', icon: 'LINES', run: () => openOutputStyles() },
     { id: 'mcp', sec: 'Customize', label: 'MCP servers', icon: 'PLUG', run: () => openMcpServers() },
@@ -198,14 +227,16 @@ function cmdMenuRows() {
       tip: (t && t.sessionId) ? 'Open this session in the Terminal' : 'Open a new Claude instance in the Terminal',
       show: () => tabInWorkspaceFolder(t), run: () => openTabInTerminal(t) },
     { id: 'design', sec: 'Customize', label: 'Claude Design', icon: 'PALETTE',
-      tip: 'Authorize design-system access with your claude.ai account', run: () => openDesignDialog() },
+      tip: 'Authorize design-system access with your claude.ai account',
+      disabled: () => authPolicy.thirdParty, why: () => "Claude Design isn't available with your login provider",
+      run: () => openDesignDialog() },
     { id: 'chrome', sec: 'Customize', label: 'Claude in Chrome', icon: 'GLOBE',
       show: () => !window._browserSupported || !!_browserSupported(), run: () => openChromeDialog() },
 
     { id: 'switchaccount', sec: 'Settings', label: 'Switch account', icon: 'SWAP',
-      tip: 'Log in with a different account', run: () => openSignInDialog(true) },
+      tip: 'Log in with a different account', show: () => !authPolicy.thirdParty, run: () => openSignInDialog(true) },
     { id: 'signout', sec: 'Settings', label: 'Sign out', icon: 'SIGNOUT',
-      tip: 'Sign out of Claude on this computer', run: () => openSignOutDialog() },
+      tip: 'Sign out of Claude on this computer', show: () => !authPolicy.thirdParty, run: () => openSignOutDialog() },
     { id: 'config', sec: 'Settings', label: 'General config…', icon: 'GEAR',
       show: () => !!window._ide, run: () => ide('prefs') },
     { id: 'focus', sec: 'Settings', label: 'Focus view', icon: 'FOCUS', toggle: true,
@@ -254,8 +285,11 @@ function cmdRowEl(r) {
   const it = document.createElement('div');
   it.className = 'item' + (r.cmd ? ' cmd' : '');
   it.dataset.id = r.id;
-  if (r.disabled && r.disabled()) it.classList.add('disabled');
+  const off = !!(r.disabled && r.disabled());
+  if (off) it.classList.add('disabled');
   if (r.tip) it.title = r.tip;
+  const why = off && r.why ? r.why() : '';
+  if (why) it.title = why;
   if (r.cmd) {
     it.innerHTML = '<div class="txt"><span class="lbl"></span><span class="d"></span></div>';
     it.querySelector('.lbl').textContent = '/' + r.name;
@@ -270,6 +304,10 @@ function cmdRowEl(r) {
     it.innerHTML = '<span class="ic">' + (ICONS[r.icon] || '') + '</span><div class="txt"><span class="lbl"></span></div>';
     const lbl = it.querySelector('.lbl');
     lbl.textContent = r.label;
+    if (why) {
+      const note = document.createElement('span'); note.className = 'desc'; note.textContent = why;
+      it.querySelector('.txt').appendChild(note);
+    }
     if (r.curModel) {
       const cur = document.createElement('span');
       cur.id = 'cur-model'; cur.style.color = 'var(--fg-dim)';
