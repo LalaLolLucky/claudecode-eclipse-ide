@@ -97,6 +97,7 @@ function toggleMenu(id, anchor) {
   // The preference can change while Eclipse is running (ClaudePreferencePage applies it
   // live), so re-check on every open rather than only once at page load.
   if (id === 'modes-menu' && typeof applyBypassModeVisibility === 'function') applyBypassModeVisibility();
+  if (id === 'modes-menu' && typeof applyModeLimits === 'function') applyModeLimits();
   menu.classList.add('open');
   positionMenu(menu, anchor);
   openMenuEl = menu; openAnchor = anchor;

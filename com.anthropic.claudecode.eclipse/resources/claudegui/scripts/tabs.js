@@ -350,9 +350,11 @@ function applyTabSettings(t) {
   // Reconcile silently — a stored pair predating this gate may be illegal.
   if (typeof enforceThinkingGate === 'function') enforceThinkingGate({ silent: true });
   else updateThinkingCheck();
+  if (typeof applyEffortPolicy === 'function') applyEffortPolicy();
   // Each conversation keeps its own permission mode (VSCode-style).
   permMode = (t.permMode !== undefined ? t.permMode : DEFAULT_PERM_MODE);
   if (typeof applyModeUI === 'function') applyModeUI(permMode);
+  if (typeof enforceModeLimits === 'function') enforceModeLimits(t);
   ultracodeOn = (t.ultracode !== undefined ? t.ultracode : DEFAULT_ULTRACODE);
   // Stored on for a model that cannot run it: off, in the tab only (nothing is written
   // back while a tab's stored settings are being painted).

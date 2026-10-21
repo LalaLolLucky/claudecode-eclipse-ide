@@ -16,6 +16,17 @@ const RC_ACTIVE_PREFIX = 'Remote Control is active · Continue here, on your pho
 const RC_LINK_TEXT = 'claude.ai/code';
 const RC_DISABLED = 'Remote Control disabled.';
 
+/* Why Remote Control cannot be switched on for `t`, when the settings in effect say so
+   (disableRemoteControl, or the organization's lock, in the CLI's own words); '' when it can. */
+function remoteControlLock(t) {
+  const p = settingsPolicyFor(t), o = offersFor(t);
+  if (p.remote_control_lock) return p.remote_control_lock;
+  if (p.remote_control_off) return 'Remote Control is turned off in your settings.';
+  // The CLI's own word that this login cannot have it (a cloud provider's, or an API key).
+  if (o && o.remote_control_available === false) return "Remote Control isn't available with this login.";
+  return '';
+}
+
 /* /remote-control — toggles the bridge for the tab it was typed in.
    Each tab is its own conversation, so each has its own bridge. */
 function toggleRemoteControl() {
@@ -38,6 +49,7 @@ function toggleRemoteControl() {
   // it ON again and re-armed the wait, which is the opposite of what pressing it
   // again means — and left the composer shut until the ceiling expired.
   const turningOn = !t.remoteControlUrl && !t.rcConnecting;
+  if (turningOn && remoteControlLock(t)) { addSystemTo(t, remoteControlLock(t)); return true; }
   if (turningOn) beginConnecting(t);
   // Switching off, which includes cancelling a connect that has not landed yet.
   else beginDisconnecting(t);
@@ -429,7 +441,7 @@ function remoteControlOnStartupEnabled() {
 function autoEnableRemoteControl(t) {
   if (!t || t.remoteControlUrl || t.rcConnecting || t.rcDisconnecting) return;
   if (!window._remoteControl) return;
-  if (!remoteControlOnStartupEnabled()) return;
+  if (!remoteControlOnStartupEnabled() || remoteControlLock(t)) return;
   beginConnecting(t);
   rcSend(t, true);
 }

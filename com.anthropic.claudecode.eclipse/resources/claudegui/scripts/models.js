@@ -75,6 +75,17 @@ function rebuildModels() {
     ? o.models.filter(m => m && typeof m.value === 'string' && m.value) : [];
   MODELS = cli.length ? cli.map(cliModelRow) : ACCOUNT_MODELS.map(m => Object.assign({}, m));
   if (cli.length) keepOneMillionRow();
+  // Models the settings rule out (availableModels, deniedModels) stay listed, unselectable,
+  // after the ones that can be used: the CLI's own word on them.
+  const ruledOut = (o && Array.isArray(o.unavailable_models))
+    ? o.unavailable_models.filter(m => m && typeof m.value === 'string' && m.value) : [];
+  ruledOut.forEach(m => {
+    if (MODELS.some(x => x.id === m.value)) return;
+    const row = cliModelRow(m);
+    row.disabled = true;
+    if (!m.description) row.desc = "Not available with your organization's settings";
+    MODELS.push(row);
+  });
   if (customModel && !MODELS.some(m => m.id === customModel))
     MODELS.splice(1, 0, { id: customModel, label: customModelLabel(customModel), desc: 'From your plugin settings' });
   applyCliModelLimits();
@@ -556,10 +567,23 @@ function highEffortAllowed() {
   return thinkingOn || !isThinkingGatedModel(curModel);
 }
 
+/** The highest effort index the settings in effect allow (maxEffortLevel, which the CLI
+ *  clamps every effort to), or the top stop when they set none. */
+function policyMaxEffortIdx() {
+  const i = EFFORTS.indexOf(settingsPolicyFor().max_effort);
+  return i < 0 ? EFFORTS.length - 1 : i;
+}
+
+/** An effort the settings now rule out (a cap that arrived after it was picked) comes down to the cap. */
+function applyEffortPolicy() {
+  if (effortIdx > maxEffortIdx()) setEffort(maxEffortIdx());
+  else updateEffortGate();
+}
+
 /** Highest selectable effort index for the current model/thinking combination. */
 function maxEffortIdx() {
-  if (highEffortAllowed()) return EFFORTS.length - 1;
-  let i = EFFORTS.length - 1;
+  let i = policyMaxEffortIdx();
+  if (highEffortAllowed()) return i;
   while (i > 0 && EFFORT_REQUIRES_THINKING.indexOf(EFFORTS[i]) >= 0) i--;
   return i;
 }
@@ -615,14 +639,17 @@ function updateThinkingCheck() {
    a bare span (no native disabled state), so the block lives in effortFromX —
    this only makes the limit visible. */
 function updateEffortGate() {
-  const capped = !highEffortAllowed();
+  const byThinking = !highEffortAllowed();
+  const byPolicy = policyMaxEffortIdx() < EFFORTS.length - 1;
   const maxPct = (maxEffortIdx() / (EFFORTS.length - 1)) * 100;
   document.querySelectorAll('.eff-slider').forEach(sl => {
-    sl.classList.toggle('capped', capped);
+    sl.classList.toggle('capped', byThinking || byPolicy);
     sl.style.setProperty('--eff-cap', maxPct + '%');
-    sl.title = capped
-      ? 'Turn Thinking on to use X-High or Max on ' + gateModelName(curModel)
-      : 'Effort';
+    sl.title = byPolicy && policyMaxEffortIdx() <= maxEffortIdx()
+      ? 'Limited to ' + EFFORT_LABELS[policyMaxEffortIdx()] + ' by your settings'
+      : byThinking
+        ? 'Turn Thinking on to use X-High or Max on ' + gateModelName(curModel)
+        : 'Effort';
   });
 }
 
@@ -787,10 +814,12 @@ function fillAccountUsage(slot, r, error) {
   if (!slot || !slot.isConnected) return;   // closed, or opened again since
   const manage = '<a href="https://claude.ai/settings/usage">Manage usage on claude.ai</a>';
   if (!r) {
-    slot.innerHTML = '<div class="aw-note">' + escapeHtml(error || 'Could not read usage.') + ' ' + manage + '</div>';
+    const cloudNow = typeof authPolicy !== 'undefined' && authPolicy.thirdParty;
+    slot.innerHTML = '<div class="aw-note">' + escapeHtml(error || 'Could not read usage.') + (cloudNow ? '' : ' ' + manage) + '</div>';
     return;
   }
-  let h = awRow('Subscription', typeof r.subscription_type === 'string' ? r.subscription_type : '');
+  const cloud = typeof authPolicy !== 'undefined' && authPolicy.thirdParty;
+  let h = cloud ? '' : awRow('Subscription', typeof r.subscription_type === 'string' ? r.subscription_type : '');
   // The plan's limits, where the CLI has them: a window is shown by its percentage used.
   const rl = r.rate_limits && typeof r.rate_limits === 'object' ? r.rate_limits : null;
   let limits = 0;
@@ -818,12 +847,18 @@ function fillAccountUsage(slot, r, error) {
     });
   }
   if (limits) h += '<div class="aw-note">' + manage + '</div>';
+  // No plan, so no plan limits: said where they would be, as the extension says it.
+  if (cloud && !limits) h = '<div class="aw-note">' + escapeHtml("Plan limits aren't available for this login method.") + '</div>' + h;
   slot.innerHTML = h;
 }
 function openAccount() {
   closeMenus();
   let acc = {};
   try { acc = JSON.parse(window._accountInfo ? window._accountInfo() : '{}'); } catch (e) {}
+  // A cloud provider's login has no account of Anthropic's: whatever file an earlier
+  // sign-in left is not who is signed in.
+  const cloud = typeof authPolicy !== 'undefined' && authPolicy.thirdParty;
+  if (cloud) acc = {};
   const win = document.getElementById('account-win');
   let h = '<div class="aw-head"><span class="t">Account &amp; Usage</span><span class="x" onclick="closeAccount()">' + ICONS.X + '</span></div>';
   h += '<div class="aw-sec">Account</div>';
@@ -833,7 +868,8 @@ function openAccount() {
   h += awRow('Plan', acc.plan);
   // No account file means no claude.ai sign-in: the login may still be a key or a token,
   // which the CLI's own status says (below), so the note waits for that answer.
-  if (!acc.email) h += '<div id="aw-auth"><div class="aw-note">Loading…</div></div>';
+  if (cloud) h += awRow('Auth method', cloudProviderName());
+  else if (!acc.email) h += '<div id="aw-auth"><div class="aw-note">Loading…</div></div>';
   h += '<div class="aw-sec">Usage</div><div id="aw-usage"><div class="aw-note">Loading…</div></div>';
   win.innerHTML = h;
   document.getElementById('account-overlay').classList.add('open');

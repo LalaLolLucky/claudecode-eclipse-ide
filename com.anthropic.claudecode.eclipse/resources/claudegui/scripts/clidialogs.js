@@ -641,6 +641,18 @@ const RULE_SOURCES = { localSettings: 'From project local settings', projectSett
 const RULE_DESTINATIONS = [['localSettings', 'this project (just you)'], ['projectSettings', 'this project (shared)'],
                            ['userSettings', 'all your projects']];
 const RULE_BEHAVIORS = [['allow', 'ALLOW'], ['ask', 'ASK'], ['deny', 'DENY']];
+/** Why a rule that is in effect cannot be removed here, by where it came from; '' for one that can. */
+function ruleReadOnlyWhy(r) {
+  if (r.notInEffect || !r.editability || r.editability === 'persistent') return '';
+  switch (r.source) {
+    case 'cliArg': return 'Not saved in a settings file.';
+    case 'session': return 'Approved for this session only; not saved in a settings file.';
+    case 'policySettings': return 'Managed by enterprise settings.';
+    case 'flagSettings': return 'From a settings file given at startup.';
+    case 'command': return "Granted by a command; change it in the command.";
+    default: return 'Read-only.';
+  }
+}
 function openPermissionsDialog() {
   const dlg = {
     data: null, error: null, note: null, view: 'list', behavior: 'allow', rule: null, busy: false,
@@ -666,6 +678,10 @@ function openPermissionsDialog() {
       if (dlg.note) body.appendChild(cwEl('div', 'cw-msg', dlg.note));
       const st = dlg.data.state || {};
       const editable = !st.managedOnly;
+      if (st.managedOnly) {
+        body.appendChild(cwEl('div', 'cw-warn', 'Enterprise managed settings allow only managed permission rules. '
+          + 'Rules from other settings files are shown below but are not in effect.'));
+      }
       RULE_BEHAVIORS.forEach(([behavior, title]) => {
         const mine = dlg.rules().filter(r => r.behavior === behavior);
         const head = cwEl('div', 'cw-sec caps');
@@ -683,9 +699,12 @@ function openPermissionsDialog() {
           mine.slice(shown, shown + 60).forEach(r => {
             const box = cwEl('div', 'rule');
             const top = cwEl('div', 'top');
-            top.appendChild(cwEl('span', 'text', r.rule));
+            top.appendChild(cwEl('span', 'text', r.rule + (r.notInEffect ? ' (not in effect)' : '')));
+            if (r.notInEffect) box.style.opacity = '.6';
+            const why = ruleReadOnlyWhy(r);
+            if (why) box.title = why;
             const src = cwEl('span', 'src', RULE_SOURCES[r.source] || r.source || '');
-            if (editable && r.editability !== 'readOnly') {
+            if (editable && !why && !r.notInEffect) {
               const rm = cwEl('span', 'cw-link danger', 'Remove'); rm.style.marginLeft = '8px';
               rm.onclick = () => { dlg.view = 'remove'; dlg.rule = r; dlg.note = null; dlg.draw(); };
               src.appendChild(rm);
@@ -785,11 +804,41 @@ function openPermissionsDialog() {
    is written by the CLI's own `claude edit-hook`, and the listing is then read back. The
    form's fields are the extension's, type for type. */
 const HOOKS_DOCS_URL = 'https://code.claude.com/docs/en/hooks';
+/** What the listing's `policy` says about the hooks that will run, in the extension's words;
+    '' when nothing restricts them. `count` is the hooks listed. */
+function hooksPolicyNotice(policy, count) {
+  if (policy.policyUnreadable) return "Your organization's managed settings could not be read, so hooks cannot be edited here.";
+  const many = (n) => n + (n === 1 ? ' hook' : ' hooks');
+  const wontRun = (n) => n ? ' You have ' + many(n) + ' configured that will not run.' : '';
+  if (policy.disabledByPolicy) {
+    return 'All hooks are currently disabled by a managed settings file.' + wontRun(count);
+  }
+  if (policy.managedOnly) {
+    return 'Only hooks from managed settings can run. Hooks from user, project, local, and flag settings are blocked, and managed hooks are not shown here.';
+  }
+  if (policy.pluginOnly) {
+    return 'Your organization restricts hooks to managed and plugin sources. Hooks from user, project, local, and flag settings will not run, and managed hooks are not shown here.';
+  }
+  if (policy.allDisabled) {
+    const managed = policy.policyHookCount || 0;
+    return 'All hooks are currently disabled by the disableAllHooks setting.' + wontRun(Math.max(count - managed, 0))
+      + (managed ? ' Hooks from managed settings still run: ' + many(managed) + '.' : '');
+  }
+  return '';
+}
 const HOOK_SOURCES = [
   ['localSettings', 'Local', 'Private to you in this project (.claude/settings.local.json)'],
   ['userSettings', 'User', 'Available in all your projects (~/.claude/settings.json)'],
   ['projectSettings', 'Project', 'Shared via .claude/settings.json in this project'],
 ];
+/* The sources a hook is shown under that this dialog cannot change, with why. */
+const HOOK_LOCKED = {
+  policySettings: ['Managed', 'Set by your organization in managed settings.'],
+  flagSettings: ['Flag', 'Set for this session by the --settings startup option.'],
+  pluginHook: ['Plugin', 'Defined by a plugin; change it in the plugin.'],
+  sessionHook: ['Session', 'Registered for this session by a skill, an agent, or a goal.'],
+  builtinHook: ['Built-in', 'Built into Claude Code.'],
+};
 const HOOK_TYPES = [
   ['command', 'Command', 'Runs a shell command'],
   ['prompt', 'Prompt', 'Asks a model to evaluate a prompt'],
@@ -871,6 +920,18 @@ function formFromHook(h) {
   return { source: h.source || 'localSettings', event: h.event || '', matcher: h.matcher || '',
            type: HOOK_FIELDS[config.type] ? config.type : 'command', fields };
 }
+/** Whether a hook will not run under the listing's `policy`, as the banner says: all of them
+    when a managed file disables hooks, all but the managed ones under `disableAllHooks`,
+    and the user's own (user, project, local, flag) when only managed or plugin hooks may run.
+    The listing's own `disabled` stands as it is. */
+function hookWontRun(h, policy) {
+  if (h.disabled) return true;
+  if (policy.disabledByPolicy) return true;
+  if (policy.managedOnly) return h.source !== 'policySettings';
+  if (policy.allDisabled) return h.source !== 'policySettings';
+  if (policy.pluginOnly) return !!HOOK_SOURCES.some(s => s[0] === h.source) || h.source === 'flagSettings';
+  return false;
+}
 function openHooksDialog() {
   const dlg = {
     data: null, error: null, note: null, view: 'list', editing: null, form: null, busy: false, confirm: false,
@@ -886,7 +947,13 @@ function openHooksDialog() {
               (err) => { dlg.error = (err && err.message) || 'Unknown error'; })
         .then(() => { if (cliDlg === dlg) dlg.draw(); });
     },
-    hooks() { return (dlg.data && dlg.data.hooks) || []; },
+    // What is listed: under managed-only or plugin-only the managed hooks are not, as the
+    // banner says (the extension leaves them out too).
+    hooks() {
+      const all = (dlg.data && dlg.data.hooks) || [];
+      const p = (dlg.data && dlg.data.policy) || {};
+      return p.managedOnly || p.pluginOnly ? all.filter(h => h.source !== 'policySettings') : all;
+    },
     events() { return (dlg.data && dlg.data.eventCatalog) || []; },
     save(edit) {
       const before = JSON.stringify(dlg.hooks());
@@ -898,46 +965,84 @@ function openHooksDialog() {
     },
     draw() {
       if (dlg.view === 'form') { dlg.drawForm(); return; }
+      if (dlg.view === 'detail') { dlg.drawDetail(); return; }
       const body = cwFrame('Hooks', null, true);
       const win = document.getElementById('cli-win');
       if (dlg.error) { body.appendChild(cwEl('div', 'cw-msg', dlg.error)); return; }
       if (!dlg.data) { body.appendChild(cwEl('div', 'cw-dim', 'Loading…')); return; }
       const hooks = dlg.hooks();
       const policy = dlg.data.policy || {};
-      const editable = !policy.managedOnly && !policy.disabledByPolicy;
+      // A hook saved here would never run under these, so none is added or edited.
+      const editable = !policy.managedOnly && !policy.disabledByPolicy && !policy.pluginOnly && !policy.policyUnreadable;
+      const notice = hooksPolicyNotice(policy, hooks.length);
+      if (notice) body.appendChild(cwEl('div', 'cw-warn', notice));
       const add = () => {
         dlg.view = 'form'; dlg.editing = null; dlg.note = null;
         dlg.form = { source: 'localSettings', event: (dlg.events()[0] || {}).name || 'PreToolUse', matcher: '', type: 'command', fields: {} };
         dlg.draw();
+      };
+      const addButton = () => {
+        const b = cwBtn('Add hook', '', add);
+        if (!editable) { b.disabled = true; b.title = 'Hooks added here would not run'; }
+        return b;
       };
       if (!hooks.length) {
         const empty = cwEl('div', 'cw-dim'); empty.style.textAlign = 'center';
         empty.appendChild(cwEl('div', '', 'No hooks configured'));
         empty.appendChild(cwEl('div', '', 'Hooks run your commands, prompts, or HTTP calls in response to Claude Code events like tool calls and prompt submission.'));
         body.appendChild(empty);
-        if (editable) body.appendChild(cwBtn('Add hook', '', add));
+        body.appendChild(addButton());
       } else {
         hooks.forEach(h => {
           const config = h.config || {};
           const box = cwEl('div', 'rule'); box.style.cursor = 'pointer';
           const top = cwEl('div', 'top');
           top.appendChild(cwEl('span', 'text', [h.event, h.matcher].filter(Boolean).join(' · ')));
-          top.appendChild(cwEl('span', 'src', (HOOK_SOURCES.find(s => s[0] === h.source) || [0, h.source || ''])[1]));
+          const locked = HOOK_LOCKED[h.source];
+          const sourceName = locked ? locked[0] : (HOOK_SOURCES.find(s => s[0] === h.source) || [0, h.source || ''])[1];
+          top.appendChild(cwEl('span', 'src', (hookWontRun(h, policy) ? 'Disabled · ' : '') + sourceName));
           box.appendChild(top);
           const what = config.command || config.prompt || config.url || [config.server, config.tool].filter(Boolean).join(' · ') || '';
           box.appendChild(cwEl('div', 'say', (config.type ? config.type + ': ' : '') + String(what)));
           const mine = HOOK_SOURCES.some(s => s[0] === h.source);
-          if (editable && mine) box.onclick = () => { dlg.view = 'form'; dlg.editing = h; dlg.note = null; dlg.confirm = false; dlg.form = formFromHook(h); dlg.draw(); };
-          else box.style.cursor = 'default';
+          // One a person owns opens to be edited; any other opens to be read, with why it cannot be changed.
+          box.onclick = (editable && mine)
+            ? () => { dlg.view = 'form'; dlg.editing = h; dlg.note = null; dlg.confirm = false; dlg.form = formFromHook(h); dlg.draw(); }
+            : () => { dlg.view = 'detail'; dlg.editing = h; dlg.note = null; dlg.draw(); };
           body.appendChild(box);
         });
-        if (editable) body.appendChild(cwBtn('Add hook', '', add));
+        body.appendChild(addButton());
       }
       const foot = cwEl('div', 'cw-dim cw-fixed');
-      foot.appendChild(cwEl('div', '', 'Click a hook to view, edit, or remove it. Managed, plugin, session, and built-in hooks are read-only.'));
+      foot.appendChild(cwEl('div', '', editable
+        ? 'Click a hook to view, edit, or remove it. Managed, plugin, session, and built-in hooks are read-only.'
+        : 'To add or modify hooks, edit settings.json directly or ask Claude.'));
       const more = cwEl('a', 'cw-link', 'Learn more about hooks'); more.href = HOOKS_DOCS_URL;
       foot.appendChild(more);
       win.appendChild(foot);
+    },
+    /* A hook that cannot be edited here, read: where it is from, whether it runs, and why it is fixed. */
+    drawDetail() {
+      const h = dlg.editing, config = h.config || {}, policy = dlg.data.policy || {};
+      const body = cwFrame('Hooks', null, true);
+      const back = cwEl('a', 'cw-link', '← Back to list'); back.onclick = () => dlg.escape();
+      body.appendChild(back);
+      body.appendChild(cwEl('div', 'cw-sec', [h.event, h.matcher].filter(Boolean).join(' · ')));
+      if (hookWontRun(h, policy)) body.appendChild(cwEl('div', 'cw-warn', 'Disabled: this hook will not run this session.'));
+      const locked = HOOK_LOCKED[h.source];
+      const mine = HOOK_SOURCES.some(s => s[0] === h.source);
+      const why = locked ? locked[1] : (mine ? 'Hooks are locked by a managed settings file, so this one cannot be edited here.' : '');
+      if (why) body.appendChild(cwEl('div', 'cw-note', why));
+      const src = (HOOK_SOURCES.find(s => s[0] === h.source) || [0, locked ? locked[0] : (h.source || '')])[1];
+      body.appendChild(cwEl('div', 'cw-sec', 'Source'));
+      body.appendChild(cwEl('div', 'cw-text', src));
+      Object.keys(config).forEach(k => {
+        const v = config[k];
+        body.appendChild(cwEl('div', 'cw-sec', k === 'type' ? 'Type' : k));
+        const pre = cwEl('div', 'cw-text', typeof v === 'string' ? v : JSON.stringify(v));
+        pre.style.wordBreak = 'break-all'; pre.style.fontFamily = "'Cascadia Code','Consolas',monospace";
+        body.appendChild(pre);
+      });
     },
     drawForm() {
       const f = dlg.form, old = dlg.editing;
@@ -1053,6 +1158,11 @@ function openChromeDialog() {
     body.appendChild(cwEl('div', 'cw-text',
       'Claude in Chrome works with the Chrome extension to let you control your browser directly from Claude Code. '
       + 'Navigate websites, fill forms, capture screenshots, record GIFs, and debug with console logs and network requests.'));
+    // Why it cannot be used at all: the organization, the platform, or the plan. The status
+    // is then that, and nothing under it does anything.
+    const blocked = d.allowed === false ? 'Claude in Chrome is turned off by your organization.'
+      : d.wsl ? 'Claude in Chrome is not supported in WSL at this time.'
+      : d.subscriber === false ? 'Claude in Chrome requires a claude.ai subscription.' : '';
     body.appendChild(cwEl('div', 'cw-sec', 'Status'));
     const line = (label, value, ok) => {
       const row = cwEl('div', 'cw-text'); row.style.marginBottom = '4px';
@@ -1062,18 +1172,23 @@ function openChromeDialog() {
     };
     const t = dlg.tab;
     const inSession = !!(t && t.browserOn);
-    line('Claude in Chrome in this session:', inSession || d.connected ? 'Enabled' : 'Disabled', inSession || d.connected);
-    line('Extension:', d.installed ? 'Installed' : 'Not installed', !!d.installed);
+    if (blocked) {
+      body.appendChild(cwEl('div', 'cw-warn', blocked));
+    } else {
+      line('Claude in Chrome in this session:', inSession || d.connected ? 'Enabled' : 'Disabled', inSession || d.connected);
+      line('Extension:', d.installed ? 'Installed' : 'Not installed', !!d.installed);
+    }
     body.appendChild(cwEl('div', 'cw-sec', 'Extension'));
     const urls = d.urls || {};
-    if (!d.installed && urls.install) body.appendChild(cwBtn('Install extension', '', () => open(urls.install)));
-    body.appendChild(cwBtn('Manage permissions', '', () => open(urls.permissions)));
-    body.appendChild(cwBtn('Reconnect extension', '', () => open(urls.reconnect)));
+    const action = (label, url) => { const b = cwBtn(label, '', () => open(url)); b.disabled = !!blocked; return b; };
+    if (!d.installed && urls.install) body.appendChild(action('Install extension', urls.install));
+    body.appendChild(action('Manage permissions', urls.permissions));
+    body.appendChild(action('Reconnect extension', urls.reconnect));
     body.appendChild(cwEl('div', 'cw-sec', 'Setting'));
-    const tg = cwEl('div', 'cw-toggle');
+    const tg = cwEl('div', 'cw-toggle' + (blocked ? ' frozen' : ''));
     tg.appendChild(cwEl('span', '', 'Enabled by default'));
     const sw = cwEl('span', 'sw' + (d.enabled_by_default ? ' on' : ''));
-    sw.onclick = () => {
+    if (!blocked) sw.onclick = () => {
       const want = !d.enabled_by_default;
       d.enabled_by_default = want; dlg.error = null; dlg.draw();   // shown at once, confirmed below
       cliEdit(dlg.tab, 'edit-chrome-settings', { enabledByDefault: want })
@@ -1135,7 +1250,10 @@ function openOutputStyles() {
       if (!styles().length) {
         body.appendChild(cwEl('div', 'cw-dim', offersLoading(t) ? 'Loading output styles…' : 'No output styles available'));
       } else {
-        body.appendChild(cwEl('div', 'cw-note', 'Select an output style'));
+        // The organization's managed settings pick the style, and win over what is saved here.
+        const locked = managedSetting('outputStyle', t);
+        body.appendChild(locked ? cwEl('div', 'cw-warn', 'The output style is ' + MANAGED_NOTE.charAt(0).toLowerCase() + MANAGED_NOTE.slice(1) + '.')
+                                : cwEl('div', 'cw-note', 'Select an output style'));
         const list = cwEl('div', 'cw-list');
         styles().forEach(name => {
           const it = cwEl('div', 'cw-item');
@@ -1144,7 +1262,8 @@ function openOutputStyles() {
           const mark = cwEl('span', 'meta'); if (name === o.output_style) mark.innerHTML = ICONS.CHECK;
           top.appendChild(mark);
           it.appendChild(top);
-          it.onclick = () => { closeCliDialog(); pick(name); };
+          if (locked) { it.style.opacity = '.6'; it.style.cursor = 'default'; }
+          else it.onclick = () => { closeCliDialog(); pick(name); };
           list.appendChild(it);
         });
         body.appendChild(list);
@@ -1306,12 +1425,23 @@ function signInArt() {
     + '<path d="M0 41.5h132" stroke="currentColor" stroke-width="1" stroke-dasharray="1 1" opacity=".7"/>'
     + moon + '</svg>';
 }
+/* What the login is bound by, as the CLI last said: the method the organization forces
+   (claudeai, console, gateway) and whether the login is a cloud provider's (Bedrock,
+   Vertex, Foundry), which there is no signing in or out of here. */
+let authPolicy = { forcedLoginMethod: null, thirdParty: false, apiProvider: null };
+/** The cloud login's provider, as the Account window and VS Code's name it. */
+function cloudProviderName() {
+  return { bedrock: 'Amazon Bedrock', vertex: 'Google Vertex AI', foundry: 'Microsoft Foundry', gateway: 'Cloud gateway' }[authPolicy.apiProvider]
+    || 'Third Party';
+}
 /** Whether anyone is signed in, as the CLI says (`claude auth status`). Rejects when it
     cannot be told, which is not the same as nobody being signed in. */
 function signedInNow(t) {
   return cliEdit(t, 'auth-status', {}).then((res) => {
     const said = JSON.parse(String(res.output || ''));
     if (typeof said.loggedIn !== 'boolean') throw new Error('unknown');
+    authPolicy = { forcedLoginMethod: said.forcedLoginMethod || null, thirdParty: said.thirdParty === true,
+                   apiProvider: said.apiProvider || null };
     return said.loggedIn;
   });
 }
@@ -1408,11 +1538,30 @@ function openSignInDialog(canCancel) {
           body.appendChild(cwEl('div', 'cw-under', note));
           return b;
         };
-        method('Claude.ai Subscription', 'primary', 'Use your Claude Pro, Team, or Enterprise subscription', () => dlg.login(true))
-          .title = 'Use your Claude Pro, Team, or Enterprise subscription';
-        method('Anthropic Console', '', 'Pay for API usage through your Console account', () => dlg.login(false));
-        method('Bedrock, Foundry, or Vertex', '', 'Instructions on how to use API keys or third-party providers.',
-               () => { if (window._openExternal) _openExternal(THIRD_PARTY_DOCS_URL); });
+        // A method the organization forces is the only one offered, and a gateway has no
+        // button here at all: it is signed in to in the terminal.
+        const forced = authPolicy.forcedLoginMethod;
+        if (forced === 'gateway') {
+          body.appendChild(cwEl('div', 'cw-warn', 'Login is managed by your organization and must be completed in the terminal.'));
+          if (typeof openTabInTerminal === 'function' && dlg.tab) {
+            body.appendChild(cwBtn('Run claude in terminal', '', () => { closeCliDialog(); openTabInTerminal(dlg.tab); }));
+          }
+        } else {
+          if (forced) body.appendChild(cwEl('div', 'cw-note', forced === 'claudeai'
+            ? 'Login method pre-selected: Subscription plan (Claude Pro/Max)'
+            : 'Login method pre-selected: API usage billing (Anthropic Console)'));
+          if (!forced || forced === 'claudeai') {
+            method('Claude.ai Subscription', 'primary', 'Use your Claude Pro, Team, or Enterprise subscription', () => dlg.login(true))
+              .title = 'Use your Claude Pro, Team, or Enterprise subscription';
+          }
+          if (!forced || forced === 'console') {
+            method('Anthropic Console', forced ? 'primary' : '', 'Pay for API usage through your Console account', () => dlg.login(false));
+          }
+          if (!forced) {
+            method('Bedrock, Foundry, or Vertex', '', 'Instructions on how to use API keys or third-party providers.',
+                   () => { if (window._openExternal) _openExternal(THIRD_PARTY_DOCS_URL); });
+          }
+        }
       }
       if (canCancel) body.appendChild(cwBtn('Cancel', '', closeCliDialog));
     },
@@ -1426,7 +1575,11 @@ function openSignInDialog(canCancel) {
    on the computer instead (feedback_mode "bundle"), it writes one file and sends nothing. */
 const DATA_USAGE_URL = 'https://code.claude.com/docs/en/data-usage';
 const FEEDBACK_WAIT_MS = 120000;   // a transcript can be long
-function feedbackMode(t) { const o = offersFor(t); return (o && o.feedback_mode && o.feedback_mode.kind) || ''; }
+function feedbackMode(t) {
+  const o = offersFor(t);
+  if (o && o.product_feedback_disabled === true) return 'disabled';
+  return (o && o.feedback_mode && o.feedback_mode.kind) || '';
+}
 /** Why a report was not sent, in the extension's words for the CLI's reasons. */
 function feedbackFailure(res) {
   if (res.unavailable_reason) return String(res.unavailable_reason);

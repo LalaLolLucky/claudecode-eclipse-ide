@@ -70,6 +70,14 @@ function handleSlashCommand(text) {
   // names runs in place of ours, as in the extension.
   if (typeof cliOwnsCommand === 'function' && cliOwnsCommand(cmd.slice(1))) return false;
   // What is typed after /feedback is the report's first words.
+  if (cmd === '/feedback' && feedbackMode(activeTab()) === 'disabled') {
+    addSystem("Feedback is turned off by your organization's policy or this environment's settings.");
+    return true;
+  }
+  if ((cmd === '/login' || cmd === '/logout' || cmd === '/design-login') && authPolicy.thirdParty) {
+    addSystem(cmd + " isn't available in this environment.");
+    return true;
+  }
   if (cmd === '/feedback') { openFeedbackDialog(text.trim().replace(/^\S+\s*/, '')); return true; }
   // These three are answered here whatever follows them, and leave only a notice in the
   // conversation, no bubble: nothing is sent (but the description after /plan).

@@ -399,8 +399,40 @@ function applyBypassModeVisibility() {
   item.style.display = allowed ? '' : 'none';
 }
 
+/* Modes the settings in effect turn off (permissions.disableBypassPermissionsMode,
+   disableAutoMode), as the tab's folder last reported them: {auto:'managed'|'settings', …},
+   empty until heard. Shown, greyed with the reason; the CLI would refuse them anyway. */
+function modeBlockedBy(mode, t) {
+  const o = offersFor(t || activeTab());
+  return (o && o.blocked_modes && o.blocked_modes[mode]) || '';
+}
+function modeBlockedText(by) {
+  return by === 'managed' ? "Turned off by your organization's managed settings" : 'Turned off by your settings';
+}
+function applyModeLimits() {
+  document.querySelectorAll('#modes-menu .item[data-mode]').forEach(el => {
+    const by = modeBlockedBy(el.getAttribute('data-mode'));
+    const desc = el.querySelector('.desc');
+    if (desc && !desc.hasAttribute('data-desc')) desc.setAttribute('data-desc', desc.textContent);
+    el.classList.toggle('disabled', !!by);
+    if (desc) desc.textContent = by ? modeBlockedText(by) : desc.getAttribute('data-desc');
+  });
+}
+/* A tab in a mode the settings now turn off goes back to Manual, as the VS Code extension
+   does: a stored mode, or a policy that arrived after the mode was chosen. */
+function enforceModeLimits(t) {
+  if (!t || !modeBlockedBy(t.permMode, t)) return;
+  const was = t.permMode, by = modeBlockedBy(was, t);
+  const name = (document.querySelector('#modes-menu .item[data-mode="' + was + '"] .lbl') || {}).textContent || was;
+  if (t === activeTab()) setMode('default');
+  else { t.permMode = 'default'; persistTabPrefs(t); }
+  addSystemTo(t, name + ' mode is ' + modeBlockedText(by).toLowerCase() + '. Switched to Manual.');
+}
+
 function selectMode(el) {
-  setMode(el.getAttribute('data-mode') || DEFAULT_PERM_MODE);
+  const mode = el.getAttribute('data-mode') || DEFAULT_PERM_MODE;
+  if (modeBlockedBy(mode)) return;
+  setMode(mode);
 }
 /** Puts the tab in front in `mode`: what picking it in the menu does (and /plan, slash.js). */
 function setMode(mode) {
@@ -556,7 +588,7 @@ function updateMenuVersionFooter() {
  *  fight whatever position the click just set. */
 function cycleEffort(e) {
   if (pressedOnSlider || e.target.closest('.slider')) return;
-  setEffort((effortIdx + 1) % EFFORTS.length);
+  setEffort((effortIdx + 1) % (maxEffortIdx() + 1));
 }
 /* Whether the press of the gesture in progress landed on a slider. A drag of the knob
    let go a little off the slider ends in a click on the ROW (a click's target is the
