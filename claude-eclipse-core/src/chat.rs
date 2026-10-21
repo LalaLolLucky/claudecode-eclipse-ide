@@ -83,6 +83,23 @@ struct ChatState {
     /// The agents the CLI has started, kept from its task events: whether one runs in the
     /// background decides whether its card outlives the turn (`CardsToCancel::TurnEnded`).
     agent_tasks: AgentTasks,
+    /// FreeBSD: how many times in a row [`watch_for_hang`] has restarted this tab's CLI
+    /// without the replacement getting anywhere before it froze too. Restarting is
+    /// given up on once that keeps happening; any progress starts the count again.
+    #[cfg(target_os = "freebsd")]
+    hang_streak: u32,
+}
+
+/// FreeBSD: what [`watch_for_hang`] needs to start a replacement for a frozen CLI
+/// on its own, with no message from the GUI to carry these.
+#[cfg(target_os = "freebsd")]
+struct Respawn {
+    claude_cmd: String,
+    workspace_root: String,
+    mcp_port: u16,
+    mcp_auth_token: String,
+    java_vm: Arc<jni::JavaVM>,
+    callbacks: Arc<jni::objects::GlobalRef>,
 }
 
 /// A live persistent claude process. Stdin writes are serialized through the
@@ -135,6 +152,29 @@ struct ProcHandle {
     /// reports no model setting, and a respawn covers the other case rather than
     /// leaving the tab saying Default over a different model.
     default_model_live: AtomicBool,
+    /// FreeBSD: when the CLI last wrote a line, in seconds since the epoch. Read by
+    /// [`watch_for_hang`], which only looks closer after a long silence.
+    #[cfg(target_os = "freebsd")]
+    last_output: AtomicU64,
+    /// FreeBSD: set when [`watch_for_hang`] ended this process because its CLI had
+    /// frozen, so the reader's EOF says that instead of "exited unexpectedly".
+    #[cfg(target_os = "freebsd")]
+    frozen: AtomicBool,
+    /// FreeBSD: how this process was started, for [`recover_from_hang`].
+    #[cfg(target_os = "freebsd")]
+    respawn: Respawn,
+    /// FreeBSD: the user messages written to this process, as (stdin line, text), so
+    /// the ones it never recorded can be sent to its replacement ([`unrecorded_messages`]).
+    #[cfg(target_os = "freebsd")]
+    sent: Mutex<Vec<(String, String)>>,
+    /// FreeBSD: whether Claude's latest reply on this process has ended (`end_turn`),
+    /// so a freeze after it costs nothing but the turn's end ([`end_turn_quietly`]).
+    #[cfg(target_os = "freebsd")]
+    reply_done: AtomicBool,
+    /// FreeBSD: whether Claude has streamed anything on this process, so a restart
+    /// that led somewhere is told from one that froze straight away ([`watch_for_hang`]).
+    #[cfg(target_os = "freebsd")]
+    progressed: AtomicBool,
 }
 
 impl ProcHandle {
@@ -721,6 +761,8 @@ impl ChatManager {
                 open_cards: std::collections::HashMap::new(),
                 cancelled_cards: std::collections::HashSet::new(),
                 agent_tasks: AgentTasks::new(),
+                #[cfg(target_os = "freebsd")]
+                hang_streak: 0,
             })),
             callbacks: Arc::new(Mutex::new(None)),
         }
@@ -775,6 +817,8 @@ impl ChatManager {
                         "type": "user",
                         "message": { "role": "user", "content": build_user_content(&message, &images_json) }
                     });
+                    #[cfg(target_os = "freebsd")]
+                    note_sent(&p, msg_json.to_string(), &message);
                     if p.write_line(&msg_json.to_string()).is_err() {
                         // Reader's EOF path surfaces the failure.
                         p.alive.store(false, Ordering::Relaxed);
@@ -1356,6 +1400,8 @@ impl ChatManager {
                     "type": "user",
                     "message": { "role": "user", "content": build_user_content(&message, &images_json) }
                 });
+                #[cfg(target_os = "freebsd")]
+                note_sent(&proc, msg_json.to_string(), &message);
                 if let Err(e) = proc.write_line(&msg_json.to_string()) {
                     proc.alive.store(false, Ordering::Relaxed);
                     fire_string(&java_vm, &callbacks, "onError",
@@ -1886,6 +1932,25 @@ fn spawn_persistent(
         last_applied: Mutex::new(None),
         ultracode_check_after: Mutex::new(None),
         default_model_live: AtomicBool::new(false),
+        #[cfg(target_os = "freebsd")]
+        last_output: AtomicU64::new(epoch_secs()),
+        #[cfg(target_os = "freebsd")]
+        frozen: AtomicBool::new(false),
+        #[cfg(target_os = "freebsd")]
+        respawn: Respawn {
+            claude_cmd: claude_cmd.to_string(),
+            workspace_root: workspace_root.to_string(),
+            mcp_port,
+            mcp_auth_token: mcp_auth_token.to_string(),
+            java_vm: Arc::clone(&java_vm),
+            callbacks: Arc::clone(&callbacks),
+        },
+        #[cfg(target_os = "freebsd")]
+        sent: Mutex::new(Vec::new()),
+        #[cfg(target_os = "freebsd")]
+        reply_done: AtomicBool::new(false),
+        #[cfg(target_os = "freebsd")]
+        progressed: AtomicBool::new(false),
     });
     if thinking == "0" {
         // A failed write surfaces as the reader's EOF, like any dead process.
@@ -1922,6 +1987,16 @@ fn spawn_persistent(
     // remembered here, where it is known, rather than guessed there.
     state.lock().unwrap().workspace_root = workspace_root.to_string();
 
+    #[cfg(target_os = "freebsd")]
+    {
+        let proc = Arc::clone(&proc);
+        let state = Arc::clone(&state);
+        std::thread::Builder::new()
+            .name("claude-chat-hang-watch".into())
+            .spawn(move || watch_for_hang(proc, state))
+            .ok();
+    }
+
     // Stdout reader lives as long as the process.
     {
         let proc = Arc::clone(&proc);
@@ -1932,6 +2007,231 @@ fn spawn_persistent(
     }
 
     Ok(proc)
+}
+
+#[cfg(target_os = "freebsd")]
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// FreeBSD: replaces this process if its CLI has frozen for good (see
+/// [`crate::bridge::main_thread_parked`]), so the turn carries on instead of spinning
+/// until the tab is closed: [`recover_from_hang`] resumes the conversation in a new
+/// process and tells it to continue; one that froze before naming its session starts
+/// over with the messages sent to it. After Stop it is just ended, as Stop would have.
+/// After three restarts in a row with no progress in between it stops trying: the
+/// process is killed while still `alive`, the reader's EOF ends the turn with the
+/// guide's `hang_recovery.gave_up` ([`crate::freebsd_guide::hang_gave_up`]), and the
+/// next message resumes the conversation, as reopening the tab did.
+///
+/// Nothing is looked at unless a turn is open and the CLI has written nothing for
+/// [`QUIET_SECS`]; then the main thread has to be found parked on two checks in a
+/// row. A CLI that is thinking, streaming or running a long tool is never touched,
+/// since its main thread waits in `epoll`, not in a futex.
+#[cfg(target_os = "freebsd")]
+fn watch_for_hang(proc: Arc<ProcHandle>, state: Arc<Mutex<ChatState>>) {
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+    const QUIET_SECS: u64 = 45;
+    let pid = proc.child.lock().unwrap().id();
+    let mut parked_before = false;
+    loop {
+        std::thread::sleep(EVERY);
+        if !proc.alive.load(Ordering::Relaxed) {
+            return;
+        }
+        let quiet_for = epoch_secs().saturating_sub(proc.last_output.load(Ordering::Relaxed));
+        let in_turn = {
+            let s = state.lock().unwrap();
+            s.awaiting && s.proc.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, &proc))
+        };
+        if quiet_for < QUIET_SECS || !in_turn {
+            parked_before = false;
+            continue;
+        }
+        let parked = crate::bridge::main_thread_parked(pid);
+        if parked && parked_before {
+            const MAX_FRUITLESS_RESTARTS: u32 = 3;
+            let resume = proc.conversation();
+            // Before the CLI has named its session nothing is recorded anywhere, so a
+            // new process starts the conversation over with everything that was sent.
+            let unrecorded = if resume.is_empty() {
+                proc.sent.lock().unwrap().clone()
+            } else {
+                unrecorded_messages(&proc, &resume)
+            };
+            if proc.reply_done.load(Ordering::Relaxed) && unrecorded.is_empty() {
+                // Frozen between finishing its reply and saying the turn was over:
+                // nothing is left to do, so the turn just ends.
+                if crate::is_debug() {
+                    crate::elog!("[hang-watch] pid {}: frozen after its reply was complete; ending the turn", pid);
+                }
+                end_turn_quietly(&proc, &state);
+                return;
+            }
+            let (streak, cancelled) = {
+                let mut s = state.lock().unwrap();
+                if proc.progressed.load(Ordering::Relaxed) {
+                    s.hang_streak = 0;
+                }
+                (s.hang_streak, s.cancel.load(Ordering::Relaxed))
+            };
+            if cancelled {
+                // Stop was pressed, and a frozen CLI never acts on its interrupt: end it
+                // the way Stop would have, without a word.
+                if crate::is_debug() {
+                    crate::elog!("[hang-watch] pid {}: frozen after Stop; ending it", pid);
+                }
+                proc.kill();
+                return;
+            }
+            // A conversation that was never recorded has nothing to carry on from.
+            let carry_on = if resume.is_empty() { None } else { hang_carry_on_line() };
+            if streak >= MAX_FRUITLESS_RESTARTS || (unrecorded.is_empty() && carry_on.is_none()) {
+                if crate::is_debug() {
+                    crate::elog!("[hang-watch] pid {}: frozen, nothing written for {}s ({} restarts in a row \
+                               got nowhere); ending it", pid, quiet_for, streak);
+                }
+                proc.frozen.store(true, Ordering::Relaxed);
+                proc.kill();
+            } else {
+                if crate::is_debug() {
+                    crate::elog!("[hang-watch] pid {}: frozen, nothing written for {}s; restarting it on {} \
+                               ({} unrecorded message(s) sent again)", pid, quiet_for, resume, unrecorded.len());
+                }
+                state.lock().unwrap().hang_streak += 1;
+                recover_from_hang(&proc, &state, &resume, unrecorded, carry_on);
+            }
+            return;
+        }
+        parked_before = parked;
+    }
+}
+
+/// FreeBSD: swaps a frozen CLI for a new one on the same conversation, mid-turn and
+/// without a word to the GUI. The frozen one is retired like any respawn (`alive`
+/// cleared first, so its reader's EOF stays silent; its Remote Control and browser
+/// carried over). The new one resumes the session with the old one's current
+/// settings and is given what the old one never got to: the user's `unrecorded`
+/// messages, sent again in order, or when there are none the guide's carry-on
+/// ([`hang_carry_on_line`]), whose marker keeps the conversation's history from
+/// showing it as the user's. The turn stays open throughout: the GUI keeps its
+/// spinner and the partial reply, and the new process streams into the same callbacks.
+#[cfg(target_os = "freebsd")]
+fn recover_from_hang(
+    old: &Arc<ProcHandle>,
+    state: &Arc<Mutex<ChatState>>,
+    resume: &str,
+    unrecorded: Vec<(String, String)>,
+    carry_on: Option<String>,
+) {
+    retire_proc(state, old);
+    let r = &old.respawn;
+    let live = old.live.lock().unwrap().clone();
+    match spawn_persistent(
+        &r.claude_cmd, &r.workspace_root, r.mcp_port, &r.mcp_auth_token, resume,
+        &live.perm_mode, &live.effort, &live.model, &live.thinking, live.ultracode,
+        old.spawn_sig.clone(), Arc::clone(state), Arc::clone(&r.java_vm), Arc::clone(&r.callbacks),
+    ) {
+        Ok(p) => {
+            state.lock().unwrap().proc = Some(Arc::clone(&p));
+            restore_chrome(state, &p, &r.claude_cmd, resume, &r.java_vm, &r.callbacks);
+            restore_remote_control(state, &p, resume, &r.java_vm, &r.callbacks);
+            // A failed write surfaces as the new reader's EOF, like any dead process.
+            if unrecorded.is_empty() {
+                if let Some(line) = carry_on {
+                    let _ = p.write_line(&line);
+                }
+            } else {
+                for (line, text) in unrecorded {
+                    let _ = p.write_line(&line);
+                    p.sent.lock().unwrap().push((line, text));
+                }
+            }
+        }
+        Err(e) => {
+            fire_string(&r.java_vm, &r.callbacks, "onError",
+                        &format!("Claude Code froze and could not be restarted: {}", e));
+            fire_void(&r.java_vm, &r.callbacks, "onStreamEnd");
+            let mut s = state.lock().unwrap();
+            s.awaiting = false;
+            s.proc = None;
+        }
+    }
+}
+
+/// FreeBSD: the stdin line telling a CLI restarted by [`recover_from_hang`] to carry
+/// on: the guide's `hang_recovery.marker` and `carry_on`. `None` when the guide lacks
+/// either, and then a frozen CLI is ended rather than restarted.
+#[cfg(target_os = "freebsd")]
+fn hang_carry_on_line() -> Option<String> {
+    let marker = crate::freebsd_guide::hang_resume_marker()?;
+    let carry_on = crate::freebsd_guide::hang_carry_on()?;
+    Some(serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": format!("{} {}", marker, carry_on) }
+    }).to_string())
+}
+
+/// FreeBSD: remembers a user message written to `p` ([`unrecorded_messages`]). A reply
+/// to it is now due, so the last one being complete no longer means the turn is.
+#[cfg(target_os = "freebsd")]
+fn note_sent(p: &ProcHandle, line: String, text: &str) {
+    p.sent.lock().unwrap().push((line, text.to_string()));
+    p.reply_done.store(false, Ordering::Relaxed);
+}
+
+/// FreeBSD: ends the open turn of a CLI that froze after its reply was complete, with
+/// nothing to show for it: the process is retired like any respawn, and the next
+/// message resumes the conversation in a new one.
+#[cfg(target_os = "freebsd")]
+fn end_turn_quietly(proc: &Arc<ProcHandle>, state: &Arc<Mutex<ChatState>>) {
+    retire_proc(state, proc);
+    {
+        let mut s = state.lock().unwrap();
+        s.awaiting = false;
+        if s.proc.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, proc)) {
+            s.proc = None;
+        }
+    }
+    fire_void(&proc.respawn.java_vm, &proc.respawn.callbacks, "onStreamEnd");
+}
+
+/// FreeBSD: the user messages written to a frozen CLI that it never recorded, in the
+/// order sent, as (stdin line, text). The CLI writes a message to the conversation's
+/// transcript once it has read it, so whatever is missing from there died with it.
+#[cfg(target_os = "freebsd")]
+fn unrecorded_messages(p: &ProcHandle, resume: &str) -> Vec<(String, String)> {
+    let sent = p.sent.lock().unwrap().clone();
+    if sent.is_empty() {
+        return sent;
+    }
+    let recorded = recent_user_texts(&p.respawn.workspace_root, resume);
+    sent.into_iter().filter(|(_, text)| !recorded.iter().any(|t| t.contains(text.as_str()))).collect()
+}
+
+/// FreeBSD: the text of the user lines near the end of a conversation's transcript.
+#[cfg(target_os = "freebsd")]
+fn recent_user_texts(workspace_root: &str, session_id: &str) -> Vec<String> {
+    const TAIL_BYTES: usize = 1 << 20;
+    let Some(dir) = crate::session::projects_dir(workspace_root) else { return Vec::new() };
+    let Ok(bytes) = std::fs::read(dir.join(format!("{}.jsonl", session_id))) else { return Vec::new() };
+    let tail = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(TAIL_BYTES)..]).into_owned();
+    tail.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["type"] == "user")
+        .map(|v| {
+            let c = &v["message"]["content"];
+            match c.as_str() {
+                Some(s) => s.to_string(),
+                None => c.as_array()
+                    .map(|blocks| blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default(),
+            }
+        })
+        .collect()
 }
 
 fn reader_loop(
@@ -1963,10 +2263,22 @@ fn reader_loop(
             Ok(_) => continue,
             Err(_) => break,
         };
+        #[cfg(target_os = "freebsd")]
+        proc.last_output.store(epoch_secs(), Ordering::Relaxed);
         let event: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
+        #[cfg(target_os = "freebsd")]
+        if event["type"] == "stream_event" {
+            proc.progressed.store(true, Ordering::Relaxed);
+            match event["event"]["type"].as_str() {
+                Some("message_start") => proc.reply_done.store(false, Ordering::Relaxed),
+                Some("message_delta") => proc.reply_done.store(
+                    event["event"]["delta"]["stop_reason"] == "end_turn", Ordering::Relaxed),
+                _ => {}
+            }
+        }
 
         // Whether fast mode is on rides on the init event and on each turn's result,
         // both of which are also handled below.
@@ -2372,6 +2684,12 @@ fn reader_loop(
         let cancelled = state.lock().unwrap().cancel.load(Ordering::Relaxed);
         if !cancelled {
             let stderr_text = stderr_buf.lock().unwrap().trim().to_string();
+            #[cfg(target_os = "freebsd")]
+            let stderr_text = if proc.frozen.load(Ordering::Relaxed) {
+                crate::freebsd_guide::hang_gave_up().unwrap_or_default()
+            } else {
+                stderr_text
+            };
             let msg = if stderr_text.is_empty() {
                 "Claude process exited unexpectedly."
             } else {

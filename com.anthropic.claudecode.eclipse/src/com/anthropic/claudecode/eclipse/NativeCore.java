@@ -1168,6 +1168,27 @@ public final class NativeCore {
     public static native String freebsdSetupGuide();
 
     /**
+     * FreeBSD only: whether {@code entry} ({@code NAME=value}) is in the environment of
+     * process {@code pid}. How the Claude Terminal view finds the CLI its tab started.
+     * False on other platforms.
+     */
+    public static native boolean freebsdProcessHasEnv(long pid, String entry);
+
+    /**
+     * FreeBSD only: whether the main thread of the CLI {@code pid} is asleep in a Linux
+     * futex wait with no timeout. Seen twice in a row, that CLI has frozen inside the
+     * Linux ABI and will never wake. False on other platforms.
+     */
+    public static native boolean freebsdCliParked(long pid);
+
+    /**
+     * FreeBSD only: the first prompt of a Terminal CLI resumed after a freeze, from the
+     * {@code hang_recovery} section of the FreeBSD container file. Empty on other
+     * platforms.
+     */
+    public static native String freebsdHangCarryOn();
+
+    /**
      * Linux only: true when there is nothing to record from — ALSA finds no sound card,
      * and no default capture device (a sound server's, say) opens without one. Always
      * false on other platforms.

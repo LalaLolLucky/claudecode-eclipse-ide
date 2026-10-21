@@ -4,6 +4,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -75,6 +77,7 @@ import org.osgi.framework.Bundle;
 
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import org.eclipse.terminal.connector.ISettingsStore;
 import org.eclipse.terminal.connector.ITerminalConnector;
@@ -165,6 +168,28 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
     private static final int TYPING_PAUSE_MS = 700;
     /** How long it gives /remote-control to put its menu up before answering it. */
     private static final int MENU_PAUSE_MS = 1500;
+
+    /** FreeBSD: the CLI runs as the Linux binary under the Linux ABI, where its main thread
+     *  can go to sleep for good (see NativeCore#freebsdCliParked). Each tab watches its CLI
+     *  for that and, when it happens, resumes the conversation in a new one (see
+     *  TerminalSession#watchForHang). Nowhere else is anything watched. */
+    private static final boolean IS_FREEBSD = Activator.isFreeBSD();
+    /** FreeBSD: marks the CLI a tab starts, so the tab can find it among the IDE's processes. */
+    private static final String HANG_TAB_ENV = "CLAUDE_ECLIPSE_TERMINAL_TAB";
+    /** FreeBSD: how often a tab looks at its CLI. Far more often than the chat view: a frozen
+     *  terminal is right in front of the user, and every key typed into it is lost. */
+    private static final long HANG_CHECK_MS = 3_000;
+    /** FreeBSD: checks in a row a busy CLI's main thread has to be found asleep on before it
+     *  is taken to have frozen: 6 s of it at the least. */
+    private static final int HANG_BUSY_CHECKS = 3;
+    /** FreeBSD: the same for a CLI between turns, over one check more: 9 s at the least. */
+    private static final int HANG_IDLE_CHECKS = 4;
+    /** FreeBSD: how long a CLI has been busy before its main thread is looked at. */
+    private static final long HANG_QUIET_MS = 45_000;
+    /** FreeBSD: a restarted CLI that runs this long before freezing again got somewhere. */
+    private static final long HANG_PROGRESS_MS = 180_000;
+    /** FreeBSD: restarts in a row that got nowhere, after which a frozen CLI is just ended. */
+    private static final int HANG_MAX_FRUITLESS_RESTARTS = 3;
 
     /** How long it leaves between two keys it presses one after the other: a program reading
      *  keys takes what arrives together as one key. */
@@ -1215,6 +1240,17 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
         private ClaudeStatusBar statusBar;
         private PreferenceStore prefStore;
         private Listener keyFilter;
+        /** Counts this tab's launches. A listener only acts for the launch it came with, so
+         *  the CLI a freeze replaced cannot mark the tab ended when it goes. */
+        private volatile int launches = 0;
+        /** FreeBSD: the thread running {@link #watchForHang}, started with the first launch. */
+        private Thread hangWatch;
+        /** FreeBSD: the CLI the current launch started, once found. */
+        private volatile ProcessHandle cli;
+        /** FreeBSD: when the current launch started. */
+        private volatile long launchedAt;
+        /** FreeBSD: restarts after a freeze in a row that got nowhere. */
+        private int hangStreak = 0;
 
         String tabToken() { return tabToken; }
 
@@ -1441,6 +1477,7 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             // Tell Claude the terminal supports 24-bit color so it emits RGB
             // (the Eclipse terminal renders truecolor). Inlines xgsa's PR #26.
             env.add("COLORTERM=truecolor");
+            if (IS_FREEBSD) env.add(HANG_TAB_ENV + "=" + tabToken);
 
             // Resolve a bare command (e.g. the default "claude") to a concrete
             // file. macOS/Linux search the captured PATH; Windows must also probe
@@ -1503,9 +1540,11 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             settings.save(store);
             connector.load(store);
 
+            final int thisLaunch = ++launches;
             ITerminalListener listener = new ITerminalListener() {
                 @Override
                 public void setState(TerminalState state) {
+                    if (thisLaunch != launches) return;
                     if (state == TerminalState.CONNECTED) {
                         wasConnected = true;
                     } else if (state == TerminalState.CLOSED && wasConnected) {
@@ -1519,9 +1558,9 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
                 @Override
                 public void setTerminalTitle(String title, TerminalTitleRequestor requestor) {
                     // Claude Code sets the title to the current task — show it on the tab.
-                    if (title == null || title.isBlank()) return;
+                    if (title == null || title.isBlank() || thisLaunch != launches) return;
                     Display.getDefault().asyncExec(() -> {
-                        if (!disposed && tabItem != null && !tabItem.isDisposed()) {
+                        if (!disposed && thisLaunch == launches && tabItem != null && !tabItem.isDisposed()) {
                             // Buffered output can still deliver a title after the process
                             // ended — keep the terminated marker in that case.
                             tabItem.setText(terminatedShown
@@ -1566,6 +1605,162 @@ public class ClaudeCliView extends ViewPart implements IShowInTarget {
             if (scrollLockAction != null && scrollLockAction.isChecked())
                 termControl.setScrollLock(true);
             focus();
+
+            if (IS_FREEBSD) {
+                cli = null;
+                launchedAt = System.currentTimeMillis();
+                if (hangWatch == null) {
+                    hangWatch = new Thread(this::watchForHang, "claude-terminal-hang-watch");
+                    hangWatch.setDaemon(true);
+                    hangWatch.start();
+                }
+            }
+        }
+
+        /**
+         * FreeBSD: replaces this tab's CLI if it has frozen for good, so the conversation
+         * goes on by itself instead of the tab sitting there until it is closed. There is no
+         * FreeBSD build of Claude Code; under the Linux ABI its main thread can go to sleep in
+         * a futex wait that is never woken, and from then on it draws nothing and reads
+         * nothing.
+         *
+         * <p>A busy CLI is looked at once it has been busy for {@link #HANG_QUIET_MS} (its own
+         * record in {@code ~/.claude/sessions} says so), and then its main thread has to be
+         * found asleep on {@link #HANG_BUSY_CHECKS} checks in a row. One between turns stays
+         * "idle" when it freezes and never reads the next prompt, so it is looked at too, and
+         * has to be found asleep on {@link #HANG_IDLE_CHECKS}. A CLI that is thinking, streaming, running a long tool or
+         * waiting for the user waits in {@code epoll} and is never touched. A frozen one is
+         * killed and the tab resumes its conversation, with the carry-on from the FreeBSD
+         * container file as the first prompt when a turn was cut off
+         * ({@link #recoverFromHang}).
+         */
+        private void watchForHang() {
+            String mark = HANG_TAB_ENV + "=" + tabToken;
+            int parkedChecks = 0;
+            while (!disposed && !viewDisposed) {
+                try {
+                    Thread.sleep(HANG_CHECK_MS);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                try {
+                    if (!wasConnected || terminatedShown) {
+                        parkedChecks = 0;
+                        continue;
+                    }
+                    ProcessHandle p = cli;
+                    if (p == null || !p.isAlive()) {
+                        parkedChecks = 0;
+                        p = ProcessHandle.current().descendants()
+                                .filter(d -> Files.isRegularFile(cliSessionFile(d.pid()))
+                                        && NativeCore.freebsdProcessHasEnv(d.pid(), mark))
+                                .findFirst().orElse(null);
+                        cli = p;
+                        if (p == null) continue;
+                    }
+                    JsonObject record = readCliSession(p.pid());
+                    String status = record != null && record.has("status")
+                            ? record.get("status").getAsString() : "";
+                    boolean busy = "busy".equals(status);
+                    long since = record != null && record.has("statusUpdatedAt")
+                            ? record.get("statusUpdatedAt").getAsLong() : 0;
+                    if (record == null || (busy && System.currentTimeMillis() - since < HANG_QUIET_MS)) {
+                        parkedChecks = 0;
+                        continue;
+                    }
+                    boolean parked = NativeCore.freebsdCliParked(p.pid());
+                    if (!parked) {
+                        // A turn that ended is progress: whatever froze before is behind it.
+                        if ("idle".equals(status)) hangStreak = 0;
+                        parkedChecks = 0;
+                        continue;
+                    }
+                    // Waiting for the user, once more than busy, since nothing in it is due
+                    // to happen soon.
+                    if (++parkedChecks >= (busy ? HANG_BUSY_CHECKS : HANG_IDLE_CHECKS)) {
+                        parkedChecks = 0;
+                        String sessionId = record.has("sessionId")
+                                ? record.get("sessionId").getAsString() : "";
+                        recoverFromHang(p, sessionId, busy);
+                    }
+                } catch (RuntimeException | UnsatisfiedLinkError e) {
+                    if (Activator.getDefault().getPreferenceStore().getBoolean(Constants.PREF_DEBUG_MODE)) {
+                        Activator.logError("[hang-watch] terminal check failed", e);
+                    }
+                }
+            }
+        }
+
+        /**
+         * FreeBSD: kills this tab's frozen CLI and, unless restarting has stopped helping,
+         * resumes its conversation in the same tab: told to carry on when it froze in the
+         * middle of a turn ({@code busy}), and just reopened when it froze between turns.
+         * After {@link #HANG_MAX_FRUITLESS_RESTARTS} restarts in a row that each froze again
+         * within {@link #HANG_PROGRESS_MS} without finishing a turn, or with no conversation
+         * to resume, the CLI is just ended and the tab shows that as it does for any exit.
+         */
+        private void recoverFromHang(ProcessHandle frozen, String sessionId, boolean busy) {
+            if (System.currentTimeMillis() - launchedAt >= HANG_PROGRESS_MS) hangStreak = 0;
+            String carryOn = busy ? NativeCore.freebsdHangCarryOn() : "";
+            boolean debug = Activator.getDefault().getPreferenceStore().getBoolean(Constants.PREF_DEBUG_MODE);
+            if (sessionId.isEmpty() || (busy && (carryOn == null || carryOn.isEmpty()))
+                    || hangStreak >= HANG_MAX_FRUITLESS_RESTARTS) {
+                if (debug) {
+                    Activator.log("[hang-watch] terminal CLI " + frozen.pid() + " frozen ("
+                            + hangStreak + " restarts in a row got nowhere); ending it");
+                }
+                frozen.destroyForcibly();
+                return;
+            }
+            hangStreak++;
+            if (debug) {
+                Activator.log("[hang-watch] terminal CLI " + frozen.pid() + " frozen "
+                        + (busy ? "in a turn" : "between turns") + "; resuming " + sessionId + " in a new one");
+            }
+            String[] args = busy ? new String[] { "--resume", sessionId, carryOn }
+                    : new String[] { "--resume", sessionId };
+            // Counted before the kill, so the old launch's listener no longer acts for it.
+            launches++;
+            cli = null;
+            frozen.destroyForcibly();
+            Display display = Display.getDefault();
+            if (display.isDisposed()) return;
+            display.asyncExec(() -> relaunch(args));
+        }
+
+        /** FreeBSD: swaps this tab's terminal for a new one running {@code args} (UI thread). */
+        private void relaunch(String[] args) {
+            if (disposed || viewDisposed || content == null || content.isDisposed()) return;
+            if (keyFilter != null) {
+                content.getDisplay().removeFilter(SWT.KeyDown, keyFilter);
+                keyFilter = null;
+            }
+            if (termControl != null && !termControl.isDisposed()) {
+                Control root = termControl.getRootControl();
+                termControl.disposeTerminal();
+                if (root != null && !root.isDisposed()) root.dispose();
+            }
+            termControl = null;
+            if (statusBar != null && !statusBar.isDisposed()) statusBar.dispose();
+            statusBar = null;
+            wasConnected = false;
+            terminatedShown = false;
+            launch(args);
+        }
+
+        /** FreeBSD: where the CLI {@code pid} keeps its own record of what it is doing. */
+        private Path cliSessionFile(long pid) {
+            return Paths.get(System.getProperty("user.home"), ".claude", "sessions", pid + ".json");
+        }
+
+        /** FreeBSD: the CLI {@code pid}'s record ({@link #cliSessionFile}), or null. */
+        private JsonObject readCliSession(long pid) {
+            try {
+                String json = Files.readString(cliSessionFile(pid), StandardCharsets.UTF_8);
+                return JsonParser.parseString(json).getAsJsonObject();
+            } catch (IOException | RuntimeException e) {
+                return null;
+            }
         }
 
         /**

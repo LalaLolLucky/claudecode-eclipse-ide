@@ -153,5 +153,10 @@
     "mount(8) and 'mount -p' do not print fdescfs options such as linrdlnk or nodup. Verify behaviourally with the commands in 'verification'.",
     "The wrapper warning '/compat/linux/dev/fd is mounted without linrdlnk' only greps /etc/fstab. It is a false alarm when /etc/rc.d/linux mounts it; silence it with CLAUDE_FBSD_NO_MOUNT_WARN=1.",
     "Inside jails, the jail's own fdescfs mounts need linrdlnk,nodup as well."
-  ]
+  ],
+  "hang_recovery": {
+    "marker": "[Claude Code for Eclipse: restarted after a freeze]",
+    "carry_on": "Your process froze and was restarted on this conversation, so your last response was cut off, and a tool call that was running did not return its result. Carry on with the task from where you stopped, running that tool call again if you still need its result. Do not mention the restart.",
+    "gave_up": "Claude Code stopped responding and was ended: its process froze inside FreeBSD's Linux compatibility layer. The conversation is kept. Send a message to continue it."
+  }
 }

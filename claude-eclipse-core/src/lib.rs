@@ -2191,6 +2191,65 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_freebsdS
     finish_export(&mut env, "freebsdSetupGuide", result, std::ptr::null_mut())
 }
 
+/// FreeBSD only: whether `entry` (`NAME=value`) is in the environment of `pid`, how
+/// the Claude Terminal view finds the CLI its tab started. False elsewhere.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_freebsdProcessHasEnv(
+    mut env: JNIEnv,
+    _class: JClass,
+    pid: jlong,
+    entry: JString,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let entry: String = jstr(&mut env, &entry);
+        #[cfg(target_os = "freebsd")]
+        let has = pid > 0 && bridge::process_env_has(pid as u32, &entry);
+        #[cfg(not(target_os = "freebsd"))]
+        let has = { let _ = (pid, entry); false };
+        has as jboolean
+    }));
+    finish_export(&mut env, "freebsdProcessHasEnv", result, jni::sys::JNI_FALSE)
+}
+
+/// FreeBSD only: whether the main thread of the CLI `pid` is asleep in a Linux futex
+/// wait with no timeout, the sign of a CLI frozen inside the Linux ABI when it is
+/// seen twice in a row (see `bridge::main_thread_parked`). False elsewhere.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_freebsdCliParked(
+    mut env: JNIEnv,
+    _class: JClass,
+    pid: jlong,
+) -> jboolean {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        #[cfg(target_os = "freebsd")]
+        let parked = pid > 0 && bridge::main_thread_parked(pid as u32);
+        #[cfg(not(target_os = "freebsd"))]
+        let parked = { let _ = pid; false };
+        parked as jboolean
+    }));
+    finish_export(&mut env, "freebsdCliParked", result, jni::sys::JNI_FALSE)
+}
+
+/// FreeBSD only: the first prompt of a Terminal CLI resumed after a freeze, the
+/// guide's `hang_recovery.marker` and `carry_on`. Empty elsewhere, or when the guide
+/// lacks either.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_freebsdHangCarryOn(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let marker = freebsd_guide::hang_resume_marker();
+        let carry_on = freebsd_guide::hang_carry_on();
+        let prompt = match (marker, carry_on) {
+            (Some(m), Some(c)) => format!("{} {}", m, c),
+            _ => String::new(),
+        };
+        jout(&mut env, prompt, "")
+    }));
+    finish_export(&mut env, "freebsdHangCarryOn", result, std::ptr::null_mut())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -35,6 +35,42 @@ fn matches_fdescfs_failure(t: &str) -> bool {
         && (t.contains("swapped leaf") || t.contains("/tasks") || t.contains("not a directory, open"))
 }
 
+/// FreeBSD: how the message starts that is sent to a CLI restarted after it froze
+/// (`hang_recovery.marker`), which also tells it apart from the user's own words in
+/// a reloaded conversation. `None` elsewhere, or when the guide has none.
+pub fn hang_resume_marker() -> Option<String> {
+    hang_recovery_text("marker")
+}
+
+/// FreeBSD: the rest of that message, telling Claude to carry on (`hang_recovery.carry_on`).
+pub fn hang_carry_on() -> Option<String> {
+    hang_recovery_text("carry_on")
+}
+
+/// FreeBSD: what a turn ends with when a CLI that keeps freezing is not restarted
+/// again (`hang_recovery.gave_up`).
+pub fn hang_gave_up() -> Option<String> {
+    hang_recovery_text("gave_up")
+}
+
+fn hang_recovery_text(key: &str) -> Option<String> {
+    #[cfg(target_os = "freebsd")]
+    {
+        static GUIDE: std::sync::OnceLock<Option<serde_json::Value>> = std::sync::OnceLock::new();
+        GUIDE.get_or_init(|| serde_json::from_str(GUIDE_JSON).ok()).as_ref().and_then(|g| text_in(g, key))
+    }
+    #[cfg(not(target_os = "freebsd"))]
+    {
+        let _ = key;
+        None
+    }
+}
+
+fn text_in(guide: &serde_json::Value, key: &str) -> Option<String> {
+    let s = guide["hang_recovery"][key].as_str()?.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
 /// The message queued to Claude after [`is_fdescfs_failure`] matched, carrying the
 /// guide as JSON. `None` outside FreeBSD.
 pub fn diagnosis_message(error_text: &str) -> Option<String> {

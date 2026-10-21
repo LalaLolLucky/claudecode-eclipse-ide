@@ -586,6 +586,79 @@ pub(crate) fn rc_incoming_text(event: &serde_json::Value) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// FreeBSD only: telling a chat CLI that has frozen for good from one that is busy
+//
+// There is no FreeBSD build of Claude Code, so it runs as the Linux binary under
+// the Linux ABI, with every Linux futex emulated on top of FreeBSD's umtx. Since
+// CLI 2.1.301 its main thread can go to sleep in a futex wait that has no timeout
+// and never be woken: a wakeup lost at a handoff between the main thread and the
+// HTTP or child-process threads. From then on the CLI writes nothing and its own
+// stream watchdog, a timer on that same thread, never fires, so the turn spins
+// forever. Closing the tab and resuming the session was the only way out.
+//
+// A healthy CLI's main thread waits in `epoll` (a timed kqueue scan) whether it
+// is idle, streaming or waiting on a tool, so a main thread found in an untimed
+// Linux futex wait on two checks in a row, with nothing written in between, is the
+// hang and nothing else. That is the only state this reports.
+// ---------------------------------------------------------------------------
+
+/// Whether the main thread of `pid` is asleep in a Linux futex wait with no timeout.
+/// False when it cannot tell: no `procstat`, the process is gone, or the output is
+/// not what [`main_thread_parked_in`] expects.
+#[cfg(target_os = "freebsd")]
+pub(crate) fn main_thread_parked(pid: u32) -> bool {
+    let out = std::process::Command::new("/usr/bin/procstat")
+        .args(["-kk", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => main_thread_parked_in(&String::from_utf8_lossy(&o.stdout)),
+        _ => false,
+    }
+}
+
+/// The check on `procstat -kk` output. The main thread is listed first, right after
+/// the header (it has the lowest thread id), as in every capture of a frozen CLI.
+///
+/// Columns are not split: the command and thread names may hold spaces ("Bun Pool
+/// 0"), and only the kernel frames (`name+0x…`) matter. `sleepq_wait_sig` is the
+/// untimed sleep; a timed one shows `sleepq_timedwait_sig` instead.
+#[cfg(target_os = "freebsd")]
+fn main_thread_parked_in(procstat: &str) -> bool {
+    let Some(main) = procstat.lines().skip(1).find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    let frames: Vec<&str> = main.split_whitespace().filter(|t| t.contains("+0x")).collect();
+    frames.iter().any(|f| f.starts_with("sleepq_wait_sig+"))
+        && frames.iter().any(|f| f.starts_with("linux_sys_futex+"))
+}
+
+/// Whether `entry` (`NAME=value`) is in the environment of `pid`: how the Claude
+/// Terminal view tells the CLI its tab started from every other process the IDE
+/// runs. False when it cannot tell.
+#[cfg(target_os = "freebsd")]
+pub(crate) fn process_env_has(pid: u32, entry: &str) -> bool {
+    let out = std::process::Command::new("/usr/bin/procstat")
+        .args(["-e", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => env_listing_has(&String::from_utf8_lossy(&o.stdout), entry),
+        _ => false,
+    }
+}
+
+/// The check on `procstat -e` output: a header, then the PID, the command and the
+/// entries, all separated by spaces. A value holding a space comes out split, which
+/// does not matter here: the entries looked for never hold one.
+#[cfg(target_os = "freebsd")]
+fn env_listing_has(procstat: &str, entry: &str) -> bool {
+    procstat.lines().skip(1).any(|l| l.split_whitespace().skip(2).any(|t| t == entry))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -955,5 +1028,64 @@ second"));
     #[test]
     fn nothing_to_encode_yields_nothing_to_show() {
         assert_eq!(rc_qr_svg(""), "");
+    }
+}
+
+/// The frozen-CLI check against `procstat -kk` lines from real chat CLIs.
+#[cfg(all(test, target_os = "freebsd"))]
+mod hang_tests {
+    use super::{env_listing_has, main_thread_parked_in};
+
+    const HEADER: &str = "  PID    TID COMM                TDNAME              KSTACK                       ";
+
+    // Lines taken from `procstat -kk` of real chat CLIs on FreeBSD 15.1 arm64.
+    const FROZEN_MAIN: &str = "78404 177453 ollector Thread     claude              mi_switch+0x110 sleepq_catch_signals+0x3e4 sleepq_wait_sig+0xc _sleep+0x1b8 umtxq_sleep+0x2b0 linux_sys_futex+0x594 do_el0_sync+0x664 handle_el0_sync+0x4c ";
+    const IDLE_MAIN: &str = "77830 179220 ollector Thread     claude              mi_switch+0x110 sleepq_catch_signals+0x3e4 sleepq_timedwait_sig+0x18 _sleep+0x198 kqueue_scan+0xbf4 kqueue_kevent+0x134 kern_kevent_fp+0x68 linux_epoll_wait_ts+0xec linux_epoll_pwait2+0x70 do_el0_sync+0x664 handle_el0_sync+0x4c ";
+    const TIMED_FUTEX: &str = "77830 188512 ollector Thread     claude              mi_switch+0x110 sleepq_catch_signals+0x3e4 sleepq_timedwait_sig+0x18 _sleep+0x198 umtxq_sleep+0x2b0 linux_sys_futex+0x594 do_el0_sync+0x664 handle_el0_sync+0x4c ";
+    const POOL_PARKED: &str = "78404 188227 ollector Thread     Bun Pool 0          mi_switch+0x110 sleepq_catch_signals+0x3e4 sleepq_wait_sig+0xc _sleep+0x1b8 umtxq_sleep+0x2b0 linux_sys_futex+0x594 do_el0_sync+0x664 handle_el0_sync+0x4c ";
+
+    fn out(lines: &[&str]) -> String {
+        std::iter::once(HEADER).chain(lines.iter().copied()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_main_thread_in_an_untimed_futex_wait_is_parked() {
+        assert!(main_thread_parked_in(&out(&[FROZEN_MAIN, TIMED_FUTEX, POOL_PARKED])));
+    }
+
+    #[test]
+    fn a_main_thread_waiting_in_epoll_is_not() {
+        // Worker threads parked for good are normal; only the main thread counts.
+        assert!(!main_thread_parked_in(&out(&[IDLE_MAIN, TIMED_FUTEX, POOL_PARKED])));
+    }
+
+    #[test]
+    fn a_futex_wait_with_a_timeout_is_not() {
+        assert!(!main_thread_parked_in(&out(&[TIMED_FUTEX, IDLE_MAIN])));
+    }
+
+    #[test]
+    fn a_native_untimed_sleep_is_not() {
+        // A FreeBSD binary sleeping in its own umtx, not the Linux futex emulation.
+        let native = "1234 100001 sh                  -                   mi_switch+0x110 sleepq_catch_signals+0x3e4 sleepq_wait_sig+0xc _sleep+0x1b8 umtxq_sleep+0x2b0 do_lock_umutex+0x5c0 __umtx_op_wait_umutex+0x40 sys__umtx_op+0x7c ";
+        assert!(!main_thread_parked_in(&out(&[native])));
+    }
+
+    #[test]
+    fn nothing_to_read_is_not() {
+        assert!(!main_thread_parked_in(""));
+        assert!(!main_thread_parked_in(HEADER));
+    }
+
+    #[test]
+    fn an_environment_entry_is_found_whole() {
+        // `procstat -e` of a real process.
+        let listing = "  PID COMM             ENVIRONMENT                                          \n\
+                       26332 sleep            CLAUDE_ECLIPSE_TAB=abc-123 HOME=/x";
+        assert!(env_listing_has(listing, "CLAUDE_ECLIPSE_TAB=abc-123"));
+        assert!(env_listing_has(listing, "HOME=/x"));
+        assert!(!env_listing_has(listing, "CLAUDE_ECLIPSE_TAB=abc"));
+        assert!(!env_listing_has(listing, "sleep"));
+        assert!(!env_listing_has("", "HOME=/x"));
     }
 }

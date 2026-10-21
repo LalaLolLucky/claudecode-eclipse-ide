@@ -51,6 +51,14 @@ fn is_non_user_notice(event: &serde_json::Value, content: &str) -> bool {
     event["isMeta"].as_bool().unwrap_or(false) && content.starts_with(NON_USER_MARKER)
 }
 
+/// FreeBSD: the message the plugin sends a CLI it restarted after the CLI froze,
+/// telling it to carry on (`chat::recover_from_hang`). Not the user's words, so the
+/// conversation shows Claude carrying on and not this. Never true elsewhere, where
+/// there is no marker.
+fn is_hang_resume(content: &str) -> bool {
+    crate::freebsd_guide::hang_resume_marker().is_some_and(|m| content.starts_with(&m))
+}
+
 /// A background-task notification the host injected while the conversation ran.
 ///
 /// The CLI stores it as an ordinary user line whose whole text is the
@@ -983,10 +991,11 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
                     // A post-compaction summary is stored as a user line flagged
                     // isCompactSummary — surface it as the expandable "Compacted
                     // chat" body, never as a (huge) user bubble.
-                    if is_non_user_notice(&event, c) || is_task_notification(&event, c) {
+                    if is_non_user_notice(&event, c) || is_task_notification(&event, c) || is_hang_resume(c) {
                         // Not something the user typed (the browser-disconnected notice,
-                        // or a background-task notification): Claude's reply to it is what
-                        // the conversation shows.
+                        // a background-task notification, or the FreeBSD carry-on after a
+                        // frozen CLI was restarted): Claude's reply to it is what the
+                        // conversation shows.
                     } else if event["isCompactSummary"].as_bool().unwrap_or(false) {
                         items.push(serde_json::json!({ "t": "compact_summary", "text": c }));
                     } else {
@@ -2893,6 +2902,38 @@ mod tests {
         let want: serde_json::Value = serde_json::from_str(r#"[
             {"t":"user","content":"hi","ts":"2026-09-15T08:40:00.000Z"},
             {"t":"text","text":"Chrome has disconnected.","model":"claude-opus-5"}
+        ]"#).unwrap();
+        assert_eq!(got, want);
+    }
+
+    /// FreeBSD: the carry-on the plugin sends a CLI it restarted after a freeze is not
+    /// the user's, so a reloaded conversation shows Claude carrying on, without it.
+    #[cfg(target_os = "freebsd")]
+    #[test]
+    fn load_session_hides_the_carry_on_after_a_freeze() {
+        let mut env = EnvGuard::lock();
+        let home = std::env::temp_dir().join("claude-eclipse-session-hang-home");
+        let root = r"C:\hangws";
+        let dir = home.join(".claude").join("projects").join("C--hangws");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        let marker = crate::freebsd_guide::hang_resume_marker().expect("the guide has hang_recovery.marker");
+        let carry_on = format!("{} Carry on with the task.", marker);
+        fs::write(dir.join("sessh.jsonl"), [
+            r#"{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-10-21T05:00:00.000Z"}"#.to_string(),
+            serde_json::json!({"type":"user","message":{"role":"user","content":carry_on},
+                               "timestamp":"2026-10-21T05:02:00.000Z"}).to_string(),
+            r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"Continuing."}]},"timestamp":"2026-10-21T05:02:05.000Z"}"#.to_string(),
+        ].join("\n")).unwrap();
+
+        env.set_home(&home);
+        let loaded = super::load_session_history(root, "sessh");
+        let _ = fs::remove_dir_all(&home);
+
+        let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let want: serde_json::Value = serde_json::from_str(r#"[
+            {"t":"user","content":"hi","ts":"2026-10-21T05:00:00.000Z"},
+            {"t":"text","text":"Continuing.","model":"claude-opus-5"}
         ]"#).unwrap();
         assert_eq!(got, want);
     }
