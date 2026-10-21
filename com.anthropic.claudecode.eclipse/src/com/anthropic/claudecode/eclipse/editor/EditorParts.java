@@ -1,6 +1,7 @@
 package com.anthropic.claudecode.eclipse.editor;
 
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.function.Function;
 
 import org.eclipse.core.resources.IResource;
@@ -57,6 +58,46 @@ public final class EditorParts {
             return uriInput.getURI().getPath();
         }
         return null;
+    }
+
+    /**
+     * Whether {@code path} is not a path on the local disk but a URI of another file system
+     * ({@code semanticfs:/E10/...} for ABAP, a remote project's): what {@link #pathOf(IResource)}
+     * reports for a file that has no disk path. A Windows drive letter ({@code C:\x}) is not a
+     * scheme, nor is {@code file:}, which names a disk file.
+     */
+    public static boolean isNonDiskPath(String path) {
+        String scheme = schemeOf(path);
+        return scheme != null && !scheme.equalsIgnoreCase("file");
+    }
+
+    /** The URI {@code path} names when {@link #isNonDiskPath} says it is one, else null. */
+    public static URI nonDiskUriOf(String path) {
+        if (!isNonDiskPath(path)) return null;
+        try {
+            return new URI(path);
+        } catch (URISyntaxException e) {
+            return null;
+        }
+    }
+
+    /** What a tool that reads and writes by disk path says when it is handed a URI of another file system. */
+    public static String notOnDiskMessage(String path) {
+        return path + " is not a file on disk: the \"" + schemeOf(path) + "\" file system keeps it, so this tool, "
+            + "which reads and writes files by path, cannot work on it. Use the editor it is open in instead.";
+    }
+
+    /** The scheme of a URI-looking path (two or more characters, so not a drive letter), or null. */
+    private static String schemeOf(String path) {
+        if (path == null) return null;
+        int colon = path.indexOf(':');
+        if (colon < 2) return null;
+        if (!Character.isLetter(path.charAt(0))) return null;
+        for (int i = 1; i < colon; i++) {
+            char c = path.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '+' && c != '-' && c != '.') return null;
+        }
+        return path.substring(0, colon);
     }
 
     /**

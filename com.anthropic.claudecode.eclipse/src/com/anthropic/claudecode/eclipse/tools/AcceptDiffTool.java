@@ -9,6 +9,7 @@ import org.eclipse.core.runtime.IPath;
 import org.eclipse.ui.IEditorReference;
 import org.eclipse.ui.IWorkbenchPage;
 
+import com.anthropic.claudecode.eclipse.editor.EditorParts;
 import com.anthropic.claudecode.eclipse.editor.UiHelper;
 import com.anthropic.claudecode.eclipse.mcp.McpTool;
 import com.anthropic.claudecode.eclipse.mcp.McpToolResult;
@@ -48,6 +49,7 @@ public class AcceptDiffTool implements McpTool {
     @Override
     public McpToolResult execute(JsonObject params) {
         String filePath = EditorUtils.requireString(params, "file_path", "filePath");
+        if (EditorParts.isNonDiskPath(filePath)) return McpToolResult.error(EditorParts.notOnDiskMessage(filePath));
 
         DiffRegistry.DiffEntry entry = DiffRegistry.getInstance().get(filePath);
         if (entry == null) {
