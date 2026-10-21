@@ -4,7 +4,23 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.22] — 2026-10-20 *(current)*
+## [3.2.23] — 2026-10-21 *(current)*
+
+### Changed
+- The Claude Code view follows your settings and your organization's managed settings: permission modes, models, effort levels, fast mode, Remote Control, hooks, permission rules, plugins, output styles, the advisor and feedback that they rule out are greyed, with the reason ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #217).
+- Signed in through Amazon Bedrock, Google Vertex AI or Microsoft Foundry, Account & usage names the provider, and Switch account and Sign out are hidden ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #217).
+
+### Fixed
+- Claude can open ABAP sources from SAP's ABAP Development Tools in the editor, and says plainly when it cannot show a diff for one ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #218).
+- FreeBSD: a Claude Code view conversation no longer spins forever when Claude Code freezes inside FreeBSD's Linux compatibility layer.
+- FreeBSD: a Claude Terminal tab whose Claude Code freezes, in the middle of a task or while idle, restarts on the same conversation by itself within seconds.
+- FreeBSD: switching on Remote Control no longer fails with "the bridge did not connect" when Claude Code has frozen between replies; it is restarted and Remote Control comes on. Remote Control that is already on stays connected through a restart after a freeze.
+- Windows: updating Claude Code from the update banner no longer fails on the first try when Claude Code was installed with npm.
+- A failed update now says why it failed, instead of showing the version it started from.
+
+---
+
+## [3.2.22] — 2026-10-20
 
 ### Added
 - **Manage Plugins:** install, update, turn on or off and remove plugins, and add, update or remove marketplaces, from "Manage plugins" in the command menu or `/plugins` ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #207).
