@@ -83,6 +83,40 @@ pub fn mention_rows_json(
     }
 }
 
+/// Which of the `@` list's files a dropped file is, when it is one of them. A page is told
+/// a dropped file's name, size and time of last write, and not where it lives, so a file is
+/// taken for the project's only when a listed file of that name has that size and was written
+/// within two seconds of that time (the coarsest a file system keeps it). A copy from
+/// elsewhere with the same name does not pass for it, and neither does one of two listed files
+/// that both fit. The path is relative to `root` and `/`-separated, as the list gives it.
+pub fn project_file_for(root: &str, name: &str, size: u64, modified_ms: i64) -> Option<String> {
+    // Without a time there is nothing to tell a file from a same-named one of the same size.
+    if root.trim().is_empty() || name.is_empty() || modified_ms <= 0 {
+        return None;
+    }
+    let base = std::path::Path::new(root);
+    let mut found: Option<String> = None;
+    for entry in cached_entries(root).iter().filter(|e| !e.dir && e.name == name) {
+        let Ok(meta) = std::fs::metadata(base.join(&entry.path)) else { continue };
+        if meta.len() != size {
+            continue;
+        }
+        let written = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+        if !written.is_some_and(|w| (w - modified_ms).abs() <= 2000) {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(entry.path.clone());
+    }
+    found
+}
+
 fn row(e: &Entry) -> serde_json::Value {
     serde_json::json!({
         "path": e.path,
@@ -356,5 +390,54 @@ mod tests {
         assert_eq!(rows.len(), 2, "readme.md, then the tab: {rows:?}");
         assert_eq!(rows[0]["name"], "readme.md");
         assert_eq!(rows[1]["name"], "Docs");
+    }
+    // ---- a dropped file that is one of the project's ----
+
+    fn written_ms(path: &std::path::Path) -> i64 {
+        std::fs::metadata(path).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+    }
+
+    #[test]
+    fn a_dropped_file_is_the_projects_when_its_name_size_and_time_all_fit() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::create_dir_all(root.path().join("docs")).unwrap();
+        std::fs::write(root.path().join("src/App.java"), "class A {}").unwrap();
+        std::fs::write(root.path().join("docs/App.java"), "class Documented { /* longer */ }").unwrap();
+        let at = written_ms(&root.path().join("src/App.java"));
+        let r = root.path().to_string_lossy().to_string();
+
+        // Same name in two places: the size says which.
+        assert_eq!(project_file_for(&r, "App.java", 10, at).as_deref(), Some("src/App.java"));
+        assert_eq!(project_file_for(&r, "App.java", 33, written_ms(&root.path().join("docs/App.java"))).as_deref(), Some("docs/App.java"));
+        // A near time is the same time (a file system may keep it to two seconds).
+        assert_eq!(project_file_for(&r, "App.java", 10, at + 1500).as_deref(), Some("src/App.java"));
+        // Not the project's: another size, another time, no time at all, another name.
+        assert_eq!(project_file_for(&r, "App.java", 11, at), None);
+        assert_eq!(project_file_for(&r, "App.java", 10, at - 60_000), None, "a copy from elsewhere, written long ago");
+        assert_eq!(project_file_for(&r, "App.java", 10, 0), None, "without a time it would be a guess");
+        assert_eq!(project_file_for(&r, "Other.java", 10, at), None);
+        assert_eq!(project_file_for("", "App.java", 10, at), None);
+        assert_eq!(project_file_for(&r, "", 10, at), None);
+    }
+
+    #[test]
+    fn two_files_that_both_fit_are_not_told_apart_by_guessing() {
+        let root = tempfile::tempdir().unwrap();
+        for dir in ["a", "b"] {
+            std::fs::create_dir_all(root.path().join(dir)).unwrap();
+            std::fs::write(root.path().join(dir).join("same.txt"), "identical").unwrap();
+        }
+        let at = written_ms(&root.path().join("a/same.txt"));
+        assert_eq!(project_file_for(&root.path().to_string_lossy(), "same.txt", 9, at), None);
+    }
+
+    #[test]
+    fn a_file_the_list_leaves_out_is_not_the_projects() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".git")).unwrap();
+        std::fs::write(root.path().join(".git/config"), "[core]").unwrap();
+        let at = written_ms(&root.path().join(".git/config"));
+        assert_eq!(project_file_for(&root.path().to_string_lossy(), "config", 6, at), None);
     }
 }

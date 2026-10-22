@@ -264,6 +264,7 @@ body { min-width: 150px; }
    order decides the tie when the composer is both unfocused and in a non-Manual mode. */
 #input-wrap { position: relative; border: 1px solid var(--mode-manual); border-radius: 8px;
   background: var(--bg-soft); padding: 8px 10px 6px; transition: border-color .15s; }
+#input-wrap.drop-over { outline: 2px dashed var(--accent); outline-offset: -3px; }   /* files are being dragged over the view */
 #input-wrap.mode-acceptEdits { border-color: var(--mode-accept-edits); }
 #input-wrap.mode-plan { border-color: var(--mode-plan); }
 #input-wrap.mode-auto { border-color: var(--mode-auto); }

@@ -61,6 +61,14 @@ fn is_non_user_notice(event: &serde_json::Value, content: &str) -> bool {
     event["isMeta"].as_bool().unwrap_or(false) && content.starts_with(NON_USER_MARKER)
 }
 
+/// Whether `text` is only the CLI's notes about the images sent with a message: one or more lines of
+/// `[Image: source: <where it saved the image>]` or `[Image: original 2352x4160, displayed at …]`. They
+/// are for the model; nobody typed them, and a conversation does not show them.
+fn is_image_note(text: &str) -> bool {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty()).peekable();
+    lines.peek().is_some() && lines.all(|l| l.starts_with("[Image: ") && l.ends_with(']'))
+}
+
 /// FreeBSD: the message the plugin sends a CLI it restarted after the CLI froze,
 /// telling it to carry on (`chat::recover_from_hang`). Not the user's words, so the
 /// conversation shows Claude carrying on and not this. Never true elsewhere, where
@@ -1494,7 +1502,7 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
                     // A post-compaction summary is stored as a user line flagged
                     // isCompactSummary — surface it as the expandable "Compacted
                     // chat" body, never as a (huge) user bubble.
-                    if is_non_user_notice(&event, c) || is_task_notification(&event, c) || is_hang_resume(c) {
+                    if is_non_user_notice(&event, c) || is_task_notification(&event, c) || is_hang_resume(c) || is_image_note(c) {
                         // Not something the user typed (the browser-disconnected notice,
                         // a background-task notification, or the FreeBSD carry-on after a
                         // frozen CLI was restarted): Claude's reply to it is what the
@@ -1538,6 +1546,10 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
                         match b["type"].as_str() {
                             Some("text") => {
                                 let s = b["text"].as_str().unwrap_or("");
+                                // The CLI's note on where it saved an image, or how it scaled it.
+                                if is_image_note(s) {
+                                    continue;
+                                }
                                 // A file uploaded as a path is one of these blocks: it
                                 // comes back as its chip, not as words in the bubble.
                                 if let Some(path) = attached_file_path(s) {
@@ -5321,5 +5333,45 @@ really";
         assert_eq!((thinking[0]["text"].as_str(), thinking[0]["durationMs"].as_u64(), thinking[0]["narration"].as_bool()), (Some(""), Some(1448), None));
         assert_eq!((thinking[1]["text"].as_str(), thinking[1]["durationMs"].as_u64(), thinking[1]["narration"].as_bool()), (Some("Now I'll do a final sweep."), Some(3), Some(true)));
         assert_eq!((thinking[2]["durationMs"].as_u64(), thinking[2]["narration"].as_bool()), (None, None));
+    }
+    #[test]
+    fn the_clis_notes_about_the_images_sent_with_a_message_are_not_shown_as_messages() {
+        use super::is_image_note;
+        assert!(is_image_note("[Image: source: /private/tmp/claude-501/p/s/images/2.png]"));
+        assert!(is_image_note("[Image: source: /tmp/a.png]\n[Image: source: /tmp/b.png]\n"));
+        assert!(is_image_note("[Image: original 2352x4160, displayed at 1176x2080. Multiply coordinates by 2.00.]"));
+        // Somebody's words around or quoting one are theirs.
+        assert!(!is_image_note("see [Image: source: /tmp/a.png] here"));
+        assert!(!is_image_note("[Image: source: /tmp/a.png]\nand what is in it?"));
+        assert!(!is_image_note(""));
+        assert!(!is_image_note("[Image of a cat]"));
+
+        let mut env = EnvGuard::lock();
+        let home = std::env::temp_dir().join("claude-eclipse-session-image-notes-home");
+        let root = r"C:\imgnotews";
+        let dir = home.join(".claude").join("projects").join("C--imgnotews");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let transcript = [
+            // The message: its images and words.
+            format!(r#"{{"type":"user","uuid":"u1","message":{{"role":"user","content":[{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{png}"}}}},{{"type":"text","text":"what is this"}}]}},"timestamp":"2026-10-22T10:00:00.000Z"}}"#),
+            // The CLI's own note beside it, as its own meta line of text blocks.
+            r#"{"type":"user","uuid":"u2","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"[Image: source: /private/tmp/x/images/1.png]"},{"type":"text","text":"[Image: source: /private/tmp/x/images/2.png]"}]},"timestamp":"2026-10-22T10:00:00.100Z"}"#.to_string(),
+            // The same as one string.
+            r#"{"type":"user","uuid":"u3","isMeta":true,"message":{"role":"user","content":"[Image: source: /private/tmp/x/images/3.png]"},"timestamp":"2026-10-22T10:00:00.200Z"}"#.to_string(),
+            // A message with a note inside it: the note goes, the words stay.
+            r#"{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"text","text":"and this one"},{"type":"text","text":"[Image: original 2000x1000, displayed at 1000x500.]"}]},"timestamp":"2026-10-22T10:00:01.000Z"}"#.to_string(),
+        ]
+        .join("\n");
+        fs::write(dir.join("sessim.jsonl"), transcript).unwrap();
+        env.set_home(&home);
+
+        let items: serde_json::Value = serde_json::from_str(&super::load_session_history(root, "sessim")).unwrap();
+        let _ = fs::remove_dir_all(&home);
+        let users: Vec<&serde_json::Value> = items.as_array().unwrap().iter().filter(|it| it["t"] == "user").collect();
+        assert_eq!(users.len(), 2, "{items}");
+        assert_eq!((users[0]["content"].as_str(), users[0]["images"].as_array().map(Vec::len)), (Some("what is this"), Some(1)));
+        assert_eq!(users[1]["content"], "and this one");
     }
 }

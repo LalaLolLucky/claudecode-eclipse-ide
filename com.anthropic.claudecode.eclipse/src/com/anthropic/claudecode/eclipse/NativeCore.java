@@ -330,6 +330,15 @@ public final class NativeCore {
     public static native String listMentions(String root, String claudeCmd, String query, boolean withBrowser);
 
     /**
+     * Which of the {@code @} list's files a dropped file is, as its path under {@code root}, or an
+     * empty string when it is none of them. A page sees a dropped file's name, size and time of last
+     * write but not where it lives, so a listed file of that name must also have that size and have
+     * been written within two seconds of that time. Blocking (it may walk the folder): call off the
+     * UI thread.
+     */
+    public static native String projectFileFor(String root, String name, long size, long modifiedMs);
+
+    /**
      * Takes the browser back out of this manager's conversation, telling the model it is
      * gone; {@link ChatCallbacks#onBrowserState} reports it disconnected. Returns whether it
      * was on.

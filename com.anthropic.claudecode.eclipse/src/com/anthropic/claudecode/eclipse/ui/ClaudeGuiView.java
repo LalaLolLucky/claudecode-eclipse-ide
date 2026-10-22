@@ -253,6 +253,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private SimpleFunction clipImagesFn;
     @SuppressWarnings("unused") private SimpleFunction drainImagesFn;
     @SuppressWarnings("unused") private SimpleFunction listFilesFn;
+    @SuppressWarnings("unused") private SimpleFunction projectFileFn;
     @SuppressWarnings("unused") private SimpleFunction takeFilesListedFn;
     @SuppressWarnings("unused") private SimpleFunction browserSupportedFn;
     @SuppressWarnings("unused") private SimpleFunction disconnectBrowserFn;
@@ -1598,6 +1599,31 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                     }
                 });
             }, "claude-mention-list").start();
+            return null;
+        });
+        // Which project file a dropped file is (images.js): (id, root, name, size, modifiedMs), answered
+        // through window.onProjectFile(id, path), the path being empty when it is none of them.
+        projectFileFn = new SimpleFunction(browser, "_projectFileAsync", a -> {
+            if (a.length < 5 || !(a[0] instanceof String reqId) || !(a[1] instanceof String root)
+                    || !(a[2] instanceof String name) || !(a[3] instanceof Number size)
+                    || !(a[4] instanceof Number modified)) return null;
+            final Browser b = browser;
+            new Thread(() -> {
+                String found;
+                try {
+                    found = NativeCore.projectFileFor(root.isBlank() ? workspaceRoot() : root, name,
+                            size.longValue(), modified.longValue());
+                } catch (Throwable t) {
+                    ClaudeCodeView.debug("[DROP] project file lookup failed for '" + name + "': " + t);
+                    found = "";
+                }
+                final String rel = found == null ? "" : found;
+                Display.getDefault().asyncExec(() -> {
+                    if (b != null && !b.isDisposed() && pageLoaded) {
+                        b.execute("window.onProjectFile && window.onProjectFile('" + esc(reqId) + "','" + esc(rel) + "')");
+                    }
+                });
+            }, "claude-drop-lookup").start();
             return null;
         });
         takeFilesListedFn = new SimpleFunction(browser, "_takeFilesListed", a -> {

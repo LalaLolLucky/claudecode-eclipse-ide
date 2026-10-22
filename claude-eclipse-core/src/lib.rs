@@ -1662,6 +1662,28 @@ pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_listMent
     finish_export(&mut env, "listMentions", result, std::ptr::null_mut())
 }
 
+/// Which of the `@` list's files a dropped file is, as its path under `root`, or "" when it is
+/// none of them (see `mentions::project_file_for`: the name, size and time must all fit).
+/// **Blocking** (it may walk the folder): off the UI thread.
+#[no_mangle]
+pub extern "system" fn Java_com_anthropic_claudecode_eclipse_NativeCore_projectFileFor(
+    mut env: JNIEnv,
+    _class: JClass,
+    root: JString,
+    name: JString,
+    size: jlong,
+    modified_ms: jlong,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut arg = |s: JString| jstr(&mut env, &s);
+        let root = arg(root);
+        let name = arg(name);
+        let found = mentions::project_file_for(&root, &name, size.max(0) as u64, modified_ms).unwrap_or_default();
+        jout(&mut env, found, "")
+    }));
+    finish_export(&mut env, "projectFileFor", result, std::ptr::null_mut())
+}
+
 // ===========================================================================
 // MCP servers window JNI entry point
 // ===========================================================================
