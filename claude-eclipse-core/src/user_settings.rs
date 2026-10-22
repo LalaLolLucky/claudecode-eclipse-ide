@@ -21,11 +21,7 @@ fn allowed(key: &str, value: &serde_json::Value) -> bool {
 /// Where the user's settings file is: in the folder `CLAUDE_CONFIG_DIR` names when it
 /// names one, which is where the CLI then reads it, and in `~/.claude` otherwise.
 fn settings_path() -> Option<PathBuf> {
-    let folder = match std::env::var_os("CLAUDE_CONFIG_DIR") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => crate::session::dirs_home()?.join(".claude"),
-    };
-    Some(folder.join("settings.json"))
+    Some(crate::session::config_dir()?.join("settings.json"))
 }
 
 /// One member of the file's top-level object: its key, and where its value's text is.

@@ -3651,6 +3651,16 @@ fn process_event_value(
                                     }
                                 }
                                 cursor.1 = t.len();
+                                // The block is whole, with its signature, which says whether it is the model's
+                                // narration: its commentary between steps, which the view shows as a line of text
+                                // (the extension does) rather than a collapsed "Thinking" row. Not a subagent's.
+                                if !is_partial
+                                    && !is_subagent
+                                    && !t.trim().is_empty()
+                                    && block["signature"].as_str().is_some_and(crate::session::is_narration_signature)
+                                {
+                                    fire_string(java_vm, callbacks, "onThinkingBlock", "narration");
+                                }
                             }
                             "tool_use" if !is_partial => {
                                 if is_subagent {
@@ -3685,11 +3695,12 @@ fn process_event_value(
                         }
                     }
                 }
-                // A subagent's own per-turn usage, summed across its whole run — the
-                // Agents popup's duration+tokens line. Anthropic's `usage` is PER
-                // MESSAGE, not cumulative, so this has to add rather than overwrite;
-                // only counted once a message is actually final (never for a partial
-                // delta still in flight, which would double-count once it completes).
+                // A subagent's token count so far, as the CLI's own figure for it is made:
+                // the usage of its LATEST message, which already counts everything it has
+                // read (cache reads are the whole context again on every call), not a sum of
+                // them — a sum counted that context once per call (30M for an agent the CLI
+                // reports at 296k). Only a message that is final counts, never a partial
+                // delta still in flight. The CLI's total replaces it when the agent ends.
                 // Model rides along on the same message (also the detail popup's
                 // "Sonnet 5"-style field) rather than its own separate event.
                 if is_subagent && !is_partial {
@@ -3698,7 +3709,9 @@ fn process_event_value(
                         + usage["output_tokens"].as_u64().unwrap_or(0)
                         + usage["cache_creation_input_tokens"].as_u64().unwrap_or(0)
                         + usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
-                    cursor.2 += added;
+                    if added > 0 {
+                        cursor.2 = added;
+                    }
                     let model = event["message"]["model"].as_str().unwrap_or("");
                     if added > 0 || !model.is_empty() {
                         let activity = serde_json::json!({
@@ -3723,6 +3736,14 @@ fn process_event_value(
             if !is_subagent {
                 if let Some(n) = tokens.on_stream_event(&event["event"]) {
                     fire_string(java_vm, callbacks, "onTokens", &n.to_string());
+                }
+                // A new thinking block begins, so the one before it (if any) is over: what it said
+                // and what this one says are rows of their own, as in the extension. The text held
+                // back from the block before has already gone out, ahead of this event.
+                if event["event"]["type"].as_str() == Some("content_block_start")
+                    && event["event"]["content_block"]["type"].as_str() == Some("thinking")
+                {
+                    fire_string(java_vm, callbacks, "onThinkingBlock", "start");
                 }
             }
             // Text and thinking flow as they are written. The cursor records how much of
@@ -4167,11 +4188,10 @@ const USAGE_PROBE_DIR: &str = "claude-eclipse-usage";
 /// Best-effort: failures are ignored, since a leftover file is harmless and the
 /// next probe retries the sweep.
 fn purge_probe_transcripts() {
-    let home = match std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
-        Some(h) => std::path::PathBuf::from(h),
-        None => return,
+    let Some(config) = crate::session::config_dir() else {
+        return;
     };
-    let projects = home.join(".claude").join("projects");
+    let projects = config.join("projects");
     let entries = match std::fs::read_dir(&projects) {
         Ok(e) => e,
         Err(_) => return,

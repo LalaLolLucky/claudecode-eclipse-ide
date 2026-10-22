@@ -12,12 +12,37 @@ function relTime(iso) {
   if (s < 604800) return Math.floor(s / 86400) + 'd ago';
   return new Date(t).toLocaleDateString();
 }
+/** An agent's log, from what session.rs read of its own file. */
+function fillAgentLog(log, saved, input) {
+  log.items = saved.items.map(x => Object.assign({}, x));   // fresh copies — no stale _el refs
+  log.tokens = saved.tokens || 0;
+  log.model = saved.model || '';
+  log.startedAt = saved.startedAt ? Date.parse(saved.startedAt) || 0 : 0;
+  log.endedAt = saved.endedAt ? Date.parse(saved.endedAt) || 0 : 0;
+  // How it ended and how long it ran, as the CLI recorded them (a notice in the transcript):
+  // what keeps a stopped or failed agent from reading as finished, and its time the CLI's.
+  if (saved.status) log.finishStatus = saved.status;
+  if (typeof saved.durationMs === 'number' && log.startedAt) log.endedAt = log.startedAt + saved.durationMs;
+  log.input = input || {};
+}
+/** The logs of the agents an agent started, which session.rs hangs on the item of the call that
+    started each: a reopened conversation lists them under it, with their own steps, tokens and time. */
+function registerNestedAgentLogs(items) {
+  (items || []).forEach(x => {
+    if (!x || x.kind !== 'tool' || !x.id || !x.agentLog || !Array.isArray(x.agentLog.items)) return;
+    fillAgentLog(ensureAgentLog(x.id), x.agentLog, x.input);
+    registerNestedAgentLogs(x.agentLog.items);
+  });
+}
 /* Strip the editor-context preamble AND Claude Code's internal command/meta wrappers
    so loaded history shows the user's actual text — never raw <ide_selection>,
    <command-name>, <local-command-caveat>, <local-command-stdout>, … tags. */
 function stripMeta(s) {
   if (!s) return '';
-  return s
+  // What was typed after a slash command lives in the command's own tags: `/review 123` is
+  // `/review` without it.
+  const typedAfter = /<command-name>/i.test(s) ? ((/<command-args>([\s\S]*?)<\/command-args>/i.exec(s) || [])[1] || '').trim() : '';
+  const stripped = s
     // Every <ide_*> wrapper, not just the two we knew about: the CLI keeps adding
     // them (ide_opened_file arrived with 2.1.x and leaked whole paragraphs into
     // bubbles, the rewind list and the forked composer). Matching the family
@@ -34,6 +59,13 @@ function stripMeta(s) {
     // keep the command itself (e.g. /usage) but drop the tag
     .replace(/<command-name>([\s\S]*?)<\/command-name>/gi, '$1')
     .trim();
+  return typedAfter ? stripped + ' ' + typedAfter : stripped;
+}
+/** What a local command printed (a `<local-command-stdout>` or `-stderr` line), which the
+    conversation shows as a note where the command was run; '' when there is none. */
+function localCommandOutput(s) {
+  const m = /<local-command-(?:stdout|stderr)>([\s\S]*?)<\/local-command-(?:stdout|stderr)>/i.exec(s || '');
+  return m ? m[1].trim() : '';
 }
 function stripContext(s) { return stripMeta(s || ''); }
 function parseUserContent(s) {
@@ -513,17 +545,32 @@ window.onSessionDeleteConfirmed = function(id) {
   renderHistoryList();
 };
 /* static (non-streaming) reconstruction helpers for loaded history */
-function appendThinkStatic(turn, text) {
+function appendThinkStatic(turn, text, durationMs) {
   const el = document.createElement('div'); el.className = 'a-item think muted';
-  // no saved duration → just "Thinking"; if the transcript kept the reasoning
+  // How long the CLI measured it, when the transcript says ("Thought for 1s", whole seconds as the
+  // extension rounds them); otherwise just "Thinking". If the transcript kept the reasoning
   // text, make it revealable via the chevron just like a live turn.
-  el.innerHTML = '<span class="dot gray"></span><span class="think-head"><span class="think-label">Thinking</span>'
+  const label = typeof durationMs === 'number' ? 'Thought for ' + Math.round(durationMs / 1000) + 's' : 'Thinking';
+  el.innerHTML = '<span class="dot gray"></span><span class="think-head"><span class="think-label"></span>'
     + '<span class="chev">' + ICONS.CHEVRON + '</span></span><div class="think-body"></div>';
+  el.querySelector('.think-label').textContent = label;
   if (text && text.trim()) {
     el.querySelector('.think-body').textContent = text;
     el.classList.add('has-body');
     el.querySelector('.think-head').onclick = () => el.classList.toggle('open');
   }
+  turn.appendChild(el);
+}
+/* The model's own commentary between steps, which the CLI records as a thinking block: drawn as a
+   line of text with a muted "· summary" after it, as the extension draws it, and not as a
+   collapsed "Thinking" row. */
+function appendNarrationStatic(turn, text) {
+  const el = document.createElement('div'); el.className = 'a-item narration';
+  el.innerHTML = '<span class="dot gray"></span><span class="a-body"></span>';
+  const body = el.querySelector('.a-body');
+  body.innerHTML = renderMarkdown(String(text || '').trim());
+  const hint = document.createElement('span'); hint.className = 'narr-hint'; hint.textContent = ' · summary';
+  (body.lastElementChild || body).appendChild(hint);
   turn.appendChild(el);
 }
 /* `id` and `at` are the transcript line this reply is and when it was written, when the
@@ -758,6 +805,14 @@ function drawHistoryPart(t, id, items, parts, from, to, foldAt, modelBefore) {
       const imgs = (it.images || []).map(imageFromBlock)
         .concat((it.documents || []).map(d => documentFromBlock(d, it.id, id))).filter(Boolean);
       const invisible = !p.text && !p.chip && !imgs.length;
+      // A command's own output, which paints no bubble: shown as a note, as the extension shows it.
+      const printed = invisible ? localCommandOutput(it.content) : '';
+      if (printed) {
+        addSystemToPane(box, printed);
+        const sys = box.querySelectorAll('.sys'); const note = sys[sys.length - 1];
+        if (note && printed.indexOf('\n') >= 0) note.style.whiteSpace = 'pre-wrap';
+        return;
+      }
       if (!isCompactCmd && !invisible) flushCompact();
       // Bracketed markers the CLI writes as user lines are not messages anyone
       // sent. Each pattern must match the WHOLE text: a real message that merely
@@ -797,7 +852,8 @@ function drawHistoryPart(t, id, items, parts, from, to, foldAt, modelBefore) {
       addSystemToPane(box, '⚠ ' + (typeof augmentError === 'function' ? augmentError(em) : em));
     } else if (ty === 'thinking') {
       flushCompact();
-      appendThinkStatic(assistantTurn(), it.text || '');
+      if (it.narration && (it.text || '').trim()) appendNarrationStatic(assistantTurn(), it.text);
+      else appendThinkStatic(assistantTurn(), it.text || '', it.durationMs);
     } else if (ty === 'tool') {
       flushCompact();
       // A reconstructed Agent/Task call's own nested log (session.rs's agentLog field) —
@@ -809,13 +865,8 @@ function drawHistoryPart(t, id, items, parts, from, to, foldAt, modelBefore) {
       const isAgentTool = AGENT_KEYS.has(String(it.name || '').toLowerCase());
       const hasLog = isAgentTool && it.agentLog && Array.isArray(it.agentLog.items) && it.agentLog.items.length > 0;
       if (hasLog && it.id) {
-        const log = ensureAgentLog(it.id);
-        log.items = it.agentLog.items.map(x => Object.assign({}, x));   // fresh copies — no stale _el refs
-        log.tokens = it.agentLog.tokens || 0;
-        log.model = it.agentLog.model || '';
-        log.startedAt = it.agentLog.startedAt ? Date.parse(it.agentLog.startedAt) || 0 : 0;
-        log.endedAt = it.agentLog.endedAt ? Date.parse(it.agentLog.endedAt) || 0 : 0;
-        log.input = it.input || {};
+        fillAgentLog(ensureAgentLog(it.id), it.agentLog, it.input);
+        registerNestedAgentLogs(it.agentLog.items);
       }
       const line = makeToolLine(it.name || 'tool', it.input || {}, it.status, it.errorText, rootPathOf(t), it.resultText, hasLog);
       if (it.id) line.dataset.tuid = it.id;

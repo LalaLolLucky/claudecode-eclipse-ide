@@ -14,6 +14,10 @@
 function withTab(tabId, fn) { const t = tabById(tabId); if (!t || t.cancelled) return; loadRender(t); fn(t); }
 window.onStreamStart   = (tabId) => withTab(tabId, () => { setStreaming(true); ensureWorking(); });
 window.onThinking      = (tabId, text) => withTab(tabId, (t) => { dropResumeNote(t); appendThinking(text); });
+window.onThinkingBlock = (tabId, kind) => withTab(tabId, () => {
+  if (kind === 'narration') markNarration();
+  else if (kind === 'start') endThinkingBlock();
+});
 window.onStreamText    = (tabId, text) => withTab(tabId, (t) => { dropResumeNote(t); appendAssistant(text); });
 /* Turn over → the CLI has written this turn's user line, so the bubble sent a
    moment ago can finally learn which transcript line it owns (its hover actions

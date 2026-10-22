@@ -546,6 +546,11 @@ public final class NativeCore {
         void onSessionId(String sessionId);
         /** Live output-token count during a turn (from the partial-message stream). */
         default void onTokens(String count) {}
+        /** Something about the thinking blocks of the turn: {@code "start"} when a new one begins (so the
+         *  one before it is over, with its own "Thought for Ns" row), {@code "narration"} when the one
+         *  that has just ended is the model's commentary between steps, which the view shows as a line
+         *  of text and not as a collapsed "Thinking" row. */
+        default void onThinkingBlock(String kind) {}
         /** Rate-limit / usage info (JSON) for the usage warning banner. */
         default void onRateLimit(String json) {}
         /**

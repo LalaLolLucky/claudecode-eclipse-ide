@@ -29,6 +29,12 @@ pub(crate) fn workspace_hash(workspace_root: &str) -> String {
 /// and unwraps `<command-name>X</command-name>` to `X`. No regex crate needed —
 /// simple scans.
 fn strip_ide_preamble(s: &str) -> String {
+    // What was typed after a slash command, which the command's own tags carry: `/review 123`
+    // is `/review` without it.
+    let args = tag_inner(s, "command-args")
+        .map(str::trim)
+        .filter(|args| !args.is_empty() && s.contains("<command-name>"))
+        .map(str::to_string);
     let mut t = remove_tag_block(s, "ide_selection");
     t = remove_self_closing_tag(&t, "ide_context");
     // Arrived with CLI 2.1.x as a text block prepended to the user's own message,
@@ -40,7 +46,11 @@ fn strip_ide_preamble(s: &str) -> String {
     t = remove_tag_block(&t, "command-args");
     t = remove_tag_block(&t, "local-command-stdout");
     t = unwrap_tag_block(&t, "command-name");
-    t.trim_start().to_string()
+    let t = t.trim_start().to_string();
+    match args {
+        Some(args) => format!("{} {args}", t.trim_end()),
+        None => t,
+    }
 }
 
 /// A synthetic message the host sent (the browser-disconnected notice), as the CLI
@@ -152,11 +162,19 @@ fn unwrap_tag_block(s: &str, tag: &str) -> String {
     out
 }
 
-/// Returns the path to `~/.claude/projects/{hash}/`.
+/// The folder the CLI keeps its files in: the one `CLAUDE_CONFIG_DIR` names when it names one,
+/// `~/.claude` otherwise. Where its transcripts are written, so where they are looked for.
+pub(crate) fn config_dir() -> Option<PathBuf> {
+    match std::env::var_os("CLAUDE_CONFIG_DIR") {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        _ => dirs_home().map(|home| home.join(".claude")),
+    }
+}
+
+/// Returns the path to `<config dir>/projects/{hash}/`.
 pub(crate) fn projects_dir(workspace_root: &str) -> Option<PathBuf> {
-    let home = dirs_home()?;
     let hash = workspace_hash(workspace_root);
-    let dir = home.join(".claude").join("projects").join(hash);
+    let dir = config_dir()?.join("projects").join(hash);
     if dir.is_dir() {
         Some(dir)
     } else {
@@ -271,13 +289,18 @@ const LIST_TAIL: u64 = 64 * 1024;
 const LIST_TAIL_FOR_TITLE: u64 = 1024 * 1024;
 
 /// The list's line for one transcript and how many bytes of it were read to get there,
-/// or None for a file the list leaves out (nothing in it to name it by).
+/// or None for a file the list leaves out (nothing in it to name it by, or one the VS Code
+/// extension's list leaves out too: see [`left_out_of_the_list`]).
 ///
 /// Only the two ends are read, as the CLI's own `/resume` list and the VS Code extension
-/// read them: the end for the titles and the last time, and — for a conversation with no
-/// title line — the start, as far as its first message. A long transcript is megabytes
+/// read them: the end for the titles and the last time, and the start for the rest — the
+/// first message, where nothing else names the conversation. A long transcript is megabytes
 /// of tool output in between, none of which the list shows; reading all of it on every
 /// opening of the list is what used to keep the list seconds behind.
+///
+/// The title is chosen as the extension chooses it, so a conversation has one name in both:
+/// the user's rename, the AI's title, the last prompt, the CLI's summary, the first message
+/// and, for a conversation that has only attachments, "Image" or "Document".
 fn summarize(path: &Path) -> Option<(Summary, u64)> {
     let mut file = fs::File::open(path).ok()?;
     let size = file.metadata().ok()?.len();
@@ -286,34 +309,58 @@ fn summarize(path: &Path) -> Option<(Summary, u64)> {
     // Looked at again four times as far back until it holds a line with a time on it,
     // and either a title or a megabyte of the file (or all of it).
     let mut window = LIST_TAIL.min(size);
-    let end = loop {
+    let (end, tail_bytes, whole) = loop {
         let start = size - window;
         let bytes = read_span(&mut file, start, window)?;
         read += bytes.len() as u64;
         let end = TranscriptEnd::of(&bytes, start == 0);
         let titled = !end.custom_title.is_empty() || !end.ai_title.is_empty();
         if start == 0 || (!end.last_ts.is_empty() && (titled || window >= LIST_TAIL_FOR_TITLE)) {
-            break end;
+            break (end, bytes, start == 0);
         }
         window = (window * 4).min(size);
     };
+    let tail = String::from_utf8_lossy(&tail_bytes).into_owned();
 
-    // The user's rename beats the AI's title, which beats the first message.
-    let display = if !end.custom_title.is_empty() {
-        end.custom_title
-    } else if !end.ai_title.is_empty() {
-        end.ai_title
+    // The start: the head the extension reads, for what it says of the conversation and what
+    // names it when the end names nothing. A file the end read whole has its start already.
+    let head = if whole {
+        String::from_utf8_lossy(&tail_bytes[..tail_bytes.len().min(LIST_TAIL as usize)]).into_owned()
     } else {
-        let (first, bytes) = first_message(&mut file);
-        read += bytes;
-        first
+        let head_bytes = read_span(&mut file, 0, LIST_TAIL.min(size))?;
+        read += head_bytes.len() as u64;
+        String::from_utf8_lossy(&head_bytes).into_owned()
+    };
+    if left_out_of_the_list(path, &head, &tail) {
+        return None;
+    }
+
+    let custom = if end.custom_title.is_empty() { sidecar_title(path) } else { Some(end.custom_title.clone()) };
+    let title_in = |text: &str, key: &str| last_json_string(text, key).map(|t| t.chars().take(120).collect::<String>());
+    let named = custom
+        .or_else(|| title_in(&head, "customTitle"))
+        .or_else(|| (!end.ai_title.is_empty()).then(|| end.ai_title.clone()))
+        .or_else(|| title_in(&head, "aiTitle"));
+    let display = match named {
+        Some(title) => title,
+        None if !end.last_prompt.is_empty() => end.last_prompt.clone(),
+        None if !end.summary.is_empty() => end.summary.clone(),
+        None => {
+            let (first, bytes) = first_message(&mut file);
+            read += bytes;
+            first
+        }
     };
     if display.is_empty() {
         return None;
     }
-    // No line carried a time (a title-only stub): the file's own, so it still sorts.
+    // When it was last active: its last message, as the extension sorts and labels the list,
+    // and never later than the file was written. None carried a time: the file's own, so it still sorts.
+    let modified = modified_iso8601(path).unwrap_or_default();
     let last_ts = if end.last_ts.is_empty() {
-        modified_iso8601(path).unwrap_or_default()
+        modified
+    } else if !modified.is_empty() && iso_ms(&end.last_ts).zip(iso_ms(&modified)).is_some_and(|(said, written)| said > written) {
+        modified
     } else {
         end.last_ts
     };
@@ -328,6 +375,39 @@ fn read_span(file: &mut fs::File, start: u64, len: u64) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// Milliseconds since the epoch of a `YYYY-MM-DDTHH:MM:SS[.fff]Z` time, as the transcript writes
+/// them; None for anything else.
+fn iso_ms(text: &str) -> Option<i64> {
+    let b = text.as_bytes();
+    let num = |from: usize, len: usize| -> Option<i64> {
+        let digits = text.get(from..from + len)?;
+        digits.bytes().all(|c| c.is_ascii_digit()).then(|| digits.parse().ok()).flatten()
+    };
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let (year, month, day) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
+    let (hour, minute, second) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
+    let mut millis = 0;
+    let mut at = 19;
+    if b.get(at) == Some(&b'.') {
+        let fraction = text[at + 1..].bytes().take_while(u8::is_ascii_digit).count();
+        millis = format!("{:0<3}", &text[at + 1..at + 1 + fraction.min(3)]).parse().ok()?;
+        at += 1 + fraction;
+    }
+    if b.get(at) != Some(&b'Z') {
+        return None;
+    }
+    // Days since 1970-01-01 from the civil date.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 24 + hour) * 60 + minute) * 60_000 + second * 1000 + millis)
+}
+
 /// The top-level fields of a transcript line that the list goes by. A line's content,
 /// however large, is passed over without being kept.
 #[derive(serde::Deserialize)]
@@ -339,13 +419,21 @@ struct ListLine {
     custom_title: Option<serde_json::Value>,
     #[serde(rename = "aiTitle")]
     ai_title: Option<serde_json::Value>,
+    #[serde(rename = "lastPrompt")]
+    last_prompt: Option<serde_json::Value>,
+    summary: Option<serde_json::Value>,
 }
 
-/// What the end of a transcript says: its latest titles and the last time on any line.
+/// What the end of a transcript says: its latest titles, its last prompt and summary, and the
+/// time of its last message.
 #[derive(Default)]
 struct TranscriptEnd {
     custom_title: String,
     ai_title: String,
+    last_prompt: String,
+    summary: String,
+    /// The time of the last `user` or `assistant` line: what else the CLI writes (an attachment, a
+    /// title, a queue entry) is not the conversation being active.
     last_ts: String,
 }
 
@@ -367,9 +455,12 @@ impl TranscriptEnd {
         let mut end = TranscriptEnd::default();
         // Last line first: the first of each kind met this way is the file's last.
         for line in text.rsplit('\n') {
-            let wanted = (end.last_ts.is_empty() && line.contains("\"timestamp\""))
+            let said = line.contains("\"type\":\"user\"") || line.contains("\"type\":\"assistant\"");
+            let wanted = (end.last_ts.is_empty() && said && line.contains("\"timestamp\""))
                 || (end.custom_title.is_empty() && line.contains("\"custom-title\""))
-                || (end.ai_title.is_empty() && line.contains("\"ai-title\""));
+                || (end.ai_title.is_empty() && line.contains("\"ai-title\""))
+                || (end.last_prompt.is_empty() && line.contains("\"last-prompt\""))
+                || (end.summary.is_empty() && line.contains("\"type\":\"summary\""));
             if !wanted {
                 continue;
             }
@@ -377,29 +468,167 @@ impl TranscriptEnd {
                 continue;   // the line the CLI is still writing, among others
             };
             let text_of = |v: &Option<serde_json::Value>| v.as_ref().and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            if end.last_ts.is_empty() {
+            let kind = text_of(&event.kind);
+            if end.last_ts.is_empty() && (kind == "user" || kind == "assistant") {
                 end.last_ts = text_of(&event.timestamp);
             }
-            // An empty title is no title: an older line may still hold one.
-            let kind = text_of(&event.kind);
+            // A title that is empty is no title: an older line may still hold one.
+            let title = |v: &Option<serde_json::Value>| -> String {
+                text_of(v).replace(['\r', '\n'], " ").trim().chars().take(120).collect()
+            };
             if kind == "custom-title" && end.custom_title.is_empty() {
                 end.custom_title = text_of(&event.custom_title).chars().take(120).collect();
             } else if kind == "ai-title" && end.ai_title.is_empty() {
                 end.ai_title = text_of(&event.ai_title).chars().take(120).collect();
+            } else if kind == "last-prompt" && end.last_prompt.is_empty() {
+                end.last_prompt = title(&event.last_prompt);
+            } else if kind == "summary" && end.summary.is_empty() {
+                end.summary = title(&event.summary);
             }
         }
         end
     }
 }
 
+/// The value after the last `"key":"` (or `"key": "`) in `text`, as the extension reads it: not
+/// line by line but the occurrence furthest on, up to its first closing quote, JSON-unescaped.
+/// None for no such key and for an empty value, which names nothing.
+fn last_json_string(text: &str, key: &str) -> Option<String> {
+    let at = [format!("\"{key}\":\""), format!("\"{key}\": \"")]
+        .iter()
+        .filter_map(|pattern| text.rfind(pattern.as_str()).map(|i| i + pattern.len()))
+        .max()?;
+    json_string_from(text, at)
+}
+
+/// [`last_json_string`], for the first occurrence.
+fn first_json_string(text: &str, key: &str) -> Option<String> {
+    let at = [format!("\"{key}\":\""), format!("\"{key}\": \"")]
+        .iter()
+        .filter_map(|pattern| text.find(pattern.as_str()).map(|i| i + pattern.len()))
+        .min()?;
+    json_string_from(text, at)
+}
+
+/// The JSON string whose contents begin at `start`, without its quotes.
+fn json_string_from(text: &str, start: usize) -> Option<String> {
+    let rest = text.get(start..)?;
+    let mut escaped = false;
+    let end = rest.char_indices().find_map(|(i, c)| {
+        if escaped {
+            escaped = false;
+            None
+        } else if c == '\\' {
+            escaped = true;
+            None
+        } else {
+            (c == '"').then_some(i)
+        }
+    })?;
+    let raw = &rest[..end];
+    let value = if raw.contains('\\') {
+        serde_json::from_str::<String>(&format!("\"{raw}\"")).unwrap_or_else(|_| raw.to_string())
+    } else {
+        raw.to_string()
+    };
+    (!value.is_empty()).then_some(value)
+}
+
+/// The title kept beside a conversation's transcript, in `<session id>/custom-title.json`
+/// (`{"customTitle": …}`), as the extension reads it: control and format characters become
+/// spaces, at most 200 characters, trimmed. None when there is none, or it is empty.
+fn sidecar_title(transcript: &Path) -> Option<String> {
+    let sidecar = transcript.parent()?.join(transcript.file_stem()?).join("custom-title.json");
+    let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(sidecar).ok()?).ok()?;
+    let is_format = |c: char| {
+        c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{feff}')
+    };
+    let cleaned: String = value["customTitle"].as_str()?.trim().chars().map(|c| if is_format(c) { ' ' } else { c }).take(200).collect();
+    let cleaned = cleaned.trim();
+    (!cleaned.is_empty()).then(|| cleaned.chars().take(120).collect())
+}
+
+/// Whether the VS Code extension's list leaves this conversation out, and so should this one:
+/// a sub-agent's own file (its first line is a sidechain), a conversation the SDK or the CLI's
+/// print mode ran (`entrypoint` `sdk-cli`, `sdk-ts`, `sdk-py`: a script's, not somebody's
+/// conversation), a background worker's (`sessionKind` `daemon` or `daemon-worker`), and one that was
+/// continued in another conversation's file (a `continued-in` line it ends with).
+fn left_out_of_the_list(path: &Path, head: &str, tail: &str) -> bool {
+    let first_line = head.lines().next().unwrap_or("");
+    if first_line.contains("\"isSidechain\":true") || first_line.contains("\"isSidechain\": true") {
+        return true;
+    }
+    let entrypoint = first_json_string(head, "entrypoint").or_else(|| last_json_string(tail, "entrypoint"));
+    if entrypoint.as_deref().is_some_and(|e| matches!(e, "sdk-cli" | "sdk-ts" | "sdk-py")) {
+        return true;
+    }
+    let line = head.lines().find(|l| l.contains("\"parentUuid\":")).unwrap_or(head);
+    if first_json_string(line, "sessionKind").as_deref().is_some_and(|k| matches!(k, "daemon" | "daemon-worker")) {
+        return true;
+    }
+    continued_in(tail).is_some_and(|id| path.parent().is_some_and(|dir| continues_in_file(&dir.join(format!("{id}.jsonl")))))
+}
+
+/// The conversation this one's end says it was continued in: its last `continued-in` line, unless a
+/// real message was written after it (which means somebody carried on here instead).
+fn continued_in(tail: &str) -> Option<String> {
+    if !tail.contains("\"type\":\"continued-in\"") {
+        return None;
+    }
+    for line in tail.rsplit('\n') {
+        let continued = line.contains("\"continued-in\"");
+        if !continued && !line.contains("\"type\":\"user\"") && !line.contains("\"type\":\"assistant\"") {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match event["type"].as_str() {
+            Some("continued-in") => {
+                let id = event["continuedInSessionId"].as_str()?;
+                let is_uuid = id.len() == 36 && id.char_indices().all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { c == '-' } else { c.is_ascii_hexdigit() });
+                return is_uuid.then(|| id.to_string());
+            }
+            // A finished reply or a typed message after it: the conversation went on.
+            Some("assistant") if event["message"]["stop_reason"].is_string() && event["isApiErrorMessage"].as_bool() != Some(true) => return None,
+            Some("user") if prompt_in(&event, &mut String::new()).is_some() => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether `file` is a conversation that carries on from another (it has a `parentUuid` line in
+/// its first 16 MiB), which is what makes a `continued-in` mark a real hand-over and the earlier
+/// conversation a part of this one.
+fn continues_in_file(file: &Path) -> bool {
+    let Ok(open) = fs::File::open(file) else {
+        return false;
+    };
+    let mut budget: u64 = 16 * 1024 * 1024;
+    for line in BufReader::new(open).lines().map_while(Result::ok) {
+        if line.contains("\"parentUuid\":") {
+            return true;
+        }
+        budget = budget.saturating_sub(line.len() as u64 + 1);
+        if budget == 0 {
+            break;
+        }
+    }
+    false
+}
+
 /// What the first message that says something would title its conversation with, read
 /// from the start of the transcript and no further than that message; and the bytes
-/// that took. Empty when no message says anything.
+/// that took. When no message says anything, the name of the first slash command, and
+/// failing that "Image" or "Document" for a conversation of attachments. Empty when none.
 fn first_message(file: &mut fs::File) -> (String, u64) {
     if file.seek(SeekFrom::Start(0)).is_err() {
         return (String::new(), 0);
     }
     let mut read = 0;
+    let mut command = String::new();
+    let mut media = "";
     for line in BufReader::new(file).lines() {
         let line = match line {
             Ok(l) => l,
@@ -412,46 +641,123 @@ fn first_message(file: &mut fs::File) -> (String, u64) {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
-        if event["type"].as_str() != Some("user") {
-            continue;
-        }
-        let text = first_message_text(&event);
-        if !text.is_empty() {
+        if let Some(text) = prompt_in(&event, &mut command) {
             return (text, read);
         }
-    }
-    (String::new(), read)
-}
-
-/// The text a `user` line would title its conversation with: the first 120 characters
-/// of what was typed, without the editor context the plugin sends along. Empty for a
-/// line that types nothing (a tool's result, a pasted image on its own).
-fn first_message_text(event: &serde_json::Value) -> String {
-    // Extract display text — first 120 chars of the user message content,
-    // with any injected <ide_selection>/<ide_context> preamble removed so
-    // the fallback title is the user's actual text, not the editor context.
-    if let Some(content) = event["message"]["content"].as_str() {
-        return strip_ide_preamble(content).chars().take(120).collect();
-    }
-    if let Some(blocks) = event["message"]["content"].as_array() {
-        // A first message sent with a pasted image is stored as
-        // content blocks — title the session from its text block
-        // instead of falling through to a later message.
-        for b in blocks {
-            if b["type"].as_str() != Some("text") {
-                continue;
-            }
-            let raw = b["text"].as_str().unwrap_or("");
-            if is_browser_context(raw) || attached_file_path(raw).is_some() {
-                continue;
-            }
-            let s = strip_ide_preamble(raw);
-            if !s.trim().is_empty() {
-                return s.chars().take(120).collect();
+        // The first thing that is only an attachment, for a conversation with nothing typed.
+        if media.is_empty() && event["type"].as_str() == Some("user") && event["isMeta"].as_bool() != Some(true) && !line.contains("\"tool_result\"") {
+            if line.contains("\"type\":\"image\"") {
+                media = "Image";
+            } else if line.contains("\"type\":\"document\"") {
+                media = "Document";
             }
         }
     }
-    String::new()
+    (if command.is_empty() { media.to_string() } else { command }, read)
+}
+
+/// The text a `user` line would title its conversation with, as the VS Code extension chooses it:
+/// the first block of what was typed that is not a tag of the CLI's own (`<command-…>`,
+/// `<task-notification>`) or an interruption marker. A slash command is remembered in `command`
+/// as a name to fall back on, and a shell command typed in is `! command`. The editor context the
+/// plug-in sends along is removed first. None for a line that says nothing: a tool's result, a
+/// note, a summary of an earlier conversation, a pasted image on its own.
+fn prompt_in(event: &serde_json::Value, command: &mut String) -> Option<String> {
+    if event["type"].as_str() != Some("user")
+        || event["isMeta"].as_bool() == Some(true)
+        || event["isCompactSummary"].as_bool() == Some(true)
+    {
+        return None;
+    }
+    let content = &event["message"]["content"];
+    let mut texts: Vec<&str> = Vec::new();
+    if let Some(text) = content.as_str() {
+        texts.push(text);
+    } else if let Some(blocks) = content.as_array() {
+        // A first message sent with a pasted image is stored as content blocks, so a text
+        // block is looked for; a tool's result makes the whole line not a message.
+        for b in blocks {
+            match b["type"].as_str() {
+                Some("tool_result") => return None,
+                Some("text") => texts.extend(b["text"].as_str()),
+                _ => {}
+            }
+        }
+    }
+    for raw in texts {
+        // Contexts and notes only this plug-in writes.
+        if is_browser_context(raw) || attached_file_path(raw).is_some() || is_hang_resume(raw) || is_non_user_notice(event, raw) {
+            continue;
+        }
+        let mut text = remove_tag_block(raw, "ide_selection");
+        text = remove_self_closing_tag(&text, "ide_context");
+        text = remove_tag_block(&text, "ide_opened_file");
+        let text = inline_pasted_content(&text).replace('\n', " ");
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(name) = tag_inner(text, "command-name") {
+            if command.is_empty() {
+                *command = name.to_string();
+            }
+            continue;
+        }
+        if let Some(shell) = tag_inner(text, "bash-input") {
+            return Some(format!("! {}", shell.trim()));
+        }
+        if starts_with_a_tag_or_an_interruption(text) {
+            continue;
+        }
+        return Some(text.chars().take(120).collect());
+    }
+    None
+}
+
+/// The inside of the first `<tag>…</tag>` in `text`.
+fn tag_inner<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&format!("</{tag}>"))?;
+    Some(&text[start..start + end])
+}
+
+/// Whether `text` opens with a tag of the CLI's (`<name …>` or `<name>`, a lowercase name) or is
+/// an interruption marker (`[Request interrupted by user…]`): neither is anything somebody typed.
+fn starts_with_a_tag_or_an_interruption(text: &str) -> bool {
+    let text = text.trim_start();
+    if let Some(rest) = text.strip_prefix("[Request interrupted by user") {
+        return rest.contains(']');
+    }
+    let Some(rest) = text.strip_prefix('<') else {
+        return false;
+    };
+    let mut chars = rest.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_lowercase()) {
+        return false;
+    }
+    chars.find(|c| !(c.is_alphanumeric() || *c == '_' || *c == '-')).is_some_and(|c| c.is_whitespace() || c == '>')
+}
+
+/// `<pasted_content id="x">\nBODY\n</pasted_content id="x">\n` blocks (a large paste the CLI
+/// stored apart) put back as their BODY, as the extension does before it reads a message.
+fn inline_pasted_content(text: &str) -> String {
+    const OPEN: &str = "<pasted_content id=\"";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(OPEN) {
+        let after = &rest[at + OPEN.len()..];
+        let Some(quote) = after.find('"') else { break };
+        let id = &after[..quote];
+        let Some(body) = after[quote..].strip_prefix("\">\n") else { break };
+        let close = format!("\n</pasted_content id=\"{id}\">\n");
+        let Some(end) = body.find(&close) else { break };
+        out.push_str(&rest[..at]);
+        out.push_str(&body[..end]);
+        rest = &body[end + close.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A file's modified time as an ISO-8601 UTC string, so it string-sorts interleaved
@@ -645,10 +951,149 @@ struct AgentLogAccum {
     /// the SAME dedicated file) can stamp the right step — a separate id space from the
     /// top-level `tool_idx` used elsewhere in this function.
     tool_idx: HashMap<String, usize>,
+    /// The usage total of the agent's latest message: what the CLI itself reports for it
+    /// (see [`message_tokens`]).
     tokens: u64,
     model: String,
     started_at: Option<String>,
     ended_at: Option<String>,
+    /// The agent's id: the part of its file's name after `agent-`, which is also the task id
+    /// the CLI's notifications name it by.
+    agent_id: String,
+    /// Its own transcript file, where the results of the agents it started are recorded.
+    path: std::path::PathBuf,
+}
+
+/// How an agent ended, and what the CLI counted for it, as the conversation's own transcript
+/// records it. The CLI keeps the notice it gives the conversation when a background agent ends
+/// (`<task-notification>`: its status, and a `<usage>` block with its tokens and duration), and
+/// a foreground agent's result carries the same totals (`totalTokens`, `totalDurationMs`).
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+struct AgentOutcome {
+    /// `completed`, `stopped`, `killed` or `failed`.
+    status: String,
+    tokens: Option<u64>,
+    duration_ms: Option<u64>,
+}
+
+/// Records an agent's outcome, unless it would undo a better one: a notice that an agent did not
+/// finish, with no count, is sent again for agents that did finish when a conversation is
+/// resumed in a new process, and must not take the place of the finish the CLI recorded.
+fn record_outcome(out: &mut HashMap<String, AgentOutcome>, id: &str, outcome: AgentOutcome) {
+    if let Some(known) = out.get(id) {
+        if (known.status == "completed" || known.tokens.is_some()) && outcome.tokens.is_none() && outcome.status != "completed" {
+            return;
+        }
+    }
+    out.insert(id.to_string(), outcome);
+}
+
+/// The outcome of each agent the transcript at `transcript` says ended, by task id (the id its
+/// own file is named for). Only lines that can hold one are parsed, so a long conversation costs a scan.
+fn agent_outcomes(transcript: &std::path::Path) -> HashMap<String, AgentOutcome> {
+    let mut out = HashMap::new();
+    outcomes_into(transcript, &mut out);
+    out
+}
+
+/// [`agent_outcomes`] into `out`. An agent's own transcript holds the results of the agents it
+/// started, as the conversation's holds those of the agents it did.
+fn outcomes_into(transcript: &std::path::Path, out: &mut HashMap<String, AgentOutcome>) {
+    let Ok(file) = fs::File::open(transcript) else {
+        return;
+    };
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let notified = line.contains("<task-notification>");
+        let direct = line.contains("\"agentId\"") && line.contains("\"totalTokens\"");
+        if !notified && !direct {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        // What the model itself wrote about notifications (a command that greps for one) is not one.
+        if event["type"].as_str() == Some("assistant") {
+            continue;
+        }
+        if notified {
+            let mut texts = Vec::new();
+            strings_containing(&event, "<task-notification>", &mut texts, 0);
+            for text in texts {
+                notifications_in(&text, out);
+            }
+        }
+        if direct {
+            let result = &event["toolUseResult"];
+            let status = result["status"].as_str().unwrap_or("");
+            if let (Some(id), true) = (result["agentId"].as_str(), !status.is_empty() && status != "async_launched") {
+                record_outcome(
+                    out,
+                    id,
+                    AgentOutcome {
+                        status: status.to_string(),
+                        tokens: result["totalTokens"].as_u64(),
+                        duration_ms: result["totalDurationMs"].as_u64(),
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// Every string in `value`, at any depth, that holds `needle`: a notice is a message's text, a
+/// queued command's prompt or an attachment's, depending on how the CLI delivered it.
+fn strings_containing(value: &serde_json::Value, needle: &str, out: &mut Vec<String>, depth: u32) {
+    if depth > 6 {
+        return;
+    }
+    match value {
+        serde_json::Value::String(text) if text.contains(needle) => out.push(text.clone()),
+        serde_json::Value::Array(items) => items.iter().for_each(|v| strings_containing(v, needle, out, depth + 1)),
+        serde_json::Value::Object(fields) => fields.values().for_each(|v| strings_containing(v, needle, out, depth + 1)),
+        _ => {}
+    }
+}
+
+/// The agents the notices in `text` name, with how each ended. A notice names its agents and
+/// status first, then says what happened (its summary, note and result, which are an agent's own
+/// words and may hold anything), and ends with its usage.
+fn notifications_in(text: &str, out: &mut HashMap<String, AgentOutcome>) {
+    for block in text.split("<task-notification>").skip(1) {
+        let block = block.split("</task-notification>").next().unwrap_or(block);
+        let head_end = ["<summary>", "<note>", "<result>", "<usage>"].iter().filter_map(|tag| block.find(tag)).min().unwrap_or(block.len());
+        let head = &block[..head_end];
+        let usage = block.rfind("<usage>").map_or("", |at| &block[at..]);
+        let number = |tags: &[&str]| tags.iter().find_map(|tag| xml_tag(usage, tag)).and_then(|n| n.trim().parse::<u64>().ok());
+        let outcome = AgentOutcome {
+            status: xml_tag(head, "status").unwrap_or("").trim().to_string(),
+            tokens: number(&["subagent_tokens", "total_tokens"]),
+            duration_ms: number(&["duration_ms"]),
+        };
+        let mut rest = head;
+        while let Some(id) = xml_tag(rest, "task-id") {
+            record_outcome(out, id.trim(), outcome.clone());
+            let end = rest.find("</task-id>").map_or(rest.len(), |at| at + "</task-id>".len());
+            rest = &rest[end..];
+        }
+    }
+}
+
+/// The text of the first `<name>…</name>` in `text`.
+fn xml_tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&format!("</{name}>"))?;
+    Some(&text[start..start + end])
+}
+
+/// What one message's usage adds up to: everything the call carried, which for an agent's last
+/// message is the figure the CLI reports as its total. Not to be summed across messages: the
+/// cache-read part is the whole conversation so far, so every call repeats the one before.
+fn message_tokens(usage: &serde_json::Value) -> u64 {
+    ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
+        .iter()
+        .map(|field| usage[*field].as_u64().unwrap_or(0))
+        .sum()
 }
 
 /// Finds and parses a subagent's own dedicated transcript file, given the PARENT
@@ -660,6 +1105,7 @@ struct AgentLogAccum {
 fn read_agent_log(projects_dir: &std::path::Path, session_id: &str, tool_use_id: &str) -> Option<AgentLogAccum> {
     let subagents_dir = projects_dir.join(session_id).join("subagents");
     let mut jsonl_path: Option<std::path::PathBuf> = None;
+    let mut agent_id = String::new();
     for entry in fs::read_dir(&subagents_dir).ok()?.flatten() {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -670,15 +1116,17 @@ fn read_agent_log(projects_dir: &std::path::Path, session_id: &str, tool_use_id:
         let Some(meta) = fs::read_to_string(&path).ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) else { continue; };
         if meta["toolUseId"].as_str() == Some(tool_use_id) {
-            let jsonl_name = format!("{}.jsonl", name.trim_end_matches(".meta.json"));
-            jsonl_path = Some(subagents_dir.join(jsonl_name));
+            let stem = name.trim_end_matches(".meta.json");
+            agent_id = stem.strip_prefix("agent-").unwrap_or(stem).to_string();
+            jsonl_path = Some(subagents_dir.join(format!("{stem}.jsonl")));
             break;
         }
     }
-    let file = fs::File::open(jsonl_path?).ok()?;
+    let jsonl_path = jsonl_path?;
+    let file = fs::File::open(&jsonl_path).ok()?;
     let mut accum = AgentLogAccum {
         items: Vec::new(), tool_idx: HashMap::new(), tokens: 0, model: String::new(),
-        started_at: None, ended_at: None,
+        started_at: None, ended_at: None, agent_id, path: jsonl_path.clone(),
     };
     for line in BufReader::new(file).lines() {
         let line = match line {
@@ -710,11 +1158,12 @@ fn read_agent_log(projects_dir: &std::path::Path, session_id: &str, tool_use_id:
                         accum.model = m.to_string();
                     }
                 }
-                let usage = &event["message"]["usage"];
-                accum.tokens += usage["input_tokens"].as_u64().unwrap_or(0)
-                    + usage["output_tokens"].as_u64().unwrap_or(0)
-                    + usage["cache_creation_input_tokens"].as_u64().unwrap_or(0)
-                    + usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                // The latest message's, not a running sum: a message is written as several
+                // lines that each carry its usage, and every call's cache reads repeat the last.
+                let tokens = message_tokens(&event["message"]["usage"]);
+                if tokens > 0 {
+                    accum.tokens = tokens;
+                }
                 if let Some(content) = event["message"]["content"].as_array() {
                     for b in content {
                         match b["type"].as_str() {
@@ -738,7 +1187,9 @@ fn read_agent_log(projects_dir: &std::path::Path, session_id: &str, tool_use_id:
                                 } else {
                                     b["input"].clone()
                                 };
-                                accum.items.push(serde_json::json!({ "kind": "tool", "name": name, "input": input }));
+                                // The id: how an agent this one started is told from its other calls,
+                                // and found among the files (its sidecar names this id).
+                                accum.items.push(serde_json::json!({ "kind": "tool", "name": name, "input": input, "id": b["id"], "at": event["timestamp"] }));
                                 if let Some(id) = b["id"].as_str() {
                                     accum.tool_idx.insert(id.to_string(), accum.items.len() - 1);
                                 }
@@ -782,6 +1233,58 @@ fn read_agent_log(projects_dir: &std::path::Path, session_id: &str, tool_use_id:
         }
     }
     Some(accum)
+}
+
+/// How deep agents started by agents are followed: the CLI allows few, and a loop in the files must end.
+const MAX_AGENT_DEPTH: u32 = 4;
+
+/// The `agentLog` of the agent whose call was `tool_use_id`: its steps, count, model and times from its
+/// own file, how it ended and the CLI's totals where the transcripts record them, and the same for
+/// each agent it started in turn (set on that call's item), found by the id of the call in its sidecar.
+fn agent_log_value(
+    projects_dir: &std::path::Path,
+    session_id: &str,
+    tool_use_id: &str,
+    outcomes: &mut HashMap<String, AgentOutcome>,
+    depth: u32,
+    launched_at: Option<&str>,
+) -> Option<serde_json::Value> {
+    let mut accum = read_agent_log(projects_dir, session_id, tool_use_id)?;
+    // An agent started by another begins at the call that started it. Its own file may begin
+    // earlier (a fork starts with a copy of what its parent had said), which would add that time.
+    if let Some(at) = launched_at.filter(|at| accum.started_at.as_deref().is_none_or(|first| *at > first)) {
+        accum.started_at = Some(at.to_string());
+    }
+    // What the agents this one started came to is recorded in this one's own file.
+    outcomes_into(&accum.path, outcomes);
+    if depth < MAX_AGENT_DEPTH {
+        for item in accum.items.iter_mut() {
+            let is_agent = item["kind"] == "tool"
+                && item["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case("agent") || n.eq_ignore_ascii_case("task"));
+            let Some(id) = item["id"].as_str().filter(|_| is_agent).map(str::to_owned) else {
+                continue;
+            };
+            let at = item["at"].as_str().map(str::to_owned);
+            if let Some(nested) = agent_log_value(projects_dir, session_id, &id, outcomes, depth + 1, at.as_deref()) {
+                item["agentLog"] = nested;
+            }
+        }
+    }
+    let outcome = outcomes.get(&accum.agent_id);
+    let status = outcome.map(|o| o.status.as_str()).unwrap_or("");
+    // The CLI's count where it gave one. One that ended early with none shows none, as the
+    // CLI's own list does, rather than a figure of ours for a run that never finished.
+    let ended_early = matches!(status, "stopped" | "killed" | "failed");
+    let tokens = outcome.and_then(|o| o.tokens).unwrap_or(if ended_early { 0 } else { accum.tokens });
+    Some(serde_json::json!({
+        "items": accum.items,
+        "tokens": tokens,
+        "model": accum.model,
+        "startedAt": accum.started_at,
+        "endedAt": accum.ended_at,
+        "status": status,
+        "durationMs": outcome.and_then(|o| o.duration_ms),
+    }))
 }
 
 pub fn load_session_history(workspace_root: &str, session_id: &str) -> String {
@@ -1204,9 +1707,20 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
                     match b["type"].as_str() {
                         Some("thinking") => {
                             let tt = b["thinking"].as_str().unwrap_or("");
-                            items.push(serde_json::json!({
+                            let mut item = serde_json::json!({
                                 "t": "thinking", "model": model, "text": tt,
-                            }));
+                            });
+                            // How long the CLI measured the model thinking, which the row says
+                            // ("Thought for 1s").
+                            if let Some(ms) = event["thinkingDurationMs"].as_u64() {
+                                item["durationMs"] = ms.into();
+                            }
+                            // The model's own commentary between steps, which the CLI records as a
+                            // thinking block (the signature says so): shown as a line of text.
+                            if !tt.trim().is_empty() && b["signature"].as_str().is_some_and(is_narration_signature) {
+                                item["narration"] = true.into();
+                            }
+                            items.push(item);
                         }
                         Some("text") => {
                             if let Some(t) = b["text"].as_str() {
@@ -1261,6 +1775,13 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
                     queued.push(q);
                 }
             }
+            // The line the VS Code extension writes where it brings a web conversation down (one
+            // that came with no messages is not a teleport). Both clients' lines may be there: one divider.
+            Some("teleported-from") => {
+                if event["messageCount"].as_u64() != Some(0) && !items.iter().any(|it| it["t"].as_str() == Some("teleported")) {
+                    items.push(serde_json::json!({ "t": "teleported" }));
+                }
+            }
             Some("system") => {
                 // Compaction marker (written by /compact or auto-compact). The
                 // jsonl uses camelCase compactMetadata (unlike the stream's
@@ -1277,7 +1798,9 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
                 // Where a conversation pulled down from claude.ai ends and the
                 // local one continues. Written by teleport::run into the
                 // transcript, so it survives into history like any other event.
-                if event["subtype"].as_str() == Some("teleported_from_web") {
+                if event["subtype"].as_str() == Some("teleported_from_web")
+                    && !items.iter().any(|it| it["t"].as_str() == Some("teleported"))
+                {
                     items.push(serde_json::json!({ "t": "teleported" }));
                 }
             }
@@ -1339,6 +1862,8 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
     // all, confirmed on disk). history.js hands this to chat.js's ensureAgentLog/
     // agentLogs so a reopened conversation's /agents popup (duration, tokens, model,
     // Prompt, Tool calls, "Open transcript") works the same as it did live.
+    let transcript = dir.join(format!("{session_id}.jsonl"));
+    let mut outcomes: Option<HashMap<String, AgentOutcome>> = None;
     for (id, &idx) in &tool_idx {
         let is_agent = items.get(idx)
             .and_then(|v| v["name"].as_str())
@@ -1347,20 +1872,68 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
         if !is_agent {
             continue;
         }
-        if let Some(accum) = read_agent_log(dir, session_id, id) {
+        let known = outcomes.get_or_insert_with(|| agent_outcomes(&transcript));
+        if let Some(log) = agent_log_value(dir, session_id, id, known, 0, None) {
             if let Some(obj) = items.get_mut(idx).and_then(|v| v.as_object_mut()) {
-                obj.insert("agentLog".into(), serde_json::json!({
-                    "items": accum.items,
-                    "tokens": accum.tokens,
-                    "model": accum.model,
-                    "startedAt": accum.started_at,
-                    "endedAt": accum.ended_at,
-                }));
+                obj.insert("agentLog".into(), log);
             }
         }
     }
 
     items
+}
+
+/// Whether a thinking block's `signature` marks it as the model's narration: its own short
+/// commentary between steps, which the extension draws as a line of text and not as a
+/// "Thought for Ns" row. The signature is base64 of a protobuf message, and the marker is
+/// the string `narration` in field 8 of field 1 of field 2 of it.
+pub(crate) fn is_narration_signature(signature: &str) -> bool {
+    use base64::Engine as _;
+    let trimmed = signature.trim_end_matches('=');
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(trimmed) else {
+        return false;
+    };
+    last_length_delimited(&bytes, 2)
+        .and_then(|outer| last_length_delimited(outer, 1))
+        .and_then(|inner| last_length_delimited(inner, 8))
+        .is_some_and(|kind| kind == b"narration")
+}
+
+/// The last length-delimited field numbered `wanted` in a protobuf message, or None for none
+/// or for bytes that are not one.
+fn last_length_delimited(mut buf: &[u8], wanted: u64) -> Option<&[u8]> {
+    fn varint(buf: &mut &[u8]) -> Option<u64> {
+        let mut value = 0u64;
+        for (i, byte) in buf.iter().take(10).enumerate() {
+            value |= u64::from(byte & 0x7f) << (7 * i);
+            if byte & 0x80 == 0 {
+                *buf = &buf[i + 1..];
+                return Some(value);
+            }
+        }
+        None
+    }
+    let mut found = None;
+    while !buf.is_empty() {
+        let tag = varint(&mut buf)?;
+        match tag & 7 {
+            0 => {
+                varint(&mut buf)?;
+            }
+            1 => buf = buf.get(8..)?,
+            5 => buf = buf.get(4..)?,
+            2 => {
+                let len = usize::try_from(varint(&mut buf)?).ok()?;
+                let (body, rest) = (buf.get(..len)?, buf.get(len..)?);
+                if tag >> 3 == wanted {
+                    found = Some(body);
+                }
+                buf = rest;
+            }
+            _ => return None,
+        }
+    }
+    found
 }
 
 /// Flattens a `tool_result` block's content to plain text. The CLI writes it
@@ -3292,7 +3865,8 @@ really";
             .find(|it| it["t"] == "tool" && it["id"] == "toolu_top")
             .expect("the top-level Agent tool item");
         let log = &tool_item["agentLog"];
-        assert_eq!(log["tokens"], 270, "sums usage across every completed message in the subagent's own file (100+50+80+40)");
+        assert_eq!(log["tokens"], 120, "the latest message's usage (80+40), as the CLI reports it, not a sum over messages (which counts the context again each call)");
+        assert_eq!(log["status"], "", "no notice in the transcript, so no word on how it ended");
         assert_eq!(log["model"], "claude-sonnet-5");
         assert_eq!(log["startedAt"], "2026-09-16T13:54:40.450Z", "the subagent file's own FIRST timestamp, not the parent's");
         assert_eq!(log["endedAt"], "2026-09-16T13:54:40.480Z", "the subagent file's own LAST timestamp");
@@ -3863,7 +4437,7 @@ really";
         let (title, last, read) = summary_of(&path);
 
         assert_eq!((title.as_str(), last.as_str()), ("Named by the AI", "2026-07-03T08:00:00.000Z"));
-        assert!(size > 2 * KB * KB && read <= 64 * KB, "read {read} of {size} bytes");
+        assert!(size > 2 * KB * KB && read <= 128 * KB, "read {read} of {size} bytes");
     }
 
     #[test]
@@ -3877,7 +4451,7 @@ really";
         let (title, _, read) = summary_of(&path);
 
         assert_eq!(title, "Renamed by hand");
-        assert!(read <= 64 * KB, "read {read} of {size} bytes");
+        assert!(read <= 128 * KB, "read {read} of {size} bytes");
     }
 
     #[test]
@@ -4269,5 +4843,483 @@ really";
 
         assert_eq!(marked(&messages), ids(&[("u1", 0)]));
         assert!(!messages.contains("compactions") && !replies.contains("compactions"), "{messages} {replies}");
+    }
+    // ---- how agents ended, and what the CLI counted for them ----
+
+    use super::{agent_outcomes, notifications_in, AgentOutcome};
+    use std::collections::HashMap;
+
+    #[test]
+    fn a_notice_names_its_agents_and_how_they_ended_and_an_agents_own_words_are_not_parsed() {
+        let mut out = HashMap::new();
+        // One notice for two agents that did not finish, with no usage: the status is for both.
+        notifications_in(
+            "<task-notification>\n<task-id>aaa</task-id>\n<task-id>bbb</task-id>\n<status>stopped</status>\n<summary>2 agents did not finish</summary>\n</task-notification>",
+            &mut out,
+        );
+        assert_eq!(out["aaa"], AgentOutcome { status: "stopped".into(), tokens: None, duration_ms: None });
+        assert_eq!(out["bbb"], out["aaa"]);
+        // A finished one: the numbers are the usage block's, though the agent's result quotes tags of its own.
+        notifications_in(
+            "<task-notification>\n<task-id>ccc</task-id>\n<status>completed</status>\n<summary>done</summary>\n\
+             <result>I read <task-id>fake</task-id> and <status>failed</status> and <usage><subagent_tokens>1</subagent_tokens></usage></result>\n\
+             <usage><subagent_tokens>296142</subagent_tokens><tool_uses>101</tool_uses><duration_ms>379924</duration_ms></usage>\n</task-notification>",
+            &mut out,
+        );
+        assert_eq!(out["ccc"], AgentOutcome { status: "completed".into(), tokens: Some(296_142), duration_ms: Some(379_924) });
+        assert!(!out.contains_key("fake"), "an id inside a result is not an agent");
+        // A "did not finish" notice sent again after a resume does not undo a finish.
+        notifications_in("<task-notification><task-id>ccc</task-id><status>stopped</status><summary>s</summary></task-notification>", &mut out);
+        assert_eq!(out["ccc"], AgentOutcome { status: "completed".into(), tokens: Some(296_142), duration_ms: Some(379_924) });
+        // But a stopped agent that did report a count, or the agent's own later finish, is taken as given.
+        notifications_in("<task-notification><task-id>ccc</task-id><status>completed</status><usage><subagent_tokens>5</subagent_tokens></usage></task-notification>", &mut out);
+        assert_eq!(out["ccc"].tokens, Some(5));
+        // The older tag for the same figure.
+        notifications_in("<task-notification><task-id>ddd</task-id><status>completed</status><usage><total_tokens>42</total_tokens></usage></task-notification>", &mut out);
+        assert_eq!(out["ddd"].tokens, Some(42));
+    }
+
+    #[test]
+    fn the_transcripts_notices_and_foreground_results_give_the_outcomes_and_a_models_mention_does_not() {
+        let tmp = std::env::temp_dir().join("claude-eclipse-session-outcomes");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("sess.jsonl");
+        let notice = |ids: &str, status: &str, usage: &str| {
+            format!("<task-notification>\n{ids}\n<status>{status}</status>\n<summary>s</summary>\n{usage}\n</task-notification>")
+        };
+        let lines = [
+            // Enqueued, then delivered as a user message: the same notice twice.
+            serde_json::json!({"type":"queue-operation","operation":"enqueue",
+                "content": notice("<task-id>bg1</task-id>", "completed", "<usage><subagent_tokens>7777</subagent_tokens><tool_uses>3</tool_uses><duration_ms>61000</duration_ms></usage>")}),
+            serde_json::json!({"type":"user","message":{"role":"user","content":
+                notice("<task-id>bg1</task-id>", "completed", "<usage><subagent_tokens>7777</subagent_tokens><tool_uses>3</tool_uses><duration_ms>61000</duration_ms></usage>")}}),
+            // Delivered as a queued command's prompt.
+            serde_json::json!({"type":"attachment","attachment":{"type":"queued_command","prompt": notice("<task-id>bg2</task-id>", "stopped", "")}}),
+            // A foreground agent: the totals are on its result.
+            serde_json::json!({"type":"user","toolUseResult":{"status":"completed","agentId":"fg1","totalTokens":500,"totalDurationMs":2000,"totalToolUseCount":4}}),
+            // A background launch is not an end.
+            serde_json::json!({"type":"user","toolUseResult":{"status":"async_launched","agentId":"bg3"}}),
+            // What the model wrote about a notice (a search for one) is not a notice.
+            serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text": notice("<task-id>fake</task-id>", "failed", "")}]}}),
+        ];
+        fs::write(&path, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+
+        let out = agent_outcomes(&path);
+        let _ = fs::remove_dir_all(&tmp);
+        assert_eq!(out["bg1"], AgentOutcome { status: "completed".into(), tokens: Some(7777), duration_ms: Some(61_000) });
+        assert_eq!(out["bg2"], AgentOutcome { status: "stopped".into(), tokens: None, duration_ms: None });
+        assert_eq!(out["fg1"], AgentOutcome { status: "completed".into(), tokens: Some(500), duration_ms: Some(2000) });
+        assert!(!out.contains_key("bg3") && !out.contains_key("fake"), "{out:?}");
+        assert!(agent_outcomes(std::path::Path::new("/no/such/transcript.jsonl")).is_empty());
+    }
+
+    #[test]
+    fn a_reopened_conversations_agents_carry_the_clis_totals_and_how_they_ended() {
+        let mut env = EnvGuard::lock();
+        let home = std::env::temp_dir().join("claude-eclipse-session-agent-outcomes-home");
+        let root = r"C:\outcomews";
+        let dir = home.join(".claude").join("projects").join("C--outcomews");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+
+        let agent_call = |tool_id: &str| {
+            format!(r#"{{"type":"assistant","message":{{"model":"claude-sonnet-5","content":[{{"type":"tool_use","id":"{tool_id}","name":"Agent","input":{{"description":"d","prompt":"p","run_in_background":true}}}}]}},"timestamp":"2026-09-16T13:54:40.400Z"}}"#)
+        };
+        let notice = |ids: &str, status: &str, usage: &str| {
+            let text = format!("<task-notification>\n{ids}\n<status>{status}</status>\n<summary>s</summary>\n{usage}\n</task-notification>");
+            serde_json::json!({"type":"queue-operation","operation":"enqueue","content": text}).to_string()
+        };
+        let transcript = [
+            agent_call("toolu_done"), agent_call("toolu_stopped"), agent_call("toolu_unnoticed"),
+            notice("<task-id>done1</task-id>", "completed", "<usage><subagent_tokens>7777</subagent_tokens><tool_uses>3</tool_uses><duration_ms>61000</duration_ms></usage>"),
+            notice("<task-id>stop1</task-id>", "stopped", ""),
+        ]
+        .join("\n");
+        fs::write(dir.join("sessb.jsonl"), transcript).unwrap();
+
+        // Each agent's own file: a message is several lines with the same usage, and each call's
+        // cache reads repeat the whole context, so the total of the lines is far more than the
+        // context the agent ended with, which is what the CLI reports.
+        let sub_dir = dir.join("sessb").join("subagents");
+        fs::create_dir_all(&sub_dir).unwrap();
+        for (id, tool) in [("done1", "toolu_done"), ("stop1", "toolu_stopped"), ("none1", "toolu_unnoticed")] {
+            fs::write(sub_dir.join(format!("agent-{id}.meta.json")), format!(r#"{{"toolUseId":"{tool}"}}"#)).unwrap();
+            let message = |n: u64, cache_read: u64| {
+                let usage = format!(r#"{{"input_tokens":5,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":{cache_read}}}"#);
+                (0..2)
+                    .map(|part| format!(r#"{{"type":"assistant","isSidechain":true,"message":{{"id":"m{n}","model":"claude-sonnet-5","usage":{usage},"content":[{{"type":"text","text":"part {part}"}}]}},"timestamp":"2026-09-16T13:5{n}:00.000Z"}}"#))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            fs::write(sub_dir.join(format!("agent-{id}.jsonl")), [message(1, 1000), message(2, 2000), message(3, 3000)].join("\n")).unwrap();
+        }
+
+        env.set_home(&home);
+        let loaded = super::load_session_history(root, "sessb");
+        let _ = fs::remove_dir_all(&home);
+        let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let log = |tool: &str| {
+            got.as_array().unwrap().iter().find(|it| it["id"] == tool).expect("the Agent item")["agentLog"].clone()
+        };
+
+        let done = log("toolu_done");
+        assert_eq!(done["tokens"], 7777, "the CLI's total from the notice");
+        assert_eq!(done["durationMs"], 61_000);
+        assert_eq!(done["status"], "completed");
+
+        let stopped = log("toolu_stopped");
+        assert_eq!(stopped["status"], "stopped");
+        assert_eq!(stopped["tokens"], 0, "one that ended early with no count shows none, as the CLI's list does");
+
+        // No notice (an older conversation): the CLI's own figure is its latest message's usage, 5+10+3000.
+        let unnoticed = log("toolu_unnoticed");
+        assert_eq!(unnoticed["tokens"], 3015);
+        assert_eq!(unnoticed["status"], "");
+        assert!(unnoticed["durationMs"].is_null());
+    }
+    #[test]
+    fn a_reopened_agent_carries_the_logs_of_the_agents_it_started() {
+        let mut env = EnvGuard::lock();
+        let home = std::env::temp_dir().join("claude-eclipse-session-nested-agents-home");
+        let root = r"C:\nestws";
+        let dir = home.join(".claude").join("projects").join("C--nestws");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+
+        // The conversation started one agent; that agent started another.
+        fs::write(dir.join("sessn.jsonl"), concat!(
+            r#"{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_parent","name":"Agent","input":{"description":"Sweep","prompt":"p"}}]},"timestamp":"2026-09-16T13:54:40.400Z"}"#, "\n",
+        )).unwrap();
+        let sub_dir = dir.join("sessn").join("subagents");
+        fs::create_dir_all(&sub_dir).unwrap();
+        fs::write(sub_dir.join("agent-par1.meta.json"), r#"{"toolUseId":"toolu_parent","spawnDepth":1}"#).unwrap();
+        fs::write(sub_dir.join("agent-par1.jsonl"), concat!(
+            r#"{"type":"assistant","isSidechain":true,"message":{"id":"m1","model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"tool_use","id":"toolu_nested","name":"Agent","input":{"description":"Nested one","prompt":"q"}}]},"timestamp":"2026-09-16T13:54:41.000Z"}"#, "\n",
+            // The nested agent's result, as its parent's own file records it.
+            r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_nested","content":"done"}]},"toolUseResult":{"status":"completed","agentId":"nes1","totalTokens":4321,"totalDurationMs":5000},"timestamp":"2026-09-16T13:54:46.000Z"}"#, "\n",
+            r#"{"type":"assistant","isSidechain":true,"message":{"id":"m2","model":"claude-sonnet-5","usage":{"input_tokens":20,"output_tokens":9},"content":[{"type":"text","text":"All done."}]},"timestamp":"2026-09-16T13:54:47.000Z"}"#, "\n",
+        )).unwrap();
+        fs::write(sub_dir.join("agent-nes1.meta.json"), r#"{"toolUseId":"toolu_nested","parentAgentId":"par1","spawnDepth":2}"#).unwrap();
+        fs::write(sub_dir.join("agent-nes1.jsonl"), concat!(
+            r#"{"type":"assistant","isSidechain":true,"message":{"id":"n1","model":"claude-haiku-5","usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":4000},"content":[{"type":"text","text":"nested says hi"}]},"timestamp":"2026-09-16T13:54:40.200Z"}"#, "\n",
+        )).unwrap();
+
+        env.set_home(&home);
+        let loaded = super::load_session_history(root, "sessn");
+        let _ = fs::remove_dir_all(&home);
+        let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let parent = got.as_array().unwrap().iter().find(|it| it["id"] == "toolu_parent").expect("the agent's item");
+        let log = &parent["agentLog"];
+        assert_eq!(log["tokens"], 29, "its own latest message, 20+9");
+        let items = log["items"].as_array().unwrap();
+        let call = items.iter().find(|x| x["id"] == "toolu_nested").expect("the call that started the nested agent, with its id");
+        assert_eq!(call["name"], "Agent");
+        let nested = &call["agentLog"];
+        assert_eq!(nested["tokens"], 4321, "the CLI's total, as the agent's parent's file recorded it");
+        assert_eq!(nested["status"], "completed");
+        assert_eq!(nested["durationMs"], 5000);
+        assert_eq!(nested["model"], "claude-haiku-5");
+        assert_eq!(nested["items"][0]["text"], "nested says hi");
+        // Its clock starts at the call that started it (13:54:41.000 in its parent's file), not at the
+        // earlier line its own file begins with, as a fork's does (a copy of what its parent had said).
+        assert_eq!(nested["startedAt"], "2026-09-16T13:54:41.000Z");
+    }
+    #[test]
+    fn transcripts_are_looked_for_where_the_cli_writes_them_which_claude_config_dir_may_change() {
+        let mut env = EnvGuard::lock();
+        let tmp = std::env::temp_dir().join("claude-eclipse-session-configdir");
+        let _ = fs::remove_dir_all(&tmp);
+        let (home, config) = (tmp.join("home"), tmp.join("elsewhere"));
+        let root = r"C:\cfgws";
+        fs::create_dir_all(home.join(".claude").join("projects").join("C--cfgws")).unwrap();
+        fs::create_dir_all(config.join("projects").join("C--cfgws")).unwrap();
+        env.set_home(&home);
+
+        assert_eq!(super::projects_dir(root), Some(home.join(".claude").join("projects").join("C--cfgws")));
+        env.set("CLAUDE_CONFIG_DIR", "");
+        assert_eq!(super::projects_dir(root), Some(home.join(".claude").join("projects").join("C--cfgws")), "empty counts as unset");
+        env.set("CLAUDE_CONFIG_DIR", &config);
+        assert_eq!(super::projects_dir(root), Some(config.join("projects").join("C--cfgws")));
+        // A folder with no such project under it has none, rather than falling back to ~/.claude.
+        env.set("CLAUDE_CONFIG_DIR", tmp.join("empty"));
+        assert_eq!(super::projects_dir(root), None);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+    // ---- the list names, dates and leaves out conversations as the VS Code extension's does ----
+
+    /// The list's `(title, time)` for a transcript made of `lines`, None when it leaves it out.
+    fn listed(lines: &[&str]) -> Option<(String, String)> {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("11111111-1111-4111-8111-111111111111.jsonl");
+        fs::write(&path, lines.join("\n") + "\n").unwrap();
+        super::summarize(&path).map(|(s, _)| (s.display, s.last_ts))
+    }
+
+    const USER_1: &str = r#"{"type":"user","message":{"role":"user","content":"the first words"},"timestamp":"2026-07-01T10:00:00.000Z"}"#;
+    const REPLY_1: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"},"timestamp":"2026-07-01T10:00:05.000Z"}"#;
+
+    #[test]
+    fn a_conversation_is_named_by_the_first_of_these_it_has() {
+        let custom = r#"{"type":"custom-title","customTitle":"by hand"}"#;
+        let ai = r#"{"type":"ai-title","aiTitle":"by the AI"}"#;
+        let last = r#"{"type":"last-prompt","lastPrompt":"what was asked last"}"#;
+        let summary = r#"{"type":"summary","summary":"the CLI's summary","leafUuid":"x"}"#;
+        let title = |lines: &[&str]| listed(lines).unwrap().0;
+        assert_eq!(title(&[USER_1, REPLY_1, last, summary, ai, custom]), "by hand");
+        assert_eq!(title(&[USER_1, REPLY_1, last, summary, ai]), "by the AI");
+        assert_eq!(title(&[USER_1, REPLY_1, last, summary]), "what was asked last", "the last prompt, not the first message");
+        assert_eq!(title(&[USER_1, REPLY_1, summary]), "the CLI's summary");
+        assert_eq!(title(&[USER_1, REPLY_1]), "the first words");
+        // A line with a newline in it still names the conversation on one line.
+        assert_eq!(title(&[USER_1, REPLY_1, r#"{"type":"last-prompt","lastPrompt":"two\nlines"}"#]), "two lines");
+    }
+
+    #[test]
+    fn a_title_in_the_start_of_the_file_names_it_when_the_end_has_none() {
+        let early_custom = r#"{"type":"custom-title","customTitle":"renamed early"}"#;
+        let early_ai = r#"{"type":"ai-title","aiTitle":"titled early"}"#;
+        assert_eq!(listed(&[early_custom, USER_1, REPLY_1]).unwrap().0, "renamed early");
+        assert_eq!(listed(&[early_ai, USER_1, REPLY_1]).unwrap().0, "titled early");
+        // The end's own title beats the start's.
+        assert_eq!(listed(&[early_custom, USER_1, REPLY_1, r#"{"type":"ai-title","aiTitle":"the end"}"#]).unwrap().0, "renamed early");
+    }
+
+    #[test]
+    fn a_rename_kept_beside_the_transcript_names_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("22222222-2222-4222-8222-222222222222.jsonl");
+        fs::write(&path, [USER_1, REPLY_1, r#"{"type":"ai-title","aiTitle":"by the AI"}"#].join("\n")).unwrap();
+        fs::create_dir_all(tmp.path().join("22222222-2222-4222-8222-222222222222")).unwrap();
+        fs::write(tmp.path().join("22222222-2222-4222-8222-222222222222").join("custom-title.json"), "{\"customTitle\":\"  kept\\tbeside it \"}").unwrap();
+        assert_eq!(super::summarize(&path).unwrap().0.display, "kept beside it");
+    }
+
+    #[test]
+    fn the_first_message_is_what_somebody_typed_and_not_what_the_cli_wrote() {
+        let command = r#"{"type":"user","message":{"role":"user","content":"<command-name>/review</command-name><command-args>123</command-args>"},"timestamp":"2026-07-01T10:00:00.000Z"}"#;
+        let meta = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"a skill's body"},"timestamp":"2026-07-01T10:00:01.000Z"}"#;
+        let compact = r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"},"timestamp":"2026-07-01T10:00:02.000Z"}"#;
+        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]},"timestamp":"2026-07-01T10:00:03.000Z"}"#;
+        let tagged = r#"{"type":"user","message":{"role":"user","content":"<task-notification>done</task-notification>"},"timestamp":"2026-07-01T10:00:04.000Z"}"#;
+        let interrupted = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]},"timestamp":"2026-07-01T10:00:05.000Z"}"#;
+        let typed = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<ide_opened_file>a.java</ide_opened_file>"},{"type":"text","text":"explain\nthis"}]},"timestamp":"2026-07-01T10:00:06.000Z"}"#;
+        assert_eq!(listed(&[command, meta, compact, result, tagged, interrupted, typed, REPLY_1]).unwrap().0, "explain this");
+        // Nothing else typed: the slash command names it; and a shell command typed in is "! command".
+        assert_eq!(listed(&[command, meta, compact, result, tagged, interrupted, REPLY_1]).unwrap().0, "/review");
+        let bash = r#"{"type":"user","message":{"role":"user","content":"<bash-input>ls -la</bash-input>"},"timestamp":"2026-07-01T10:00:00.000Z"}"#;
+        assert_eq!(listed(&[bash, REPLY_1]).unwrap().0, "! ls -la");
+        // A real message later still beats a command first.
+        assert_eq!(listed(&[command, USER_1, REPLY_1]).unwrap().0, "the first words");
+    }
+
+    #[test]
+    fn a_conversation_of_attachments_alone_is_named_for_them() {
+        let image = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]},"timestamp":"2026-07-01T10:00:00.000Z"}"#;
+        let document = r#"{"type":"user","message":{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"AAAA"}}]},"timestamp":"2026-07-01T10:00:00.000Z"}"#;
+        assert_eq!(listed(&[image, REPLY_1]).unwrap().0, "Image");
+        assert_eq!(listed(&[document, REPLY_1]).unwrap().0, "Document");
+    }
+
+    #[test]
+    fn the_time_of_a_conversation_is_its_last_message_and_not_the_last_line() {
+        let attachment = r#"{"type":"attachment","attachment":{"type":"x"},"timestamp":"2026-07-05T12:00:00.000Z"}"#;
+        let queue = r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-06T12:00:00.000Z"}"#;
+        let (_, time) = listed(&[USER_1, REPLY_1, attachment, queue]).unwrap();
+        assert_eq!(time, "2026-07-01T10:00:05.000Z");
+        // A time later than the file was written is not believed: the file's own is used.
+        let future = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"timestamp":"2999-01-01T00:00:00.000Z"}"#;
+        let (_, capped) = listed(&[USER_1, future]).unwrap();
+        assert!(capped.as_str() < "2999", "{capped}");
+    }
+
+    #[test]
+    fn a_time_is_read_to_the_millisecond() {
+        assert_eq!(super::iso_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(super::iso_ms("1970-01-01T00:00:01.5Z"), Some(1500));
+        assert_eq!(super::iso_ms("2026-07-01T10:00:05.123Z"), Some(1_782_900_005_123));
+        assert_eq!(super::iso_ms("2000-02-29T23:59:59.999Z"), Some(951_868_799_999));
+        assert_eq!(super::iso_ms("not a time"), None);
+        assert_eq!(super::iso_ms("2026-07-01 10:00:05Z"), None);
+    }
+
+    #[test]
+    fn the_conversations_the_extension_leaves_out_are_left_out() {
+        let with = |first: &str| format!(r#"{{"type":"user",{first}"message":{{"role":"user","content":"hello there"}},"timestamp":"2026-07-01T10:00:00.000Z"}}"#);
+        // A sub-agent's own file.
+        assert!(listed(&[&with(r#""isSidechain":true,"#), REPLY_1]).is_none());
+        // A script's: the SDK, or the CLI's print mode.
+        for entrypoint in ["sdk-cli", "sdk-ts", "sdk-py"] {
+            assert!(listed(&[&with(&format!(r#""entrypoint":"{entrypoint}","#)), REPLY_1]).is_none(), "{entrypoint}");
+        }
+        // A background worker's.
+        for kind in ["daemon", "daemon-worker"] {
+            assert!(listed(&[&with(&format!(r#""parentUuid":null,"sessionKind":"{kind}","#)), REPLY_1]).is_none(), "{kind}");
+        }
+        // Somebody's own: this plug-in's, VS Code's, the terminal's.
+        for entrypoint in ["claude-eclipse-ide", "claude-vscode", "cli"] {
+            assert!(listed(&[&with(&format!(r#""entrypoint":"{entrypoint}","#)), REPLY_1]).is_some(), "{entrypoint}");
+        }
+    }
+
+    #[test]
+    fn a_conversation_continued_in_another_file_is_left_out_but_one_that_carried_on_is_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (old, new) = ("33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444");
+        let continued = format!(r#"{{"type":"continued-in","continuedInSessionId":"{new}"}}"#);
+        let old_path = tmp.path().join(format!("{old}.jsonl"));
+        fs::write(&old_path, [USER_1, REPLY_1, &continued].join("\n")).unwrap();
+
+        // The file it was continued in does not exist (yet), or is not one that carries on from another.
+        assert!(super::summarize(&old_path).is_some());
+        fs::write(tmp.path().join(format!("{new}.jsonl")), [USER_1, REPLY_1].join("\n")).unwrap();
+        assert!(super::summarize(&old_path).is_some(), "a file that does not carry on is no hand-over");
+        // It does: its lines have parents.
+        fs::write(tmp.path().join(format!("{new}.jsonl")),
+            r#"{"type":"user","parentUuid":"u0","message":{"role":"user","content":"carrying on"},"timestamp":"2026-07-02T10:00:00.000Z"}"#).unwrap();
+        assert!(super::summarize(&old_path).is_none());
+        // Somebody wrote in the old one after the hand-over: it went on there.
+        fs::write(&old_path, [USER_1, REPLY_1, &continued, r#"{"type":"user","message":{"role":"user","content":"back here"},"timestamp":"2026-07-03T10:00:00.000Z"}"#].join("\n")).unwrap();
+        assert!(super::summarize(&old_path).is_some());
+    }
+
+    #[test]
+    fn json_strings_are_read_as_the_extension_reads_them() {
+        let text = r#"{"a":"first","b":{"customTitle":"one"}} {"customTitle": "two \"quoted\" é"}"#;
+        assert_eq!(super::last_json_string(text, "customTitle").as_deref(), Some("two \"quoted\" é"));
+        assert_eq!(super::first_json_string(text, "customTitle").as_deref(), Some("one"));
+        assert_eq!(super::last_json_string(r#"{"customTitle":""}"#, "customTitle"), None, "empty names nothing");
+        assert_eq!(super::last_json_string("{}", "customTitle"), None);
+    }
+    #[test]
+    fn a_slash_command_keeps_what_was_typed_after_it() {
+        // Trimmed, as every caller trims it.
+        let strip = |s: &str| super::strip_ide_preamble(s).trim().to_string();
+        assert_eq!(
+            strip("<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>123 now</command-args>"),
+            "/review 123 now"
+        );
+        // No arguments, as the CLI writes it for a bare command: just the command.
+        assert_eq!(
+            strip("<command-name>/fast</command-name>\n            <command-message>fast</command-message>\n            <command-args></command-args>"),
+            "/fast"
+        );
+        assert_eq!(strip("<command-message>doctor</command-message>\n<command-name>/doctor</command-name>"), "/doctor");
+        // Arguments with no command name beside them are not a command's.
+        assert_eq!(strip("<command-args>x</command-args>hello"), "hello");
+    }
+    #[test]
+    fn a_conversation_teleported_by_either_client_shows_one_divider() {
+        let mut env = EnvGuard::lock();
+        let home = std::env::temp_dir().join("claude-eclipse-session-teleport-markers-home");
+        let root = r"C:\teleportws";
+        let dir = home.join(".claude").join("projects").join("C--teleportws");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        let said = r#"{"type":"user","message":{"role":"user","content":"hello"},"timestamp":"2026-09-16T13:54:40.400Z"}"#;
+        let vscode = r#"{"type":"teleported-from","remoteSessionId":"session_01","branch":"main","messageCount":4,"savedAt":"2026-09-16T13:54:41.000Z"}"#;
+        let ours = r#"{"type":"system","subtype":"teleported_from_web","timestamp":"2026-09-16T13:54:41.000Z"}"#;
+        let none = r#"{"type":"teleported-from","remoteSessionId":"session_02","branch":"","messageCount":0,"savedAt":"2026-09-16T13:54:41.000Z"}"#;
+        fs::write(dir.join("by-vscode.jsonl"), [said, vscode].join("\n")).unwrap();
+        fs::write(dir.join("by-both.jsonl"), [said, ours, vscode].join("\n")).unwrap();
+        fs::write(dir.join("by-eclipse.jsonl"), [said, ours].join("\n")).unwrap();
+        fs::write(dir.join("empty.jsonl"), [said, none].join("\n")).unwrap();
+        fs::write(dir.join("local.jsonl"), said).unwrap();
+        env.set_home(&home);
+
+        let dividers = |id: &str| -> usize {
+            let items: serde_json::Value = serde_json::from_str(&super::load_session_history(root, id)).unwrap();
+            items.as_array().unwrap().iter().filter(|it| it["t"] == "teleported").count()
+        };
+        let counts = [dividers("by-vscode"), dividers("by-both"), dividers("by-eclipse"), dividers("empty"), dividers("local")];
+        let _ = fs::remove_dir_all(&home);
+        assert_eq!(counts, [1, 1, 1, 0, 0], "VS Code's line, both lines, Eclipse's line, a teleport with nothing in it, a local conversation");
+    }
+    // ---- thinking blocks: how long, and narration ----
+
+    /// A thinking block's signature as the CLI writes it: a protobuf message whose field 2 holds a
+    /// message whose field 1 holds a message with `kind` in field 8, then bytes that mean nothing here.
+    fn signature_of(kind: &str) -> String {
+        use base64::Engine as _;
+        fn varint(mut n: u64) -> Vec<u8> {
+            let mut out = Vec::new();
+            loop {
+                let byte = (n & 0x7f) as u8;
+                n >>= 7;
+                if n == 0 {
+                    out.push(byte);
+                    return out;
+                }
+                out.push(byte | 0x80);
+            }
+        }
+        fn field(number: u64, body: &[u8]) -> Vec<u8> {
+            let mut out = varint((number << 3) | 2);
+            out.extend(varint(body.len() as u64));
+            out.extend_from_slice(body);
+            out
+        }
+        let mut header = vec![0x08, 0x13, 0x10, 0x02, 0x18, 0x02, 0x38, 0x01];
+        header.extend(field(8, kind.as_bytes()));
+        let mut inner = field(1, &header);
+        inner.extend(field(2, &[0xdb, 0x7d, 0x3a, 0x44, 0x8d, 0x35]));
+        let mut outer = vec![0x08, 0x04];
+        outer.extend(field(2, &inner));
+        base64::engine::general_purpose::STANDARD.encode(outer)
+    }
+
+    #[test]
+    fn a_thinking_block_is_narration_when_its_signature_says_so() {
+        assert!(super::is_narration_signature(&signature_of("narration")));
+        assert!(!super::is_narration_signature(&signature_of("thinking")));
+        assert!(!super::is_narration_signature(""));
+        assert!(!super::is_narration_signature("not base64 at all!"));
+        // Bytes that are not a protobuf message, or are cut off inside a field.
+        assert!(!super::is_narration_signature("AAAAAAAAAAAA"));
+        let whole = signature_of("narration");
+        assert!(!super::is_narration_signature(&whole[..whole.len() / 2]));
+    }
+
+    #[test]
+    fn a_reopened_conversation_says_how_long_the_model_thought_and_which_thinking_is_narration() {
+        let mut env = EnvGuard::lock();
+        let home = std::env::temp_dir().join("claude-eclipse-session-thinking-home");
+        let root = r"C:\thinkws";
+        let dir = home.join(".claude").join("projects").join("C--thinkws");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        // As the CLI wrote one message: two lines of the same API message, the first a thinking block with
+        // no text and the time it took, the second the model's narration.
+        let line = |block: serde_json::Value, extra: serde_json::Value, at: &str| {
+            let mut event = serde_json::json!({
+                "type": "assistant", "timestamp": at,
+                "message": { "id": "msg_1", "model": "claude-sonnet-5-5", "content": [block] },
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                event[k] = v.clone();
+            }
+            event.to_string()
+        };
+        let transcript = [
+            r#"{"type":"user","message":{"role":"user","content":"go"},"timestamp":"2026-10-22T10:25:49.000Z"}"#.to_string(),
+            line(serde_json::json!({"type":"thinking","thinking":"","signature": signature_of("thinking")}),
+                 serde_json::json!({"thinkingDurationMs": 1448}), "2026-10-22T10:25:56.418Z"),
+            line(serde_json::json!({"type":"thinking","thinking":"Now I'll do a final sweep.","signature": signature_of("narration")}),
+                 serde_json::json!({"thinkingDurationMs": 3}), "2026-10-22T10:25:56.432Z"),
+            // Thinking whose text the CLI kept, but which is the model's reasoning and not narration.
+            line(serde_json::json!({"type":"thinking","thinking":"Let me work this out.","signature": signature_of("thinking")}),
+                 serde_json::json!({}), "2026-10-22T10:25:57.000Z"),
+        ]
+        .join("\n");
+        fs::write(dir.join("sessth.jsonl"), transcript).unwrap();
+        env.set_home(&home);
+
+        let items: serde_json::Value = serde_json::from_str(&super::load_session_history(root, "sessth")).unwrap();
+        let _ = fs::remove_dir_all(&home);
+        let thinking: Vec<&serde_json::Value> = items.as_array().unwrap().iter().filter(|it| it["t"] == "thinking").collect();
+        assert_eq!(thinking.len(), 3);
+        assert_eq!((thinking[0]["text"].as_str(), thinking[0]["durationMs"].as_u64(), thinking[0]["narration"].as_bool()), (Some(""), Some(1448), None));
+        assert_eq!((thinking[1]["text"].as_str(), thinking[1]["durationMs"].as_u64(), thinking[1]["narration"].as_bool()), (Some("Now I'll do a final sweep."), Some(3), Some(true)));
+        assert_eq!((thinking[2]["durationMs"].as_u64(), thinking[2]["narration"].as_bool()), (None, None));
     }
 }

@@ -495,10 +495,10 @@ const TOOL_LABELS = {
   // Each of these used to collapse into one generic 'Search' bucket — you couldn't tell
   // a Grep from a WebSearch from a JDT FindReferences without reading the input. Now
   // distinct, matching VSCode's own per-tool labels.
-  glob:'Glob', grep:'Grep', toolsearch:'Search', websearch:'WebSearch',
+  glob:'Glob', grep:'Grep', toolsearch:'Search tools', websearch:'Web Search',
   findreferences:'FindReferences', gettypehierarchy:'GetTypeHierarchy', getsymbolinfo:'GetSymbolInfo',
-  webfetch:'Fetch', agent:'Agent', task:'Agent', skill:'Skill', workflow:'Workflow',
-  todowrite:'Planning', exitplanmode:"Claude's Plan",
+  webfetch:'Web Fetch', agent:'Agent', task:'Agent', skill:'Skill', workflow:'Workflow',
+  todowrite:'Update Todos', exitplanmode:"Claude's Plan",
   askuserquestion:'Questions', runtests:'Testing',
   getdiagnostics:'Checking', checkdocumentdirty:'Checking',
   getcurrentselection:'Reading', getlatestselection:'Reading',
@@ -966,7 +966,8 @@ function buildTodoChecklist(input) {
     const chk = document.createElement('span'); chk.className = 'chk';
     chk.textContent = status === 'completed' ? '✓' : '';
     const label = document.createElement('span'); label.className = 'tlabel';
-    label.textContent = (status === 'in_progress' && t.activeForm) ? t.activeForm : (t.content || '');
+    // What each item says it is, as the extension's checklist does (not the present-tense form of it).
+    label.textContent = t.content || t.activeForm || '';
     row.appendChild(chk); row.appendChild(label);
     block.appendChild(row);
   });
@@ -1077,6 +1078,8 @@ function applyAgentActivity(json, t) {
     // totals for the agent's WHOLE run — more accurate than the running total this
     // page tallied itself from each individual message's usage — so they win here.
     if (typeof info.tokens === 'number') log.tokens = info.tokens;
+    // One that ended early with no count shows none, as the extension's list does.
+    else if (info.status === 'stopped' || info.status === 'killed' || info.status === 'failed') log.tokens = 0;
     if (info.summary) log.summary = info.summary;
     // "completed" vs "stopped" (the user hit Stop agent) — agents.js's detail view
     // shows this instead of always saying "Finished".
@@ -1578,6 +1581,30 @@ function appendThinking(t) {
     return;
   }
   relinkTurn(curTurn);
+  scrollBottom();
+}
+/** A new thinking block begins: the one before it is over, with its own "Thought for Ns" row, and what
+ *  this one says goes in a row of its own (not appended to that one's). */
+function endThinkingBlock() {
+  if (curThink) finalizeThink();
+}
+/** The thinking block that just ended is the model's narration (its commentary between steps): its
+ *  row becomes a line of text with a muted "· summary", as the extension draws it and as a reopened
+ *  conversation does (history.js), instead of a collapsed "Thinking" row. */
+function markNarration() {
+  const el = curThink;
+  if (!el || !curThinkText.trim()) return;
+  if (el._rt) { clearTimeout(el._rt); el._rt = 0; }
+  const text = curThinkText.trim();
+  el.className = 'a-item narration';
+  el.innerHTML = '<span class="dot gray"></span><span class="a-body"></span>';
+  const body = el.querySelector('.a-body');
+  body.innerHTML = renderMarkdown(text);
+  const hint = document.createElement('span'); hint.className = 'narr-hint'; hint.textContent = ' · summary';
+  (body.lastElementChild || body).appendChild(hint);
+  stepStart = Date.now();   // the next step starts where this one ended
+  curThink = null; curThinkText = '';
+  if (el.parentNode) relinkTurn(el.parentNode);
   scrollBottom();
 }
 function finalizeThink() {

@@ -43,8 +43,10 @@ impl EnvGuard {
         std::env::remove_var(key);
     }
 
-    /// Points the home directory at `home` until the guard is dropped.
+    /// Points the home directory at `home` until the guard is dropped, and takes the CLI's
+    /// config folder (`CLAUDE_CONFIG_DIR`, which would lead elsewhere) out of the way.
     pub(crate) fn set_home(&mut self, home: &Path) {
+        self.remove("CLAUDE_CONFIG_DIR");
         self.set(HOME_VAR, home);
     }
 
