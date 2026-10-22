@@ -185,6 +185,12 @@ jobs:
           mkdir -p com.anthropic.claudecode.eclipse/src/core
           cp -r claude-eclipse-core/src/. com.anthropic.claudecode.eclipse/src/core/
 
+      # The command menu's Changelog window reads CHANGELOG.md from the
+      # bundle's resources/ (ClaudeGuiView#changelogText). Copied in like
+      # src/core/ above, never committed -- .gitignore excludes the copy.
+      - name: Copy CHANGELOG.md into the plugin's resources
+        run: cp CHANGELOG.md com.anthropic.claudecode.eclipse/resources/CHANGELOG.md
+
       # The runner image brings its own Maven and replaces it on its own
       # schedule: 3.10.0 came with image 20261004, and tycho-surefire stopped
       # resolving the test dependencies ("Invalid Collect Request"). The

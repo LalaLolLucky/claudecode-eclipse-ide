@@ -4338,6 +4338,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             }
             case "home":
                 return System.getProperty("user.home", "");
+            case "changelog": {
+                String log = changelogText();
+                return log == null ? "" : "ok:" + log;
+            }
             case "openFolder": {
                 Path dir = Paths.get(arg);
                 if (!Files.isDirectory(dir)) return "";
@@ -4364,6 +4368,28 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
             default:
                 return "";
         }
+    }
+
+    /**
+     * This plugin's CHANGELOG.md, for the command menu's Changelog window (changelog.js):
+     * the copy the release build puts in the bundle's resources (deploy.yml), or, in
+     * a PDE launch from the source tree, where there is no copy, the repository's own
+     * beside the project. Null when neither is there.
+     */
+    private static String changelogText() throws IOException {
+        org.osgi.framework.Bundle bundle = Activator.getDefault().getBundle();
+        URL entry = bundle.getEntry("resources/CHANGELOG.md");
+        if (entry != null) {
+            try (java.io.InputStream in = entry.openStream()) {
+                return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            }
+        }
+        java.io.File root = FileLocator.getBundleFile(bundle);
+        if (root != null && root.isDirectory()) {
+            Path repo = root.toPath().resolveSibling("CHANGELOG.md");
+            if (Files.isRegularFile(repo)) return Files.readString(repo, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        return null;
     }
 
     private static boolean isMarkdown(Path file) {

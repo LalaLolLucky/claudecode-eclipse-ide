@@ -115,6 +115,8 @@ document.getElementById('cli-overlay').addEventListener('click', (e) => {
 function cliDlgKey(e) {
   if (!cliDlg) return;
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cliDlgEscape(); return; }
+  // A dialog with keys of its own (the Changelog's versions) takes them first.
+  if (cliDlg.key && cliDlg.key(e)) { e.preventDefault(); e.stopPropagation(); return; }
   if (e.target && e.target.tagName === 'TEXTAREA') return;
   const rows = [...document.querySelectorAll('#cli-win .cw-item, #cli-win .sc-row:not(.inert)')];
   if (!rows.length) return;

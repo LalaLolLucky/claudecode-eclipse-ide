@@ -242,6 +242,9 @@ function cmdMenuRows() {
     { id: 'focus', sec: 'Settings', label: 'Focus view', icon: 'FOCUS', toggle: true,
       tip: "Show only your prompts and Claude's responses", on: () => focusView, run: () => setFocusView(!focusView) },
 
+    { id: 'changelog', sec: 'Support', label: 'Changelog', icon: 'CHANGELOG',
+      tip: "What's new in this version, and in every one before it",
+      badge: () => changelogUnseen() ? 'New' : '', run: () => openChangelogDialog() },
     { id: 'docs', sec: 'Support', label: 'View help docs', icon: 'HELP',
       run: () => { if (window._openExternal) _openExternal(HELP_DOCS_URL); } },
 
@@ -307,6 +310,11 @@ function cmdRowEl(r) {
     if (why) {
       const note = document.createElement('span'); note.className = 'desc'; note.textContent = why;
       it.querySelector('.txt').appendChild(note);
+    }
+    const badge = r.badge ? r.badge() : '';
+    if (badge) {
+      const pill = document.createElement('span'); pill.className = 'pill'; pill.textContent = badge;
+      lbl.appendChild(pill);
     }
     if (r.curModel) {
       const cur = document.createElement('span');

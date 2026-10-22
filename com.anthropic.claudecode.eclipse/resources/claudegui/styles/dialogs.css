@@ -209,3 +209,86 @@
 #cli-overlay.screen .cw-body { overflow: visible; }
 #cli-win .signin-art { color: var(--fg-dim); margin: 0 0 22px; }
 #cli-win .signin-art svg { display: block; width: 100%; height: auto; }
+
+/* ---- the Changelog window (changelog.js) ---- */
+/* Bigger than .wide: a rail of versions beside the notes of the one picked. */
+#cli-win.cl { width: 760px; height: 86%; max-height: 86%; }
+#cli-win .cl-body { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; padding-right: 0; }
+#cli-win .cl-bar { margin-bottom: 10px; flex-shrink: 0; }
+#cli-win .cl-main { flex: 1 1 auto; min-height: 0; display: flex; gap: 0;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+/* The rail: a timeline, one dot per version, the line through them. */
+#cli-win .cl-rail { flex: 0 0 158px; overflow-y: auto; border-right: 1px solid var(--border);
+  background: var(--bg-soft); padding: 4px 0 8px; }
+#cli-win .cl-line { color: var(--fg-faint); font-size: 10.5px; letter-spacing: .04em; font-weight: 600;
+  padding: 8px 12px 3px 26px; }
+#cli-win .cl-ver { position: relative; display: flex; align-items: baseline; gap: 6px; padding: 4px 10px 4px 26px;
+  cursor: pointer; font-size: 12px; }
+#cli-win .cl-ver::before { content: ''; position: absolute; left: 13px; top: 0; bottom: 0; width: 1px; background: var(--border); }
+#cli-win .cl-ver:hover { background: var(--bg-hover); }
+#cli-win .cl-ver.sel { background: var(--menu-hover); }
+#cli-win .cl-dot { position: absolute; left: 10px; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%;
+  background: var(--bg-soft); border: 1px solid var(--fg-faint); box-sizing: border-box; }
+#cli-win .cl-ver.sel .cl-dot { background: var(--accent); border-color: var(--accent); }
+#cli-win .cl-ver.installed .cl-dot { border-color: var(--green); box-shadow: 0 0 0 2px var(--green-bg); }
+#cli-win .cl-ver.installed.sel .cl-dot { background: var(--green); }
+#cli-win .cl-v { flex: 1 1 auto; min-width: 0; color: var(--fg-soft); font-family: 'Cascadia Code','Consolas',monospace;
+  font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cli-win .cl-ver.sel .cl-v { color: var(--fg); }
+#cli-win .cl-d { color: var(--fg-faint); font-size: 10.5px; white-space: nowrap; flex-shrink: 0; }
+#cli-win .cl-hits { color: var(--fg); background: var(--find-match-bg); border-radius: 8px; padding: 0 6px;
+  font-size: 10.5px; flex-shrink: 0; }
+#cli-win .cl-none { padding: 10px 12px; font-size: 12px; }
+/* The notes. Relative so that a section's offsetTop is measured from here (the chips). */
+#cli-win .cl-entry { position: relative; flex: 1 1 auto; min-width: 0; overflow-y: auto; padding: 14px 18px 12px; }
+#cli-win .cl-rail::-webkit-scrollbar, #cli-win .cl-entry::-webkit-scrollbar { width: 9px; height: 9px; }
+#cli-win .cl-rail::-webkit-scrollbar-thumb, #cli-win .cl-entry::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 5px; }
+#cli-win .cl-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#cli-win .cl-vname { color: var(--fg); font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+#cli-win .cl-tag { font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 9px; border: 1px solid; }
+#cli-win .cl-tag.installed { color: var(--green); border-color: var(--green); background: var(--green-bg); }
+#cli-win .cl-tag.latest { color: var(--accent); border-color: var(--accent-dim); }
+#cli-win .cl-when { color: var(--fg-dim); font-size: 12px; margin-top: 2px; }
+#cli-win .cl-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
+#cli-win .cl-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px 2px 7px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-chip); color: var(--fg-soft); font-size: 11.5px; cursor: pointer; }
+#cli-win .cl-chip:hover { border-color: var(--chip-border-hover); color: var(--fg); }
+#cli-win .cl-chip b { color: var(--k); font-weight: 700; }
+#cli-win .cl-sec { margin-top: 14px; padding-left: 10px; border-left: 2px solid var(--k); }
+#cli-win .cl-sec-h { color: var(--k); font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  margin-bottom: 2px; }
+#cli-win .cl-md { color: var(--fg); font-size: 12.5px; line-height: 1.5; word-break: break-word; }
+#cli-win .cl-md ul { margin: 4px 0; padding-left: 18px; }
+#cli-win .cl-md li { margin: 3px 0; transition: opacity .1s; }
+#cli-win .cl-md li.cl-dim { opacity: .38; }
+#cli-win mark.cl-hit { background: var(--find-match-bg); color: inherit; border-radius: 2px; }
+/* One colour per kind of section, for its bar, its heading and its chip's count. */
+#cli-win .k-added   { --k: var(--green); }
+#cli-win .k-changed { --k: var(--sel); }
+#cli-win .k-fixed   { --k: var(--accent); }
+#cli-win .k-removed { --k: var(--red); }
+#cli-win .k-security, #cli-win .k-known { --k: var(--warn-fg); }
+#cli-win .k-deprecated { --k: var(--fg-dim); }
+#cli-win .k-other   { --k: var(--hunk); }
+#cli-win .cl-nav { display: flex; justify-content: space-between; gap: 8px; margin-top: 18px; padding-top: 10px;
+  border-top: 1px solid var(--border-soft); }
+#cli-win .cl-step { background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px;
+  color: var(--fg-dim); font-size: 11.5px; font-family: 'Cascadia Code','Consolas',monospace; cursor: pointer; }
+#cli-win .cl-step:hover { background: var(--bg-hover); color: var(--fg); }
+/* A narrow view: the rail becomes a strip of versions over the notes. */
+@media (max-width: 600px) {
+  #cli-win.cl { width: 96%; max-width: 96%; height: 92%; max-height: 92%; padding: 12px; }
+  #cli-win .cl-main { flex-direction: column; }
+  #cli-win .cl-rail { flex: 0 0 auto; display: flex; overflow-x: auto; overflow-y: hidden; border-right: none;
+    border-bottom: 1px solid var(--border); padding: 4px; gap: 2px; }
+  #cli-win .cl-line { display: none; }
+  #cli-win .cl-ver { flex: 0 0 auto; padding: 4px 8px 4px 20px; border-radius: 5px; }
+  #cli-win .cl-ver::before { display: none; }
+  #cli-win .cl-dot { left: 8px; }
+  #cli-win .cl-d { display: none; }
+  #cli-win .cl-entry { padding: 12px; }
+}
+
+/* A word after a menu row's label: "New" on Changelog until it has been read. */
+#actions-menu .item .pill { margin-left: 7px; padding: 0 6px; border-radius: 8px; font-size: 10px; font-weight: 600;
+  line-height: 15px; display: inline-block; vertical-align: 1px; color: var(--on-accent); background: var(--accent); }
