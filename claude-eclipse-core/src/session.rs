@@ -112,16 +112,34 @@ fn hook_said(attachment: &serde_json::Value) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
+/// The parts of a background task's notification that a line is made of.
+pub(crate) struct TaskNotice {
+    pub summary: String,
+    pub task_id: String,
+    /// The Agent call it belongs to; absent for a background command.
+    pub tool_use_id: String,
+    pub status: String,
+}
+
+/// A `<task-notification>` read for its line: what [`task_notice`] says, with the ids that
+/// say which task it is. None for one without a summary.
+pub(crate) fn notification_parts(text: &str) -> Option<TaskNotice> {
+    let summary = tag_text(text, "summary").filter(|s| !s.is_empty())?;
+    let part = |tag| tag_text(text, tag).unwrap_or("").to_string();
+    Some(TaskNotice { summary: summary.to_string(), task_id: part("task-id"),
+                      tool_use_id: part("tool-use-id"), status: part("status") })
+}
+
 /// What another session or a subagent sent in, as the CLI writes it into a user line:
 /// "Another Claude session sent a message:" and an `<agent-message from="…">` block. The
 /// conversation shows a collapsed line saying who it is from and how it starts, and the
 /// message, with the CLI's warning frame and the indent it puts on every line taken off,
 /// when opened. Not the user's words either way. `agents` is what each launched subagent was
 /// asked to do, by its id.
-fn peer_notice(event: &serde_json::Value, content: &str, agents: &HashMap<String, String>) -> Option<serde_json::Value> {
+pub(crate) fn peer_notice(event: &serde_json::Value, content: &str, agents: &HashMap<String, String>) -> Option<serde_json::Value> {
     let c = content.trim_start();
     let peer = event["origin"]["kind"].as_str() == Some("peer")
-        || (c.starts_with("Another Claude session sent a message:") && c.contains("<agent-message"));
+        || ((c.starts_with("Another Claude session sent a message:") || c.starts_with("<agent-message")) && c.contains("<agent-message"));
     if !peer {
         return None;
     }
@@ -1091,7 +1109,9 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
                     // isCompactSummary — surface it as the expandable "Compacted
                     // chat" body, never as a (huge) user bubble.
                     if let Some(note) = peer_notice(&event, c, &agent_names) {
-                        items.push(note);
+                        if items.last() != Some(&note) {
+                            items.push(note);
+                        }
                     } else if is_task_notification(&event, c) {
                         // A background task's notification: a muted line saying so, then
                         // Claude's reply to it.
@@ -1363,7 +1383,15 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
             // in an attachment at the point it handed them over, and writes no user line for
             // it (unless the turn was interrupted, when it writes one later).
             Some("attachment") => {
-                if let Some(q) = QueuedPrompt::of(&event, items.len()) {
+                // A message from a subagent or another session handed over mid-turn is queued the
+                // same way as the user's own words, and is not them: its origin says so.
+                let peer = queued_prompt_raw(&event).and_then(|raw| peer_notice(&event["attachment"], &raw, &agent_names));
+                if let Some(note) = peer {
+                    // The same message can be written twice, as an attachment and as a user line.
+                    if items.last() != Some(&note) {
+                        items.push(note);
+                    }
+                } else if let Some(q) = QueuedPrompt::of(&event, items.len()) {
                     queued.push(q);
                 } else if event["attachment"]["commandMode"].as_str() == Some("task-notification") {
                     // A notification handed over in the middle of a turn has no user line
@@ -3037,6 +3065,7 @@ mod tests {
             format!(r#"{{"type":"attachment","attachment":{{"type":"queued_command","commandMode":"task-notification","prompt":{note_json}}}}}"#),
             format!(r#"{{"type":"user","message":{{"role":"user","content":{note_json}}},"origin":{{"kind":"task-notification"}}}}"#),
             format!(r#"{{"type":"user","isMeta":true,"message":{{"role":"user","content":{peer_json}}},"origin":{{"kind":"peer"}}}}"#),
+            r#"{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","isMeta":true,"origin":{"kind":"peer","from":"a9"},"prompt":"<agent-message from=\"a9\">\n  Note: a classifier was unavailable.\n[Subagent hand-back] The report follows:\n  4\n</agent-message>"}}"#.to_string(),
             r#"{"type":"system","subtype":"informational","level":"notice","content":"Sonnet 5.5's safeguards stopped the response above · continuing once with that noted"}"#.to_string(),
             r#"{"type":"system","subtype":"informational","level":"info","content":"bookkeeping"}"#.to_string(),
             r#"{"type":"user","toolUseResult":{"isAsync":true,"agentId":"a77","description":"Find the cause"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}"#.to_string(),
@@ -3056,6 +3085,7 @@ mod tests {
             {"t":"user","content":"go","ts":"2026-09-16T17:19:00.000Z"},
             {"t":"notice","kind":"handback","text":"Agent \"Scan\" finished"},
             {"t":"notice","kind":"message","text":"Message from a subagent: Found it","body":"## Found it\nin `Foo.java`"},
+            {"t":"notice","kind":"message","text":"Message from a subagent: 4","body":"4"},
             {"t":"notice","kind":"informational","text":"Sonnet 5.5's safeguards stopped the response above · continuing once with that noted"},
             {"t":"notice","kind":"message","text":"Message from subagent \"Find the cause\": Found it","body":"## Found it\nin `Foo.java`"},
             {"t":"notice","kind":"refusal","text":"Opus 5.5's safeguards flagged this message."},

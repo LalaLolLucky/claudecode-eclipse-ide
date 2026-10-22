@@ -1085,9 +1085,9 @@ function applyAgentActivity(json, t) {
     // draws it ("Agent "X" finished"); one that ran in the foreground returned its result to
     // the call and says nothing of its own. Worded as the CLI words it in the notification it
     // queues: how it ended, and for a stop, who stopped it when that is known.
-    if (log.isBackgrounded && log.input && log.input.description) {
+    if (log.isBackgrounded && log.input && log.input.description && !log.handbackSaid) {
       const ending = handbackEnding(info, log);
-      if (ending) addNotice(t || activeTab(), 'handback', 'Agent "' + log.input.description + '" ' + ending);
+      if (ending) setHandback(t || activeTab(), info.parentId, 'Agent "' + log.input.description + '" ' + ending);
     }
     if (typeof dropAgentAsks === 'function') dropAgentAsks(log.taskId, t || activeTab());
     log.endedAt = (typeof info.durationMs === 'number' && log.startedAt)
@@ -1735,12 +1735,27 @@ function makeNoticeTurn(kind, text, body, mono) {
 /* The note put into a tab's conversation where the turn has got to, above the working
    indicator; what Claude writes next starts a turn under it. */
 function addNotice(t, kind, text, body) {
-  if (!t || !t.pane || !text) return;
+  if (!t || !t.pane || !text) return null;
   endAssistant();
   const turn = makeNoticeTurn(kind, text, body);
   const working = t.pane.querySelector(':scope > .working-turn');
   if (working) t.pane.insertBefore(turn, working); else t.pane.appendChild(turn);
   if (t === activeTab()) scrollBottom();
+  return turn;
+}
+/* The line an Agent call's hand-back leaves, said by the CLI itself (a replayed notification) or,
+   before that, made from its end event (applyAgentActivity). Whichever comes first draws it; the
+   CLI's own wording then takes the place of the other's, and nothing is drawn twice. */
+function setHandback(t, toolUseId, text) {
+  const log = toolUseId ? agentLogs.get(toolUseId) : null;
+  if (log && log.handbackEl && log.handbackEl.isConnected) {
+    const note = log.handbackEl.querySelector('.notice');
+    if (note) note.textContent = text;
+    log.handbackSaid = text;
+    return;
+  }
+  const el = addNotice(t, 'handback', text);
+  if (log) { log.handbackEl = el; log.handbackSaid = text; }
 }
 /* Append the italic "Tool interrupted" / "Interrupted" note as its own turn, last
    (below the "Request cancelled." system line). With `into`, the note goes there instead
