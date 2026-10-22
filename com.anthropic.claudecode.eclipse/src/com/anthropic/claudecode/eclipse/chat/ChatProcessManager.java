@@ -38,6 +38,7 @@ public class ChatProcessManager {
     private Consumer<String> onCardCancel;
     private Consumer<String> onStatus;
     private Consumer<String> onCompact;
+    private Consumer<String> onCliNotice;
     private Consumer<String> onRemoteControl;
     private Consumer<String> onRemoteMessage;
     private Consumer<String> onBrowserState;
@@ -87,6 +88,7 @@ public class ChatProcessManager {
             }
             @Override public void onStatus(String json) { emit(ChatProcessManager.this.onStatus, json); }
             @Override public void onCompact(String json) { emit(ChatProcessManager.this.onCompact, json); }
+            @Override public void onCliNotice(String json) { emit(ChatProcessManager.this.onCliNotice, json); }
             @Override public void onToolEnd(String json) { emit(ChatProcessManager.this.onToolEnd, json); }
             @Override public void onRemoteControl(String json) { emit(ChatProcessManager.this.onRemoteControl, json); }
             @Override public void onRemoteMessage(String text) { emit(ChatProcessManager.this.onRemoteMessage, text); }
@@ -201,6 +203,8 @@ public class ChatProcessManager {
     public void setOnStatus(Consumer<String> cb) { this.onStatus = cb; }
     /** Compaction lifecycle JSON ({@code phase}: compacting/failed/boundary/summary). Persistent mode. */
     public void setOnCompact(Consumer<String> cb) { this.onCompact = cb; }
+    /** A line the CLI said to the user in its own voice ({@code kind}, {@code text}). Persistent mode. */
+    public void setOnCliNotice(Consumer<String> cb) { this.onCliNotice = cb; }
 
     /**
      * Opts this manager into the persistent-process protocol (one long-lived

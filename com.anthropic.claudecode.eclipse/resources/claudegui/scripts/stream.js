@@ -100,6 +100,12 @@ window.onCompact = (tabId, json) => withTab(tabId, (t) => {
     compactionOver(t);
   }
 });
+/* A line the CLI said to the user in its own voice mid-conversation (a hook that blocked a turn,
+   the safeguards stopping a reply, ...): {kind, text}. Not onNotice, which is the plugin's own. */
+window.onCliNotice = (tabId, json) => withTab(tabId, (t) => {
+  let n = {}; try { n = JSON.parse(json) || {}; } catch (e) { return; }
+  addNotice(t, n.kind, n.text, n.body || '');
+});
 /* The working indicator lets go of "Compacting" once compaction is over. A moment later,
    not at once: a manual /compact ends its turn right behind this, and the indicator with
    it, so there is nothing to let go of and no other word should flash by on the way out.

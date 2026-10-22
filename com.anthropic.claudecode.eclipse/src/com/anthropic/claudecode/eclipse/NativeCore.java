@@ -608,6 +608,12 @@ public final class NativeCore {
          */
         default void onCompact(String json) {}
         /**
+         * A line the CLI said to the user in its own voice (a hook that blocked a turn, the
+         * safeguards stopping a reply, ...): {@code {"kind":"informational|refusal","text":…}}.
+         * Non-blocking.
+         */
+        default void onCliNotice(String json) {}
+        /**
          * A tool finished: {@code {"id":…,"isError":bool,"text":…}}. {@code id} is
          * the {@code tool_use_id} that {@link #onToolStart} carried, so the GUI can
          * resolve THAT tool's dot; {@code text} is the one-line reason a failure

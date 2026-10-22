@@ -3338,6 +3338,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         m.setOnSessionId(id -> display.asyncExec(() -> executeJS("window.onSessionId && window.onSessionId('" + tj + "','" + esc(id) + "')")));
         m.setOnError(msg -> display.asyncExec(() -> executeJS("window.onError && window.onError('" + tj + "','" + esc(msg) + "')")));
         m.setOnCompact(j -> display.asyncExec(() -> executeJS("window.onCompact && window.onCompact('" + tj + "','" + esc(j) + "')")));
+        m.setOnCliNotice(j -> display.asyncExec(() -> executeJS("window.onCliNotice && window.onCliNotice('" + tj + "','" + esc(j) + "')")));
         m.setOnBrowserState(j -> display.asyncExec(() -> executeJS("window.onBrowserState && window.onBrowserState('" + tj + "','" + esc(j) + "')")));
         // Model, effort or permission mode as the live process now has them — the
         // conversation is the same one on the phone and on claude.ai, so a change

@@ -62,6 +62,35 @@ function parseUserContent(s) {
   return { chip, target, text: stripMeta(s) };
 }
 
+/* The user lines the CLI wraps in a tag when what they hold did not come from the user, and the
+   label VS Code gives each: a collapsed line, opened for what is inside. A terminal command's
+   output (bash-stdout, with its stderr and exit code after it) is set apart as the monospace
+   block it is. Text that is anything else, or only starts like one of these, is None. */
+const WRAPPED_NOTICES = {
+  'teammate-message': 'Teammate message', 'bash-stdout': 'Terminal command output',
+  'bash-stderr': 'Terminal command error output', 'tick': 'Autonomous prompt',
+  'mcp-resource-update': 'MCP resource update', 'mcp-polling-update': 'MCP polling update',
+};
+function wrappedNotice(raw) {
+  const s = (raw || '').trim();
+  const m = s.match(/^<([a-z-]+)(?:[ \t][^>\r\n]*)?>/);
+  if (!m || !WRAPPED_NOTICES[m[1]]) return null;
+  const unescape = x => x.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const tag = m[1], close = '</' + tag + '>';
+  if (tag === 'bash-stdout') {
+    const b = s.match(/^<bash-stdout>([\s\S]*?)<\/bash-stdout>(?:<bash-stderr>([\s\S]*?)<\/bash-stderr>)?(?:<bash-exit-code>([^<]*)<\/bash-exit-code>)?$/);
+    if (!b) return null;
+    const parts = [unescape(b[1])];
+    if (b[2] !== undefined) parts.push('Error output:\n' + unescape(b[2]));
+    if (b[3] !== undefined) parts.push('Exit code: ' + b[3]);
+    return { text: WRAPPED_NOTICES[tag], body: parts.join('\n\n'), mono: true };
+  }
+  if (!s.endsWith(close) || s.length < m[0].length + close.length) return null;
+  const inner = s.slice(m[0].length, s.length - close.length);
+  const mono = tag === 'bash-stderr';
+  return { text: WRAPPED_NOTICES[tag], body: mono ? unescape(inner) : inner, mono: mono };
+}
+
 let histSessions = [], histLoading = false, histLoaded = false;
 function setHistoryLoading(v) { histLoading = v; }   // list shows "Loading…"; button stays the clock
 /* Every request for the list is numbered, and the view hands the number back with its
@@ -736,6 +765,10 @@ function drawHistoryPart(t, id, items, parts, from, to, foldAt, modelBefore) {
       aTurn = null;
       pendingCompact = { trigger: it.trigger || 'manual',
         freed: Math.max(0, (it.preTokens || 0) - (it.postTokens || 0)), text: '' };
+    } else if (ty === 'notice') {
+      flushCompact();
+      aTurn = null;
+      box.appendChild(makeNoticeTurn(it.kind, it.text || '', it.body || ''));
     } else if (ty === 'teleported') {
       // The boundary between the conversation as it arrived from claude.ai and
       // whatever was said here afterwards.
@@ -764,6 +797,12 @@ function drawHistoryPart(t, id, items, parts, from, to, foldAt, modelBefore) {
       // QUOTES a marker ("[Request interrupted by user for tool use] still
       // appears as a bubble") has to stay a normal bubble, or the user's words
       // get thrown away. The trailing [^\]]* still absorbs suffix variants.
+      const wrapped = wrappedNotice(it.content || '');
+      if (wrapped) {
+        flushCompact();
+        box.appendChild(makeNoticeTurn('wrapped', wrapped.text, wrapped.body, wrapped.mono));
+        return;
+      }
       const marker = p.text.trim();
       // An interruption renders live as the italic muted note (two variants,
       // matching the two labels doCancel picks between) — a reload shows the same.

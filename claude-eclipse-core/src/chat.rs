@@ -2299,7 +2299,7 @@ fn reader_loop(
         };
         #[cfg(target_os = "freebsd")]
         proc.last_output.store(epoch_secs(), Ordering::Relaxed);
-        let event: serde_json::Value = match serde_json::from_str(&line) {
+        let mut event: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -2324,7 +2324,16 @@ fn reader_loop(
         if event["type"].as_str() == Some("system")
             && event["subtype"].as_str().is_some_and(|s| s.starts_with("task_"))
         {
-            note_agent_task(&mut state.lock().unwrap().agent_tasks, &event);
+            let mut st = state.lock().unwrap();
+            // Said on the event for the line a completed agent's hand-back leaves (the page's
+            // applyAgentActivity): "finished", or still waiting on agents of its own.
+            if event["subtype"].as_str() == Some("task_notification") {
+                if let Some(id) = event["task_id"].as_str() {
+                    let waiting = waits_on_its_own(&st.agent_tasks, id);
+                    event["waiting_on_background"] = serde_json::Value::Bool(waiting);
+                }
+            }
+            note_agent_task(&mut st.agent_tasks, &event);
         }
 
         match event["type"].as_str().unwrap_or("") {
@@ -2554,6 +2563,22 @@ fn reader_loop(
                                 "error": event["compact_error"].as_str().unwrap_or(""),
                             });
                             fire_string(&java_vm, &callbacks, "onCompact", &payload.to_string());
+                        }
+                    }
+                    // What the CLI says to the user in its own voice (a hook that blocked a
+                    // turn, a restricted model, the safeguards stopping a reply and the one
+                    // retry that follows): a muted line, as in VS Code. Level "info" is the
+                    // CLI's bookkeeping and is not shown there either.
+                    "informational" => {
+                        if let Some(payload) = notice_json(&event) {
+                            fire_string(&java_vm, &callbacks, "onCliNotice", &payload);
+                        }
+                    }
+                    // The same reply run again on another model after a refusal, with the
+                    // CLI's own explanation of it.
+                    "model_refusal_fallback" => {
+                        if let Some(payload) = notice_json(&event) {
+                            fire_string(&java_vm, &callbacks, "onCliNotice", &payload);
                         }
                     }
                     "compact_boundary" => {
@@ -3062,6 +3087,20 @@ struct AgentTask {
     parent: Option<String>,
     /// `spawn_depth`: 1 for one the conversation started, N+1 for one a depth-N agent started.
     depth: Option<u64>,
+    /// Its `task_notification` has come: it is over.
+    ended: bool,
+}
+
+/// The line for a `system/informational` or `system/model_refusal_fallback` event, as the
+/// page's `onCliNotice` takes it; None for one with nothing to say or at level "info".
+fn notice_json(event: &serde_json::Value) -> Option<String> {
+    let text = event["content"].as_str()?.trim();
+    let refusal = event["subtype"].as_str() == Some("model_refusal_fallback");
+    if text.is_empty() || (!refusal && matches!(event["level"].as_str(), None | Some("info"))) {
+        return None;
+    }
+    let kind = if refusal { "refusal" } else { "informational" };
+    Some(serde_json::json!({ "kind": kind, "text": text }).to_string())
 }
 
 /// Keeps `tasks` up to date from a `system/task_started` or `system/task_updated` event; any
@@ -3079,6 +3118,7 @@ fn note_agent_task(tasks: &mut AgentTasks, event: &serde_json::Value) {
                 backgrounded: event["is_backgrounded"].as_bool(),
                 parent: event["parent_task_id"].as_str().filter(|id| !id.is_empty()).map(str::to_string),
                 depth: event["spawn_depth"].as_u64(),
+                ended: false,
             });
         }
         // A foreground agent sent to the background later says so here, and only here.
@@ -3087,8 +3127,20 @@ fn note_agent_task(tasks: &mut AgentTasks, event: &serde_json::Value) {
                 tasks.entry(task_id.to_string()).or_default().backgrounded = Some(backgrounded);
             }
         }
+        // Only one already known: an end nothing was told of the start of changes nothing.
+        Some("task_notification") => {
+            if let Some(task) = tasks.get_mut(task_id) {
+                task.ended = true;
+            }
+        }
         _ => {}
     }
+}
+
+/// Whether an agent that started others has any of them still going: what the CLI's own line for
+/// its completion calls "waiting on its own background work".
+fn waits_on_its_own(tasks: &AgentTasks, task_id: &str) -> bool {
+    tasks.values().any(|t| t.parent.as_deref() == Some(task_id) && !t.ended)
 }
 
 /// Whether the agent `task_id` can still be going after the turn that started it has ended:
@@ -3489,6 +3541,10 @@ fn process_event_value(
                         // "completed" vs "stopped" (the user hit Stop agent) — lets the
                         // detail view say which, instead of always "Finished".
                         "status": event["status"].as_str(),
+                        // Set only for a task found orphaned after a restart ("worker_restart"),
+                        // which has no hand-back line of its own.
+                        "reason": event["reason"].as_str(),
+                        "waiting": event["waiting_on_background"].as_bool(),
                     });
                     fire_string(java_vm, callbacks, "onAgentActivity", &payload.to_string());
                 }
@@ -4901,6 +4957,21 @@ mod card_cancel_tests {
     }
 
     #[test]
+    fn what_the_cli_says_in_its_own_voice_reaches_the_page_as_a_notice() {
+        let said = |v: serde_json::Value| super::notice_json(&v).map(|s| serde_json::from_str::<serde_json::Value>(&s).unwrap());
+        assert_eq!(
+            said(json!({"type":"system","subtype":"informational","level":"notice","content":" Sonnet 5.5's safeguards stopped the response above · continuing once with that noted "})),
+            Some(json!({"kind":"informational","text":"Sonnet 5.5's safeguards stopped the response above · continuing once with that noted"})));
+        assert_eq!(said(json!({"type":"system","subtype":"informational","level":"info","content":"x"})), None);
+        assert_eq!(said(json!({"type":"system","subtype":"informational","content":"x"})), None);
+        assert_eq!(said(json!({"type":"system","subtype":"informational","level":"warning","content":""})), None);
+        // A refusal's fallback is shown whatever level it carries, as the warning it is.
+        assert_eq!(
+            said(json!({"type":"system","subtype":"model_refusal_fallback","direction":"retry","content":"Switched."})),
+            Some(json!({"kind":"refusal","text":"Switched."})));
+    }
+
+    #[test]
     fn a_task_update_that_does_not_name_the_flag_changes_nothing() {
         let mut tasks = AgentTasks::new();
         started(&mut tasks, "fg1", false, None);
@@ -4930,6 +5001,17 @@ mod card_cancel_tests {
         started(&mut tasks, "a", false, Some("b"));
         started(&mut tasks, "b", false, Some("a"));
         assert!(!CardsToCancel::TurnEnded.takes(&agent_card("a"), &tasks));
+    }
+
+    #[test]
+    fn an_agent_waits_on_its_own_until_the_agents_it_started_are_over() {
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "outer", true, None);
+        started(&mut tasks, "inner", true, Some("outer"));
+        assert!(super::waits_on_its_own(&tasks, "outer"));
+        assert!(!super::waits_on_its_own(&tasks, "inner"));
+        note_agent_task(&mut tasks, &json!({"type":"system","subtype":"task_notification","task_id":"inner","status":"completed"}));
+        assert!(!super::waits_on_its_own(&tasks, "outer"));
     }
 
     #[test]
