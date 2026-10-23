@@ -4,7 +4,30 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.23] — 2026-10-21 *(current)*
+## [3.2.24] — 2026-10-23 *(current)*
+
+### Added
+- **Changelog** in the command menu: every version's notes with a search; the arrow keys browse versions.
+- **Check for updates** in the command menu says whether a newer Claude Code or plugin is out, and updates either ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #222).
+- **Drop files on the view** to attach them; a file from the project becomes an `@` mention ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #220).
+- Muted lines for what Claude Code reports itself: a background agent finishing, failing or being stopped, messages from subagents, hook and safeguard notices ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #221).
+
+### Changed
+- A reopened conversation shows how long Claude thought, its narration between steps, and slash commands with their arguments ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #220).
+- Session history names a conversation by its rename, its AI title or its last prompt, and leaves out scripted and background runs ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #220).
+- The agent map lists agents started by other agents, and a reopened conversation keeps whether an agent was stopped or failed ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #220).
+- A fork is named after its conversation, with "(fork)" ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #220).
+
+### Fixed
+- The agent map's token counts match what Claude Code reports, instead of counting the context again on every call ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #220).
+- Session history, rewind and forks find conversations when `CLAUDE_CONFIG_DIR` is set ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #220).
+- Claude Code's note after a stopped reply no longer shows as a message you sent ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #221).
+- Rewinding to the first message opens a new conversation, instead of a tab that could not start.
+- Windows: updating Claude Code installed with npm no longer fails with "Failed to check for updates" on the first click.
+
+---
+
+## [3.2.23] — 2026-10-21
 
 ### Changed
 - The Claude Code view follows your settings and your organization's managed settings: permission modes, models, effort levels, fast mode, Remote Control, hooks, permission rules, plugins, output styles, the advisor and feedback that they rule out are greyed, with the reason ([@LalaLolLucky](https://github.com/LalaLolLucky), PR #217).
