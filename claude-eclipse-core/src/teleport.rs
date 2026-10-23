@@ -515,9 +515,7 @@ pub fn write_local_session(
     workspace_root: &str,
     lines: &[serde_json::Value],
 ) -> Option<String> {
-    let home = crate::session::dirs_home()?;
-    let dir = home
-        .join(".claude")
+    let dir = crate::session::config_dir()?
         .join("projects")
         .join(crate::session::workspace_hash(workspace_root));
     std::fs::create_dir_all(&dir).ok()?;
@@ -674,16 +672,19 @@ pub fn run(claude_cmd: &str, session_id: &str, workspace_root: &str) -> String {
     };
     // Rewrite the ids now that we know them, then persist for real.
     let mut lines = to_transcript(&events, &local_id, workspace_root);
+    let branch = session_branch(&detail);
     // Marks where the web conversation ends and this local one begins. Written
     // into the transcript rather than drawn once, so it is still there when the
     // conversation is reopened from history months later — the boundary is a
     // fact about the conversation, not a detail of the session that made it.
     lines.push(teleport_marker(&local_id, workspace_root));
+    // And the line the VS Code extension writes for the same event, so that it too knows this
+    // conversation came from the web (it does not read the one above).
+    lines.push(vscode_teleport_marker(session_id, &branch, lines.len() - 1));
     let _ = rewrite_local_session(workspace_root, &local_id, &lines);
 
     // Only offer the branch if it is real — a name for a branch that exists
     // nowhere would produce a checkout prompt that could only ever fail.
-    let branch = session_branch(&detail);
     let root = Path::new(workspace_root);
     let branch_exists = !branch.is_empty()
         && (branch_exists_local(root, &branch) || branch_exists_on_origin(root, &branch));
@@ -730,6 +731,20 @@ pub fn teleport_marker(local_session_id: &str, cwd: &str) -> serde_json::Value {
     })
 }
 
+/// The `teleported-from` line, as the VS Code extension writes it when it brings a web
+/// conversation down: where it came from, its branch, and how many messages came with it.
+/// The extension reads it from the end of the file to say a conversation was teleported (and
+/// ignores one that carried no messages), so Eclipse's own marker is not what it goes by.
+pub fn vscode_teleport_marker(remote_session_id: &str, branch: &str, message_count: usize) -> serde_json::Value {
+    serde_json::json!({
+        "type": "teleported-from",
+        "remoteSessionId": remote_session_id,
+        "branch": branch,
+        "messageCount": message_count,
+        "savedAt": now_iso8601(),
+    })
+}
+
 /// UTC timestamp in the shape the CLI writes, without pulling in a date crate.
 fn now_iso8601() -> String {
     let secs = std::time::SystemTime::now()
@@ -761,9 +776,7 @@ fn rewrite_local_session(
     local_id: &str,
     lines: &[serde_json::Value],
 ) -> Option<()> {
-    let home = crate::session::dirs_home()?;
-    let path = home
-        .join(".claude")
+    let path = crate::session::config_dir()?
         .join("projects")
         .join(crate::session::workspace_hash(workspace_root))
         .join(format!("{}.jsonl", local_id));
@@ -1250,6 +1263,11 @@ mod transcript_tests {
         let m = teleport_marker("local-1", "C:/ws");
         assert_eq!(m["type"], "system");
         assert_eq!(m["subtype"], "teleported_from_web");
+        // The extension's own line, with the fields it reads.
+        let v = vscode_teleport_marker("session_01", "feature/x", 12);
+        assert_eq!(v["type"], "teleported-from");
+        assert_eq!((v["remoteSessionId"].as_str(), v["branch"].as_str(), v["messageCount"].as_u64()), (Some("session_01"), Some("feature/x"), Some(12)));
+        assert!(v["savedAt"].as_str().is_some_and(|t| t.ends_with('Z')));
         assert_eq!(m["sessionId"], "local-1");
         assert_eq!(m["cwd"], "C:/ws");
         let ts = m["timestamp"].as_str().unwrap();

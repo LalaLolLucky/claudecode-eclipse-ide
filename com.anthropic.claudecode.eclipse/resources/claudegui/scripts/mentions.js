@@ -223,6 +223,26 @@ function pickMention(item, stepInto) {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+/* A mention written into the composer as a word of its own, with a space after it, as picking a
+   row of the list does, but without the list: a project file dropped on the view (images.js). Into
+   the draft of a conversation that is no longer in front, when the drop was on one. */
+function insertMentionText(mention, tab) {
+  const t = tab || activeTab();
+  if (t && t !== activeTab()) {
+    t.draft = (t.draft || '') + (t.draft && !/\s$/.test(t.draft) ? ' ' : '') + mention + ' ';
+    return;
+  }
+  const v = input.value;
+  const s = input.selectionStart, e = input.selectionEnd;
+  const lead = s > 0 && !/\s/.test(v[s - 1]) ? ' ' : '';
+  const trail = /^\s/.test(v.substring(e)) ? '' : ' ';
+  input.value = v.substring(0, s) + lead + mention + trail + v.substring(e);
+  const caret = s + lead.length + mention.length + 1;
+  input.focus();
+  input.setSelectionRange(caret, caret);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 /* Writes text at the caret as its own word, then opens the list for it — the + menu's
    "Add context" ("@") and "Browse the web" ("@browser:"). */
 function insertMentionTrigger(text) {

@@ -587,7 +587,13 @@ function applyFocusView() {
         }
         const lastDot = run[run.length - 1].querySelector('.dot');
         fold.querySelector('.dot').className = lastDot ? lastDot.className : 'dot gray';
-        fold.querySelector('.tf-label').textContent = run.length + (run.length === 1 ? ' tool call' : ' tool calls');
+        // As the extension counts a run: the calls it made, not its look-ups of which tools exist
+        // (ToolSearch, hidden there), and how many of them failed.
+        const counted = run.filter(line => line.dataset.tname !== 'toolsearch');
+        const calls = counted.length ? counted : run;
+        const failed = calls.filter(line => { const d = line.querySelector('.dot'); return d && d.classList.contains('red'); }).length;
+        fold.querySelector('.tf-label').textContent = calls.length + (calls.length === 1 ? ' tool call' : ' tool calls')
+          + (failed ? ' · ' + failed + ' failed' : '');
         const open = fold.classList.contains('open');
         run.forEach(line => line.classList.toggle('fold-open', open));
         run = [];

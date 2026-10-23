@@ -52,6 +52,7 @@ import org.eclipse.ui.part.ViewPart;
 
 import com.anthropic.claudecode.eclipse.Activator;
 import com.anthropic.claudecode.eclipse.NativeCore;
+import com.anthropic.claudecode.eclipse.chat.ClaudeConfigDir;
 import com.anthropic.claudecode.eclipse.chat.ChatProcessManager;
 
 /**
@@ -252,6 +253,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private SimpleFunction clipImagesFn;
     @SuppressWarnings("unused") private SimpleFunction drainImagesFn;
     @SuppressWarnings("unused") private SimpleFunction listFilesFn;
+    @SuppressWarnings("unused") private SimpleFunction projectFileFn;
     @SuppressWarnings("unused") private SimpleFunction takeFilesListedFn;
     @SuppressWarnings("unused") private SimpleFunction browserSupportedFn;
     @SuppressWarnings("unused") private SimpleFunction disconnectBrowserFn;
@@ -1597,6 +1599,31 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                     }
                 });
             }, "claude-mention-list").start();
+            return null;
+        });
+        // Which project file a dropped file is (images.js): (id, root, name, size, modifiedMs), answered
+        // through window.onProjectFile(id, path), the path being empty when it is none of them.
+        projectFileFn = new SimpleFunction(browser, "_projectFileAsync", a -> {
+            if (a.length < 5 || !(a[0] instanceof String reqId) || !(a[1] instanceof String root)
+                    || !(a[2] instanceof String name) || !(a[3] instanceof Number size)
+                    || !(a[4] instanceof Number modified)) return null;
+            final Browser b = browser;
+            new Thread(() -> {
+                String found;
+                try {
+                    found = NativeCore.projectFileFor(root.isBlank() ? workspaceRoot() : root, name,
+                            size.longValue(), modified.longValue());
+                } catch (Throwable t) {
+                    ClaudeCodeView.debug("[DROP] project file lookup failed for '" + name + "': " + t);
+                    found = "";
+                }
+                final String rel = found == null ? "" : found;
+                Display.getDefault().asyncExec(() -> {
+                    if (b != null && !b.isDisposed() && pageLoaded) {
+                        b.execute("window.onProjectFile && window.onProjectFile('" + esc(reqId) + "','" + esc(rel) + "')");
+                    }
+                });
+            }, "claude-drop-lookup").start();
             return null;
         });
         takeFilesListedFn = new SimpleFunction(browser, "_takeFilesListed", a -> {
@@ -3327,6 +3354,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         m.setOnToolStart(n -> display.asyncExec(() -> executeJS("window.onToolStart && window.onToolStart('" + tj + "','" + esc(n) + "')")));
         m.setOnToolEnd(j -> display.asyncExec(() -> executeJS("window.onToolEnd && window.onToolEnd('" + tj + "','" + esc(j) + "')")));
         m.setOnThinking(t -> display.asyncExec(() -> executeJS("window.onThinking && window.onThinking('" + tj + "','" + esc(t) + "')")));
+        m.setOnThinkingBlock(k -> display.asyncExec(() -> executeJS("window.onThinkingBlock && window.onThinkingBlock('" + tj + "','" + esc(k) + "')")));
         m.setOnTokens(n -> display.asyncExec(() -> executeJS("window.onTokens && window.onTokens('" + tj + "','" + esc(n) + "')")));
         m.setOnRateLimit(j -> {
             ClaudeStatusStore.acceptRateLimitEvent(j);
@@ -4029,10 +4057,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      *  for the list counts as well. */
     public static boolean hasSession(String folder, String sessionId) {
         try {
-            String home = Activator.isWindows() ? System.getenv("USERPROFILE") : System.getenv("HOME");
-            if (home == null || home.isEmpty()) home = System.getProperty("user.home");
-            return home != null && Files.isRegularFile(
-                    Paths.get(home, ".claude", "projects", projectHash(folder), sessionId + ".jsonl"));
+            return Files.isRegularFile(
+                    ClaudeConfigDir.projects().resolve(projectHash(folder)).resolve(sessionId + ".jsonl"));
         } catch (Exception e) {
             return false;
         }
@@ -4102,10 +4128,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      *  same reason as {@link #safeSessionList(String)}: the scan is off the UI thread. */
     private static String mergeCustomTitles(String sessionsJson, String root) {
         try {
-            String home = Activator.isWindows() ? System.getenv("USERPROFILE") : System.getenv("HOME");
-            if (home == null || home.isEmpty()) home = System.getProperty("user.home");
-            if (home == null) return sessionsJson;
-            Path titlesPath = Paths.get(home, ".claude", "projects", projectHash(root), "session-titles.json");
+            Path titlesPath = ClaudeConfigDir.projects().resolve(projectHash(root)).resolve("session-titles.json");
             if (!Files.exists(titlesPath)) return sessionsJson;
             Map<String, String> titles = new Gson().fromJson(Files.readString(titlesPath), new TypeToken<Map<String, String>>(){}.getType());
             if (titles == null || titles.isEmpty()) return sessionsJson;
@@ -4158,11 +4181,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
         catch (Throwable ignored) {}
         try {
             if (id == null || id.isEmpty() || id.contains("/") || id.contains("\\") || id.contains("..")) return false;
-            String home = Activator.isWindows() ? System.getenv("USERPROFILE") : System.getenv("HOME");
-            if (home == null || home.isEmpty()) home = System.getProperty("user.home");
-            if (home == null) return false;
-            java.nio.file.Path p = java.nio.file.Paths.get(
-                    home, ".claude", "projects", projectHash(activeRoot()), id + ".jsonl");
+            java.nio.file.Path p = ClaudeConfigDir.projects().resolve(projectHash(activeRoot())).resolve(id + ".jsonl");
             return java.nio.file.Files.deleteIfExists(p);
         } catch (Exception ignored) {
             return false;
@@ -4218,10 +4237,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     /** Legacy Eclipse-only rename: store the title in session-titles.json. */
     private void writeSidecarTitle(String id, String newTitle) {
         try {
-            String home = Activator.isWindows() ? System.getenv("USERPROFILE") : System.getenv("HOME");
-            if (home == null || home.isEmpty()) home = System.getProperty("user.home");
-            if (home == null) return;
-            Path titlesPath = Paths.get(home, ".claude", "projects", projectHash(activeRoot()), "session-titles.json");
+            Path titlesPath = ClaudeConfigDir.projects().resolve(projectHash(activeRoot())).resolve("session-titles.json");
             Map<String, String> titles = new HashMap<>();
             if (Files.exists(titlesPath)) {
                 try { titles = new Gson().fromJson(Files.readString(titlesPath), new TypeToken<Map<String, String>>(){}.getType()); }
@@ -4241,10 +4257,7 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
      */
     private void removeSidecarTitle(String id) {
         try {
-            String home = Activator.isWindows() ? System.getenv("USERPROFILE") : System.getenv("HOME");
-            if (home == null || home.isEmpty()) home = System.getProperty("user.home");
-            if (home == null) return;
-            Path titlesPath = Paths.get(home, ".claude", "projects", projectHash(activeRoot()), "session-titles.json");
+            Path titlesPath = ClaudeConfigDir.projects().resolve(projectHash(activeRoot())).resolve("session-titles.json");
             if (!Files.exists(titlesPath)) return;
             Map<String, String> titles = new Gson().fromJson(Files.readString(titlesPath), new TypeToken<Map<String, String>>(){}.getType());
             if (titles == null || titles.remove(id) == null) return;

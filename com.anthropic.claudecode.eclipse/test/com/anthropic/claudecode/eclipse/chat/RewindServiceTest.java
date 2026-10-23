@@ -175,4 +175,38 @@ class RewindServiceTest {
         assertEquals(List.of(theirs.replace("parent", "fork"), notJson),
                 RewindService.forkedLines(List.of(theirs, notJson), "parent", "fork"));
     }
+
+    private static String custom(String title) {
+        return "{\"type\":\"custom-title\",\"customTitle\":\"" + title + "\",\"sessionId\":\"parent\"}";
+    }
+
+    private static String ai(String title) {
+        return "{\"type\":\"ai-title\",\"aiTitle\":\"" + title + "\",\"sessionId\":\"parent\"}";
+    }
+
+    private static String titleOf(String line) {
+        com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(line).getAsJsonObject();
+        assertEquals("custom-title", o.get("type").getAsString());
+        assertEquals("fork", o.get("sessionId").getAsString());
+        return o.get("customTitle").getAsString();
+    }
+
+    @Test
+    void aForkIsNamedForItsParentAndSaysItIsAFork() {
+        // The user's rename wins over the AI's title, whichever was written last.
+        assertEquals("Mine (fork)", titleOf(RewindService.forkTitleLine(
+                List.of(typed("u1", "first"), custom("Mine"), ai("Theirs")), "fork")));
+        assertEquals("Theirs (fork)", titleOf(RewindService.forkTitleLine(
+                List.of(typed("u1", "first"), ai("Theirs")), "fork")));
+        // Neither: what the first message said, without the editor context the plug-in sends along.
+        assertEquals("explain this (fork)", titleOf(RewindService.forkTitleLine(
+                List.of(typed("u1", "<ide_opened_file>a.java</ide_opened_file>\nexplain\nthis")), "fork")));
+        assertEquals("Forked session (fork)", titleOf(RewindService.forkTitleLine(List.of(reply("a1")), "fork")));
+    }
+
+    @Test
+    void aForkDoesNotTakeItsParentsTitles() {
+        assertEquals(List.of(typed("u1", "first"), reply("a1")),
+                RewindService.forkedLines(List.of(typed("u1", "first"), custom("Mine"), reply("a1"), ai("Theirs")), "parent", "fork"));
+    }
 }

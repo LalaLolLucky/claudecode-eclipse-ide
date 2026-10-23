@@ -330,6 +330,15 @@ public final class NativeCore {
     public static native String listMentions(String root, String claudeCmd, String query, boolean withBrowser);
 
     /**
+     * Which of the {@code @} list's files a dropped file is, as its path under {@code root}, or an
+     * empty string when it is none of them. A page sees a dropped file's name, size and time of last
+     * write but not where it lives, so a listed file of that name must also have that size and have
+     * been written within two seconds of that time. Blocking (it may walk the folder): call off the
+     * UI thread.
+     */
+    public static native String projectFileFor(String root, String name, long size, long modifiedMs);
+
+    /**
      * Takes the browser back out of this manager's conversation, telling the model it is
      * gone; {@link ChatCallbacks#onBrowserState} reports it disconnected. Returns whether it
      * was on.
@@ -546,6 +555,11 @@ public final class NativeCore {
         void onSessionId(String sessionId);
         /** Live output-token count during a turn (from the partial-message stream). */
         default void onTokens(String count) {}
+        /** Something about the thinking blocks of the turn: {@code "start"} when a new one begins (so the
+         *  one before it is over, with its own "Thought for Ns" row), {@code "narration"} when the one
+         *  that has just ended is the model's commentary between steps, which the view shows as a line
+         *  of text and not as a collapsed "Thinking" row. */
+        default void onThinkingBlock(String kind) {}
         /** Rate-limit / usage info (JSON) for the usage warning banner. */
         default void onRateLimit(String json) {}
         /**

@@ -26,16 +26,26 @@ let agentsView = 'list';       // 'list' | 'detail' | 'transcript' | 'task'
 let agentsSelectedId = null;   // the agent's own tool_use id (.tool-line's data-tuid)
 let agentsSelectedTask = null; // the background task's id, in the 'task' view
 
-/** "2m 38s" / "48s" — matches the reference VSCode Agent map's compact duration format. */
+/** "2m 38s" / "48s" — the reference VSCode Agent map's compact duration format, which counts
+    whole seconds (6m 19.9s is "6m 19s", not "6m 20s"). */
 function formatAgentDuration(ms) {
-  const s = Math.max(0, Math.round(ms / 1000));
+  const s = Math.max(0, Math.floor(ms / 1000));
   const m = Math.floor(s / 60);
   return m > 0 ? m + 'm ' + (s % 60) + 's' : s + 's';
 }
-/** "36.3k tokens" / "823 tokens". */
+/** "296.1k tokens" / "1.2M tokens" / "823 tokens". */
 function formatAgentTokens(n) {
-  const t = n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-  return t + ' token' + (n === 1 ? '' : 's');
+  const t = n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+  return t + ' tokens';
+}
+/** What an agent's line says of its run, as the extension's does: how long, if a second or more,
+    and how many tokens, if any; nothing for either it does not have. */
+function agentMeta(agent) {
+  const ms = agentDurationMs(agent);
+  const parts = [];
+  if (ms >= 1000) parts.push(formatAgentDuration(ms));
+  if (agent.log.tokens > 0) parts.push(formatAgentTokens(agent.log.tokens));
+  return parts.join(' · ');
 }
 function agentDurationMs(a) {
   if (!a.log.startedAt) return 0;
@@ -271,10 +281,10 @@ function renderAgentsList(agents) {
     const label = document.createElement('span'); label.className = 'ap-label';
     label.textContent = a.description;
     body.appendChild(label);
-    const dur = agentDurationMs(a);
-    if (dur || a.log.tokens) {
+    const metaText = agentMeta(a);
+    if (metaText) {
       const meta = document.createElement('span'); meta.className = 'ap-step';
-      meta.textContent = formatAgentDuration(dur) + ' · ' + formatAgentTokens(a.log.tokens);
+      meta.textContent = metaText;
       body.appendChild(meta);
     }
     row.appendChild(dot); row.appendChild(body);
@@ -692,7 +702,7 @@ function renderAgentDetail(agent) {
   if (doing) body.appendChild(doing);
 
   const time = document.createElement('div'); time.className = 'ap-meta';
-  time.textContent = formatAgentDuration(agentDurationMs(agent)) + ' · ' + formatAgentTokens(agent.log.tokens);
+  time.textContent = agentMeta(agent);
   body.appendChild(time);
 
   // Always visible, not folded like Prompt/Tool calls below — the actual point of

@@ -855,3 +855,7 @@ html.hide-pre-compact .pane > .pre-compact + .turn:not(.pre-compact) { margin-to
 .a-body .md-mermaid .mm-head { fill: var(--fg-dim); }
 .a-body .md-mermaid .mm-lbl { fill: var(--bg); }
 .a-body .md-mermaid .mm-text { fill: var(--fg); font: 12px sans-serif; } .a-body .md-mermaid .mm-text.sm { font-size: 11px; fill: var(--fg-soft); }
+
+/* The model's narration between steps, drawn as text (history.js, chat.js markNarration) with a muted tag. */
+.a-item.narration .a-body { color: var(--fg-soft); }
+.narr-hint { color: var(--fg-dim); font-size: .92em; }

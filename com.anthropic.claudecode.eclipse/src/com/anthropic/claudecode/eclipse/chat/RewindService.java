@@ -143,16 +143,54 @@ public final class RewindService {
      * session as the fork's own: switching Remote Control on in the fork then takes that
      * session over, and the parent's tab is cut off from the other devices. A fork is a new
      * conversation and gets a session of its own.
+     *
+     * <p>The parent's title lines are left out too: a fork is named by {@link #forkTitleLine}, so that
+     * the two do not share a name in the history.
      */
     static List<String> forkedLines(List<String> lines, String sessionId, String newId) {
         List<String> out = new ArrayList<>(lines.size());
         for (String raw : lines) {
             JsonObject line = parse(raw);
-            if (line != null && "bridge-session".equals(str(line, "type"))) continue;
+            String type = line == null ? "" : str(line, "type");
+            if ("bridge-session".equals(type) || "custom-title".equals(type) || "ai-title".equals(type)) continue;
             out.add(raw.replace("\"sessionId\":\"" + sessionId + "\"",
                                 "\"sessionId\":\"" + newId + "\""));
         }
         return out;
+    }
+
+    private static final java.util.regex.Pattern IDE_WRAPPER =
+            java.util.regex.Pattern.compile("<(ide_[a-z_]*)\\b[^>]*>[\\s\\S]*?</\\1>", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The line that names a fork, as the VS Code extension names one: the conversation's title and
+     * {@code " (fork)"}. The title is the user's rename of it, else the AI's, else what the first message
+     * said, else "Forked session". Written for the fork {@code newId}, as a {@code custom-title} line
+     * (what a rename writes), so every list that reads titles shows it.
+     */
+    static String forkTitleLine(List<String> lines, String newId) {
+        String custom = "", ai = "", first = "";
+        for (String raw : lines) {
+            JsonObject line = parse(raw);
+            if (line == null) continue;
+            String type = str(line, "type");
+            if ("custom-title".equals(type) && !str(line, "customTitle").isEmpty()) custom = str(line, "customTitle");
+            else if ("ai-title".equals(type) && !str(line, "aiTitle").isEmpty()) ai = str(line, "aiTitle");
+            else if (first.isEmpty()) {
+                JsonObject typed = typedUserMessage(line);
+                if (typed != null) {
+                    String said = IDE_WRAPPER.matcher(typed.get("text").getAsString()).replaceAll("")
+                            .replace('\n', ' ').trim();
+                    first = said.length() > 100 ? said.substring(0, 100).trim() : said;
+                }
+            }
+        }
+        String base = !custom.isEmpty() ? custom : !ai.isEmpty() ? ai : !first.isEmpty() ? first : "Forked session";
+        JsonObject title = new JsonObject();
+        title.addProperty("type", "custom-title");
+        title.addProperty("sessionId", newId);
+        title.addProperty("customTitle", base + " (fork)");
+        return title.toString();
     }
 
     private static String applyInternal(String workspaceRoot, String sessionId, String messageId,
@@ -201,7 +239,9 @@ public final class RewindService {
             if (cut > 0) {
                 newId = UUID.randomUUID().toString();
                 Path forked = sessionFile(workspaceRoot, newId);
-                Files.write(forked, forkedLines(kept, sessionId, newId), StandardCharsets.UTF_8);
+                List<String> forkLines = forkedLines(kept, sessionId, newId);
+                forkLines.add(forkTitleLine(kept, newId));
+                Files.write(forked, forkLines, StandardCharsets.UTF_8);
                 copyBackupBlobs(sessionId, newId, blobs);
                 copySessionPrefs(sessionId, newId);
             }
@@ -529,13 +569,7 @@ public final class RewindService {
     }
 
     private static Path claudeHome() {
-        String home = System.getenv(isWindows() ? "USERPROFILE" : "HOME");
-        if (home == null || home.isEmpty()) home = System.getProperty("user.home");
-        return Paths.get(home, ".claude");
-    }
-
-    private static boolean isWindows() {
-        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win");
+        return ClaudeConfigDir.path();
     }
 
     /** Same algorithm as session.rs: every non-ASCII-alphanumeric char becomes '-'. */

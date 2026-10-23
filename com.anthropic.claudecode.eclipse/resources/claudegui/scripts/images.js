@@ -350,3 +350,136 @@ input.addEventListener('paste', (e) => {
   }
   if (took) e.preventDefault();
 });
+
+/* ---- Drag and drop ----
+   Files dropped on the view attach as a paste or "Attach file…" attaches them, sorted the same
+   way: an image as an image, a PDF or a text file as a document. Only a drag that carries files
+   is taken (a tab being dragged carries text, and the tab strip handles that), and it is taken
+   wherever it lands: a file let go over a web view otherwise replaces the whole view by opening
+   the file. A page cannot see where a dropped file lives, so one that cannot go in inline (an
+   archive, a binary) is named with where to send it from instead: "Attach file…" sends its path. */
+const MAX_DROP_BYTES = 32 * 1024 * 1024;   // the picker's own cap, so a file is refused in both or neither
+const DROP_IMAGE_EXTS = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+
+function dragHasFiles(e) {
+  const types = e.dataTransfer && e.dataTransfer.types;
+  return !!types && Array.prototype.indexOf.call(types, 'Files') >= 0;
+}
+
+/** A dropped file's contents as a data URL or as text. */
+function readDropped(file, as) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || ''));
+    r.onerror = () => reject(r.error);
+    if (as === 'text') r.readAsText(file); else r.readAsDataURL(file);
+  });
+}
+
+/* Which of the project's files a dropped file is. The page is told a dropped file's name, size and
+   time of last write but not where it lives, so the host looks among the files the `@` list offers
+   for one of that name whose size and time are the same. '' when it is none of them (or the host is
+   not there to ask): a same-named file from elsewhere is not taken for the project's. */
+const projectFileWaiting = new Map();
+let projectFileSeq = 0;
+window.onProjectFile = function (id, path) {
+  const done = projectFileWaiting.get(id);
+  if (done) { projectFileWaiting.delete(id); done(path || ''); }
+};
+function projectFileOf(file, tab) {
+  return new Promise((resolve) => {
+    if (!window._projectFileAsync || !file.lastModified) { resolve(''); return; }
+    const id = 'pf' + Date.now().toString(36) + '-' + (++projectFileSeq);
+    const timer = setTimeout(() => { projectFileWaiting.delete(id); resolve(''); }, 8000);
+    projectFileWaiting.set(id, (path) => { clearTimeout(timer); resolve(path); });
+    try {
+      _projectFileAsync(id, rootPathOf(tab) || '', file.name, file.size, file.lastModified);
+    } catch (e) {
+      clearTimeout(timer); projectFileWaiting.delete(id); resolve('');
+    }
+  });
+}
+
+/** Attaches `files` (from a drop) to `tab`, and says in that conversation what could not be. A file that
+ *  is one of the project's is not attached: it is mentioned, as picking it from the `@` list would, so
+ *  Claude reads the file where it is, and the extension does the same for a file dragged from its explorer. */
+async function attachDroppedFiles(files, tab) {
+  const tooLarge = [], unsupported = [], unreadable = [], mentioned = [];
+  for (const file of Array.from(files)) {
+    const name = file.name || 'file';
+    const inProject = await projectFileOf(file, tab);
+    const mention = inProject ? formatMention(inProject, 'file') : null;
+    if (mention) { mentioned.push(mention); continue; }
+    let type = String(file.type || '').toLowerCase();
+    // Some systems give a dropped file no type at all.
+    if (!type) type = DROP_IMAGE_EXTS[name.split('.').pop().toLowerCase()] || '';
+    if (file.size > MAX_DROP_BYTES) { tooLarge.push(name + ' is ' + (file.size / 1048576).toFixed(1) + 'MB'); continue; }
+    try {
+      switch (attachmentKind(type, name)) {
+        case 'image': {
+          // A file with no type of its own reads back as application/octet-stream: the type worked out
+          // from its name is the one it goes in as.
+          const url = (await readDropped(file, 'url')).replace(/^data:[^;,]*/, 'data:' + type);
+          addPendingImage(url, tab, name);
+          break;
+        }
+        case 'pdf': {
+          const data = (await readDropped(file, 'url')).split(',')[1] || '';
+          addDroppedDocument(tab, name, { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data }, title: name });
+          break;
+        }
+        case 'text':
+          addDroppedDocument(tab, name, { type: 'document', source: { type: 'text', media_type: 'text/plain', data: await readDropped(file, 'text') }, title: name });
+          break;
+        default:
+          unsupported.push(name);
+      }
+    } catch (err) {
+      unreadable.push(name);   // a folder, or a file that cannot be read
+    }
+  }
+  mentioned.forEach((m) => insertMentionText(m, tab));
+  if (tooLarge.length) addSystemTo(tab, '⚠ File too large (max 32MB): ' + tooLarge.join(', ') + '.');
+  if (unsupported.length) {
+    addSystemTo(tab, "⚠ Can't attach by dropping: " + unsupported.join(', ')
+      + '. Drop an image, a PDF or a text file, or use Attach file… to send its path.');
+  }
+  if (unreadable.length) addSystemTo(tab, "⚠ Couldn't read: " + unreadable.join(', ') + ' (a folder, or a file that can’t be opened).');
+}
+
+/** A document chip for a dropped file, in the conversation it was dropped on (the one in front may have changed). */
+function addDroppedDocument(tab, name, block) {
+  if (!block.source.data) return;   // an empty file says nothing
+  pendingImages(tab).push({ kind: 'document', name, path: '', block });
+  if (!tab || tab === activeTab()) { renderPendingImages(); syncComposer(); }
+}
+
+let dropDepth = 0;
+function setDropOver(on) {
+  const wrap = document.getElementById('input-wrap');
+  if (wrap) wrap.classList.toggle('drop-over', on);
+}
+document.addEventListener('dragenter', (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  dropDepth++; setDropOver(true);
+});
+document.addEventListener('dragover', (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+document.addEventListener('dragleave', (e) => {
+  if (!dragHasFiles(e)) return;
+  dropDepth = Math.max(0, dropDepth - 1);
+  if (!dropDepth) setDropOver(false);
+});
+document.addEventListener('drop', (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault(); e.stopPropagation();
+  dropDepth = 0; setDropOver(false);
+  const tab = activeTab();
+  // Nothing to attach to while a card stands in for the composer.
+  if (!tab || (typeof composerShowing === 'function' && !composerShowing())) return;
+  attachDroppedFiles(e.dataTransfer.files, tab);
+});

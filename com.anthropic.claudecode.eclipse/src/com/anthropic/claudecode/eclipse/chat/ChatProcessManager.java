@@ -27,6 +27,7 @@ public class ChatProcessManager {
     private Consumer<String> onError;
     private Consumer<String> onSystem;
     private Consumer<String> onThinking;
+    private Consumer<String> onThinkingBlock;
     private Consumer<String> onSessionId;
     private Consumer<String> onTokens;
     private Consumer<String> onRateLimit;
@@ -63,6 +64,7 @@ public class ChatProcessManager {
             @Override public void onError(String msg)      { emit(ChatProcessManager.this.onError, msg); }
             @Override public void onSystem(String msg)     { emit(ChatProcessManager.this.onSystem, msg); }
             @Override public void onThinking(String t)     { emit(ChatProcessManager.this.onThinking, t); }
+            @Override public void onThinkingBlock(String k) { emit(ChatProcessManager.this.onThinkingBlock, k); }
             @Override public void onSessionId(String id)   { emit(ChatProcessManager.this.onSessionId, id); }
             @Override public void onTokens(String n)       { emit(ChatProcessManager.this.onTokens, n); }
             @Override public void onRateLimit(String j)    { emit(ChatProcessManager.this.onRateLimit, j); }
@@ -110,6 +112,7 @@ public class ChatProcessManager {
     public void setOnError(Consumer<String> cb)     { this.onError = cb; }
     public void setOnSystem(Consumer<String> cb)    { this.onSystem = cb; }
     public void setOnThinking(Consumer<String> cb)  { this.onThinking = cb; }
+    public void setOnThinkingBlock(Consumer<String> cb) { this.onThinkingBlock = cb; }
     public void setOnSessionId(Consumer<String> cb) { this.onSessionId = cb; }
     public void setOnTokens(Consumer<String> cb)    { this.onTokens = cb; }
     public void setOnRateLimit(Consumer<String> cb) { this.onRateLimit = cb; }
