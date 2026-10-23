@@ -4371,6 +4371,10 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 "window.onMcp && window.onMcp('" + esc(tabId) + "','" + esc(json) + "')"));
     }
 
+    /** The Eclipse Marketplace client's "open the Marketplace" command. The client is
+     *  optional in an Eclipse, so the command is looked up by id, never linked against. */
+    private static final String MARKETPLACE_COMMAND = "org.eclipse.epp.mpc.ui.command.showMarketplaceWizard";
+
     /** One of the page's errands for the IDE (see {@code _ide}). Runs on the UI thread.
      *  A file is read or written only when it is Markdown: the errands are for the
      *  memory and instruction files, and are of no use for anything else. */
@@ -4381,6 +4385,16 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 org.eclipse.ui.dialogs.PreferencesUtil.createPreferenceDialogOn(browser.getShell(),
                         "com.anthropic.claudecode.eclipse.preferences", null, null).open();
                 return "ok";
+            case "hasMarketplace": {
+                org.eclipse.ui.commands.ICommandService cs = wb.getService(org.eclipse.ui.commands.ICommandService.class);
+                return String.valueOf(cs != null && cs.getCommand(MARKETPLACE_COMMAND).isDefined());
+            }
+            case "marketplace": {
+                org.eclipse.ui.handlers.IHandlerService hs = wb.getService(org.eclipse.ui.handlers.IHandlerService.class);
+                if (hs == null) return "";
+                hs.executeCommand(MARKETPLACE_COMMAND, null);
+                return "ok";
+            }
             case "home":
                 return System.getProperty("user.home", "");
             case "changelog": {
