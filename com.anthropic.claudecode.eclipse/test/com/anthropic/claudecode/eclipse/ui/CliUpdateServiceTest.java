@@ -81,11 +81,12 @@ class CliUpdateServiceTest {
 
     // ---- Windows: clear, update, and one retry -----------------------------
 
-    /** Stands in for the native clearing, {@code claude update}, and the CLI's own check. */
+    /** Stands in for the native clearing, npm's look-up, {@code claude update}, and the CLI's own check. */
     private static final class Windows {
         final boolean npm;
         final boolean cliStillRuns;
         final Deque<CliUpdateService.Result> results;
+        final List<String> steps = new java.util.ArrayList<>();
         int clears;
         int updates;
 
@@ -97,8 +98,9 @@ class CliUpdateServiceTest {
 
         CliUpdateService.Result update() {
             return CliUpdateService.updateWindows(
-                    () -> { clears++; return npm; },
-                    () -> { updates++; return results.removeFirst(); },
+                    () -> { clears++; steps.add("clear"); return npm; },
+                    () -> steps.add("look up"),
+                    () -> { updates++; steps.add("update"); return results.removeFirst(); },
                     () -> cliStillRuns);
         }
     }
@@ -158,5 +160,28 @@ class CliUpdateServiceTest {
         Windows w = new Windows(true, false, failed());
         assertFalse(w.update().ok);
         assertEquals(1, w.updates);
+    }
+
+    @Test
+    void anNpmInstallHasTheLatestVersionLookedUpBeforeClaudeUpdateLooksForIt() {
+        // claude update gives npm about five seconds to say what the latest version is, and npm's
+        // first look after a release can take longer; looked up first, its answer comes at once.
+        Windows w = new Windows(true, true, ok());
+        w.update();
+        assertEquals(List.of("clear", "look up", "update"), w.steps);
+    }
+
+    @Test
+    void theRetryHasItLookedUpAgain() {
+        Windows w = new Windows(true, true, failed(), ok());
+        w.update();
+        assertEquals(List.of("clear", "look up", "update", "clear", "look up", "update"), w.steps);
+    }
+
+    @Test
+    void anInstallThatIsNotNpmsIsNotLookedUpFor() {
+        Windows w = new Windows(false, true, failed());
+        w.update();
+        assertEquals(List.of("clear", "update"), w.steps);
     }
 }

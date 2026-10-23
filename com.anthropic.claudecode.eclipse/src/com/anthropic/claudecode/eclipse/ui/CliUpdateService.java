@@ -46,7 +46,9 @@ import com.google.gson.JsonParser;
  * <p>On Windows, an npm install first gets the folder an earlier update left behind
  * cleared, and a failed run is retried once ({@link #updateWindows}). npm cannot delete
  * that folder while a chat tab runs the old version, and its presence made every first
- * attempt fail. Other platforms delete open files, so npm never leaves it there.
+ * attempt fail. Other platforms delete open files, so npm never leaves it there. The latest
+ * version is also looked up through npm first, so that {@code claude update}'s own look-up,
+ * which it gives about five seconds, is answered at once.
  *
  * <p>An exit status of 0 is not trusted on its own: the installed version is read
  * before and after, and a run that leaves it unchanged is reported as a failure
@@ -204,17 +206,36 @@ public final class CliUpdateService {
      * longer starts: a failed install can leave npm's placeholder as {@code claude.exe}, and
      * {@code claude update} would then not run at all.
      *
+     * <p>Before each run on an npm install, the latest version is looked up through npm
+     * ({@link #lookUpLatestOnNpm}). {@code claude update} asks npm the same question and gives up
+     * after about five seconds with "Failed to check for updates"; npm's first answer after a
+     * release took 15 s here, the one after it 2 s.
+     *
      * @param clearLeftovers clears the folders; true when the install is npm's
+     * @param lookUpLatest   npm's look-up of the latest version, run on an npm install only
      * @param update         one run of {@code claude update}
      * @param cliStillRuns   whether {@code claude --version} still answers
      */
-    static Result updateWindows(BooleanSupplier clearLeftovers, Supplier<Result> update,
+    static Result updateWindows(BooleanSupplier clearLeftovers, Runnable lookUpLatest, Supplier<Result> update,
             BooleanSupplier cliStillRuns) {
         boolean npm = clearLeftovers.getAsBoolean();
+        if (npm) lookUpLatest.run();
         Result r = update.get();
         if (r.ok || !npm || r.output.contains("is managed by") || !cliStillRuns.getAsBoolean()) return r;
         clearLeftovers.getAsBoolean();
+        lookUpLatest.run();
         return update.get();
+    }
+
+    /**
+     * Asks npm for the latest version the way {@code claude update} does, with no five-second
+     * limit, so that when {@code claude update} asks, npm answers from what it just fetched.
+     * Its outcome does not matter: {@code claude update} runs either way and says how it went.
+     */
+    private static void lookUpLatestOnNpm() {
+        Result r = run(List.of(CliVersionService.resolveOnPath("npm"), "view", "@anthropic-ai/claude-code@latest",
+                "version", "--prefer-online"), 2);
+        ClaudeCodeView.debug("[cli] npm view latest: " + (r.ok ? r.output : "failed: " + failureLine(r.output)));
     }
 
     /** Clears npm's leftovers for {@code cmd}; true when it is an npm install. */
@@ -236,7 +257,7 @@ public final class CliUpdateService {
         if (isFreeBSDManaged(cmd)) return updateFreeBSD();
         List<String> argv = List.of(cmd, "update");
         if (Activator.isWindows()) {
-            return updateWindows(() -> clearNpmLeftovers(cmd), () -> {
+            return updateWindows(() -> clearNpmLeftovers(cmd), CliUpdateService::lookUpLatestOnNpm, () -> {
                 Result r = run(argv, TIMEOUT_MINUTES);
                 ClaudeCodeView.debug("[cli] claude update " + (r.ok ? "exited 0" : "failed: " + failureLine(r.output)));
                 return r;

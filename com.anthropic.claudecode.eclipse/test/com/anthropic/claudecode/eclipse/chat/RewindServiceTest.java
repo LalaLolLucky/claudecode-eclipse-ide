@@ -209,4 +209,28 @@ class RewindServiceTest {
         assertEquals(List.of(typed("u1", "first"), reply("a1")),
                 RewindService.forkedLines(List.of(typed("u1", "first"), custom("Mine"), reply("a1"), ai("Theirs")), "parent", "fork"));
     }
+
+    @Test
+    void aForkIsNamedForItsParentEvenWhenTheTitleWasWrittenAfterTheForkPoint() {
+        // The CLI names a conversation once it is under way, so its title often comes after the
+        // message a fork is cut at; the fork is still named for the parent, as the tab is.
+        List<String> parent = List.of(typed("u1", "first"), reply("a1"), typed("u2", "second"), ai("Theirs"));
+        List<String> fork = RewindService.forkOf(parent, parent.subList(0, 2), "parent", "fork");
+
+        assertEquals("Theirs (fork)", titleOf(fork.get(fork.size() - 1)));
+        assertEquals(List.of(typed("u1", "first"), reply("a1")), fork.subList(0, fork.size() - 1));
+    }
+
+    @Test
+    void nothingButBookkeepingBeforeTheFirstMessageIsNothingToFork() {
+        // What the CLI writes ahead of the first message. A fork of only these is a session the
+        // CLI cannot resume ("No conversation found"), so the first message starts a new one.
+        String bridge = "{\"type\":\"bridge-session\",\"sessionId\":\"parent\",\"bridgeSessionId\":\"cse_01\"}";
+        String queue = "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"sessionId\":\"parent\"}";
+
+        assertFalse(RewindService.holdsAMessage(List.of(bridge, queue, queue)));
+        assertFalse(RewindService.holdsAMessage(List.of()));
+        assertTrue(RewindService.holdsAMessage(List.of(queue, typed("u1", "first"))));
+        assertTrue(RewindService.holdsAMessage(List.of(bridge, reply("a1"))));
+    }
 }

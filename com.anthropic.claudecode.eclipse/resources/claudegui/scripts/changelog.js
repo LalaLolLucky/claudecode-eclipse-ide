@@ -154,7 +154,7 @@ function openChangelogDialog() {
       main.appendChild(rail); main.appendChild(entry);
       body.appendChild(main);
       document.getElementById('cli-win').appendChild(
-        cwKeys([[['↑', '↓'], 'to browse versions'], [['Esc'], dlg.query ? 'to clear the search' : 'to close']]));
+        cwKeys([[['↑', '↓', '←', '→'], 'to browse versions'], [['Esc'], dlg.query ? 'to clear the search' : 'to close']]));
       dlg.els = { input, rail, entry, update };
       dlg.paintUpdate();
       dlg.paintRail();
@@ -171,12 +171,16 @@ function openChangelogDialog() {
     key(e) {
       if (!dlg.els) return false;
       const k = e.key;
-      if (k !== 'ArrowDown' && k !== 'ArrowUp' && k !== 'PageDown' && k !== 'PageUp') return false;
+      // Left is newer (as Up), Right is older (as Down) -- the same way as the buttons under
+      // the notes. Typed search text keeps them for its caret.
+      const side = k === 'ArrowLeft' || k === 'ArrowRight';
+      if (side && e.target === dlg.els.input && dlg.els.input.value) return false;
+      if (!side && k !== 'ArrowDown' && k !== 'ArrowUp' && k !== 'PageDown' && k !== 'PageUp') return false;
       const shown = dlg.shown();
       if (!shown.length) return true;
       const i = shown.indexOf(dlg.at);
       const step = (k === 'PageDown' || k === 'PageUp') ? 10 : 1;
-      const down = k === 'ArrowDown' || k === 'PageDown';
+      const down = k === 'ArrowDown' || k === 'PageDown' || k === 'ArrowRight';
       const to = i < 0 ? 0 : Math.min(shown.length - 1, Math.max(0, i + (down ? step : -step)));
       dlg.pick(shown[to]);
       return true;
@@ -210,7 +214,7 @@ function openChangelogDialog() {
       if (shown.length && shown.indexOf(dlg.at) < 0) dlg.at = shown[0];
       if (had !== !!q) {   // the footer says what Esc does now
         const keys = document.querySelector('#cli-win .cw-keys');
-        if (keys) keys.replaceWith(cwKeys([[['↑', '↓'], 'to browse versions'],
+        if (keys) keys.replaceWith(cwKeys([[['↑', '↓', '←', '→'], 'to browse versions'],
                                            [['Esc'], q ? 'to clear the search' : 'to close']]));
       }
       dlg.paintRail();
@@ -310,8 +314,8 @@ function openChangelogDialog() {
           b.onclick = () => dlg.pick(i);
           return b;
         };
-        nav.appendChild(older !== undefined ? step(older, '← v' + all[older].version) : cwEl('span'));
-        nav.appendChild(newer !== undefined ? step(newer, 'v' + all[newer].version + ' →') : cwEl('span'));
+        nav.appendChild(newer !== undefined ? step(newer, '← v' + all[newer].version) : cwEl('span'));
+        nav.appendChild(older !== undefined ? step(older, 'v' + all[older].version + ' →') : cwEl('span'));
         entry.appendChild(nav);
       }
       if (dlg.query) clMark(entry, dlg.query);

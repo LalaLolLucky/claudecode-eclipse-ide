@@ -193,6 +193,33 @@ public final class RewindService {
         return title.toString();
     }
 
+    /**
+     * The fork's file: the {@code kept} lines under the fork's id ({@link #forkedLines}) and the line
+     * that names it. The name is looked for in the whole {@code parent}: the CLI names a
+     * conversation once it is under way, often after the message a fork is cut at.
+     */
+    static List<String> forkOf(List<String> parent, List<String> kept, String sessionId, String newId) {
+        List<String> out = forkedLines(kept, sessionId, newId);
+        out.add(forkTitleLine(parent, newId));
+        return out;
+    }
+
+    /**
+     * Whether {@code kept} holds anything of the conversation itself. The CLI writes lines of its own
+     * ahead of the first message ({@code bridge-session}, {@code queue-operation}); a fork of only
+     * those is a session it cannot resume ("No conversation found"), so the first message is
+     * nothing to fork, and the caller starts a new conversation with it, as the VS Code extension
+     * does.
+     */
+    static boolean holdsAMessage(List<String> kept) {
+        for (String raw : kept) {
+            JsonObject line = parse(raw);
+            String type = line == null ? "" : str(line, "type");
+            if ("user".equals(type) || "assistant".equals(type)) return true;
+        }
+        return false;
+    }
+
     private static String applyInternal(String workspaceRoot, String sessionId, String messageId,
                                         boolean restoreFiles, boolean fork) {
         JsonObject out = new JsonObject();
@@ -236,12 +263,10 @@ public final class RewindService {
                 }
             }
             String newId = "";
-            if (cut > 0) {
+            if (cut > 0 && holdsAMessage(kept)) {
                 newId = UUID.randomUUID().toString();
                 Path forked = sessionFile(workspaceRoot, newId);
-                List<String> forkLines = forkedLines(kept, sessionId, newId);
-                forkLines.add(forkTitleLine(kept, newId));
-                Files.write(forked, forkLines, StandardCharsets.UTF_8);
+                Files.write(forked, forkOf(raw, kept, sessionId, newId), StandardCharsets.UTF_8);
                 copyBackupBlobs(sessionId, newId, blobs);
                 copySessionPrefs(sessionId, newId);
             }

@@ -124,8 +124,9 @@ function forkFrom(tab, mid, fn, errPrefix) {
   // The tab is made for the fork and handed to loadHistory: left to find "the empty tab
   // in front", it does not find this one once Remote Control on startup has put its
   // indicator in it, and opens a second. Made with the fork's id, so that the bridge
-  // comes up on the fork and not on a new conversation.
-  const forked = createTab({ title, titled, sessionId: res.sessionId || '' });
+  // comes up on the fork and not on a new conversation. No fork id: the message was the first
+  // (RewindService.holdsAMessage), so there is nothing to fork and this is a new conversation.
+  const forked = res.sessionId ? createTab({ title, titled, sessionId: res.sessionId }) : createTab();
   if (res.sessionId) {
     loadHistory(res.sessionId, title, forked);
     if (titled && window._renameSession) window._renameSession(res.sessionId, title);

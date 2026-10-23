@@ -294,7 +294,7 @@
   #cli-win .cl-entry { padding: 12px; }
 }
 
-/* A word after a menu row's label: "New" on Changelog until it has been read. Sized by its
-   text: the composer's .pill (layout.css) is a 26px square, which it would otherwise be. */
-#actions-menu .item .pill { width: auto; height: auto; margin-left: 7px; padding: 0 6px; border-radius: 8px; font-size: 10px; font-weight: 600;
+/* A word after a menu row's label: "New" on Changelog until it has been read, and on Check for
+   updates while a newer version is out. */
+#actions-menu .item .cm-badge { margin-left: 7px; padding: 0 6px; border-radius: 8px; font-size: 10px; font-weight: 600;
   line-height: 15px; display: inline-block; vertical-align: 1px; color: var(--on-accent); background: var(--accent); }

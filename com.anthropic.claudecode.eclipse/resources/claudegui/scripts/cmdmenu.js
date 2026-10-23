@@ -316,7 +316,7 @@ function cmdRowEl(r) {
     }
     const badge = r.badge ? r.badge() : '';
     if (badge) {
-      const pill = document.createElement('span'); pill.className = 'pill'; pill.textContent = badge;
+      const pill = document.createElement('span'); pill.className = 'cm-badge'; pill.textContent = badge;
       lbl.appendChild(pill);
     }
     if (r.curModel) {
