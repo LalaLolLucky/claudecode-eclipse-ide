@@ -778,6 +778,7 @@ function renderAgentDetail(agent) {
     stopBtn.textContent = 'Stop agent';
     stopBtn.onclick = () => {
       stopBtn.disabled = true; stopBtn.textContent = 'Stopping…';
+      agent.log.userStopped = true;   // what its hand-back says, once it is over (applyAgentActivity)
       const t = activeTab();
       if (window._stopAgentTask && t) window._stopAgentTask(t.id, agent.log.taskId);
     };

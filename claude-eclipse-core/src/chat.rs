@@ -271,6 +271,10 @@ impl LiveSettings {
 /// on a running process. See where it is passed, in `spawn_persistent`.
 const ALLOW_SKIP_FLAG: &str = "--allow-dangerously-skip-permissions";
 
+/// The flag that has the CLI replay user messages on stdout, among them the ones it was
+/// not sent on stdin. See where it is passed, in `spawn_persistent`.
+const REPLAY_FLAG: &str = "--replay-user-messages";
+
 /// Whether a process for `claude_cmd` is launched able to enter Auto mode: the user's
 /// preference, and a CLI new enough to take the flag.
 fn allow_skip_flag(claude_cmd: &str) -> bool {
@@ -1817,6 +1821,12 @@ fn spawn_persistent(
     if allow_skip_flag(claude_cmd) {
         cmd_args.push(ALLOW_SKIP_FLAG.into());
     }
+    // The CLI says back the user-side lines it did not get from us: a background task's
+    // notification, a message from a subagent. VS Code launches it this way for the same.
+    // A CLI that does not know the flag would abort on it.
+    if crate::launch::cli_supports_flag(claude_cmd, REPLAY_FLAG) {
+        cmd_args.push(REPLAY_FLAG.into());
+    }
     if !effort.is_empty() {
         cmd_args.push("--effort".into());
         cmd_args.push(effort.to_string());
@@ -2290,6 +2300,8 @@ fn reader_loop(
     // command_uuids already rendered. Each inbound message is announced three
     // times (queued, started, completed) and must produce exactly one bubble.
     let mut seen_commands: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The hand-back lines already sent on, by task and ending: the CLI can replay one twice.
+    let mut told_handbacks: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in reader.lines() {
         let line = match line {
@@ -2299,7 +2311,7 @@ fn reader_loop(
         };
         #[cfg(target_os = "freebsd")]
         proc.last_output.store(epoch_secs(), Ordering::Relaxed);
-        let event: serde_json::Value = match serde_json::from_str(&line) {
+        let mut event: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -2324,7 +2336,16 @@ fn reader_loop(
         if event["type"].as_str() == Some("system")
             && event["subtype"].as_str().is_some_and(|s| s.starts_with("task_"))
         {
-            note_agent_task(&mut state.lock().unwrap().agent_tasks, &event);
+            let mut st = state.lock().unwrap();
+            // Said on the event for the line a completed agent's hand-back leaves (the page's
+            // applyAgentActivity): "finished", or still waiting on agents of its own.
+            if event["subtype"].as_str() == Some("task_notification") {
+                if let Some(id) = event["task_id"].as_str() {
+                    let waiting = waits_on_its_own(&st.agent_tasks, id);
+                    event["waiting_on_background"] = serde_json::Value::Bool(waiting);
+                }
+            }
+            note_agent_task(&mut st.agent_tasks, &event);
         }
 
         match event["type"].as_str().unwrap_or("") {
@@ -2556,6 +2577,22 @@ fn reader_loop(
                             fire_string(&java_vm, &callbacks, "onCompact", &payload.to_string());
                         }
                     }
+                    // What the CLI says to the user in its own voice (a hook that blocked a
+                    // turn, a restricted model, the safeguards stopping a reply and the one
+                    // retry that follows): a muted line, as in VS Code. Level "info" is the
+                    // CLI's bookkeeping and is not shown there either.
+                    "informational" => {
+                        if let Some(payload) = notice_json(&event) {
+                            fire_string(&java_vm, &callbacks, "onCliNotice", &payload);
+                        }
+                    }
+                    // The same reply run again on another model after a refusal, with the
+                    // CLI's own explanation of it.
+                    "model_refusal_fallback" => {
+                        if let Some(payload) = notice_json(&event) {
+                            fire_string(&java_vm, &callbacks, "onCliNotice", &payload);
+                        }
+                    }
                     "compact_boundary" => {
                         let md = &event["compact_metadata"];
                         let payload = serde_json::json!({
@@ -2572,6 +2609,15 @@ fn reader_loop(
                 }
             }
             "user" => {
+                // What the CLI says back of a message it was not typed (`--replay-user-messages`
+                // echoes the ones typed here too, which the page drew as they were sent): a
+                // background task's notification and a message from another session or a
+                // subagent, as the lines VS Code leaves for them.
+                if event["isReplay"].as_bool().unwrap_or(false) {
+                    if let Some(payload) = replayed_notice(&event, &mut told_handbacks) {
+                        fire_string(&java_vm, &callbacks, "onCliNotice", &payload);
+                    }
+                }
                 // The one synthetic user echo right after a compact_boundary is the
                 // compact summary. Command echoes stay ignored; tool results fall
                 // through to process_event_value, which turns them into onToolEnd.
@@ -3062,6 +3108,42 @@ struct AgentTask {
     parent: Option<String>,
     /// `spawn_depth`: 1 for one the conversation started, N+1 for one a depth-N agent started.
     depth: Option<u64>,
+    /// Its `task_notification` has come: it is over.
+    ended: bool,
+}
+
+/// The `onCliNotice` payload for a user message the CLI replays that was not typed here:
+/// a `task-notification` (its summary, and which Agent call it is for so the page can put
+/// the exact wording where the one it made from the event's status is) or a `peer` message.
+/// None for anything else, and for a notification already sent on (`told`).
+fn replayed_notice(event: &serde_json::Value, told: &mut std::collections::HashSet<String>) -> Option<String> {
+    let text = event["message"]["content"].as_str()?;
+    match event["origin"]["kind"].as_str() {
+        Some("task-notification") => {
+            let n = crate::session::notification_parts(text)?;
+            if !told.insert(format!("{}|{}|{}", n.task_id, n.status, n.summary)) {
+                return None;
+            }
+            Some(serde_json::json!({ "kind": "handback", "text": n.summary, "toolUseId": n.tool_use_id }).to_string())
+        }
+        Some("peer") | None => {
+            let note = crate::session::peer_notice(event, text, &std::collections::HashMap::new())?;
+            Some(serde_json::json!({ "kind": note["kind"], "text": note["text"], "body": note["body"] }).to_string())
+        }
+        _ => None,
+    }
+}
+
+/// The line for a `system/informational` or `system/model_refusal_fallback` event, as the
+/// page's `onCliNotice` takes it; None for one with nothing to say or at level "info".
+fn notice_json(event: &serde_json::Value) -> Option<String> {
+    let text = event["content"].as_str()?.trim();
+    let refusal = event["subtype"].as_str() == Some("model_refusal_fallback");
+    if text.is_empty() || (!refusal && matches!(event["level"].as_str(), None | Some("info"))) {
+        return None;
+    }
+    let kind = if refusal { "refusal" } else { "informational" };
+    Some(serde_json::json!({ "kind": kind, "text": text }).to_string())
 }
 
 /// Keeps `tasks` up to date from a `system/task_started` or `system/task_updated` event; any
@@ -3079,6 +3161,7 @@ fn note_agent_task(tasks: &mut AgentTasks, event: &serde_json::Value) {
                 backgrounded: event["is_backgrounded"].as_bool(),
                 parent: event["parent_task_id"].as_str().filter(|id| !id.is_empty()).map(str::to_string),
                 depth: event["spawn_depth"].as_u64(),
+                ended: false,
             });
         }
         // A foreground agent sent to the background later says so here, and only here.
@@ -3087,8 +3170,20 @@ fn note_agent_task(tasks: &mut AgentTasks, event: &serde_json::Value) {
                 tasks.entry(task_id.to_string()).or_default().backgrounded = Some(backgrounded);
             }
         }
+        // Only one already known: an end nothing was told of the start of changes nothing.
+        Some("task_notification") => {
+            if let Some(task) = tasks.get_mut(task_id) {
+                task.ended = true;
+            }
+        }
         _ => {}
     }
+}
+
+/// Whether an agent that started others has any of them still going: what the CLI's own line for
+/// its completion calls "waiting on its own background work".
+fn waits_on_its_own(tasks: &AgentTasks, task_id: &str) -> bool {
+    tasks.values().any(|t| t.parent.as_deref() == Some(task_id) && !t.ended)
 }
 
 /// Whether the agent `task_id` can still be going after the turn that started it has ended:
@@ -3489,6 +3584,10 @@ fn process_event_value(
                         // "completed" vs "stopped" (the user hit Stop agent) — lets the
                         // detail view say which, instead of always "Finished".
                         "status": event["status"].as_str(),
+                        // Set only for a task found orphaned after a restart ("worker_restart"),
+                        // which has no hand-back line of its own.
+                        "reason": event["reason"].as_str(),
+                        "waiting": event["waiting_on_background"].as_bool(),
                     });
                     fire_string(java_vm, callbacks, "onAgentActivity", &payload.to_string());
                 }
@@ -4921,6 +5020,38 @@ mod card_cancel_tests {
     }
 
     #[test]
+    fn a_replayed_notification_reaches_the_page_as_its_summary_once() {
+        let note = "<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Say pong\" finished</summary>\n<result>pong</result>\n</task-notification>";
+        let ev = json!({"type":"user","isReplay":true,"origin":{"kind":"task-notification","producer":"session-task"},"message":{"role":"user","content":note}});
+        let mut told = std::collections::HashSet::new();
+        let got: serde_json::Value = serde_json::from_str(&super::replayed_notice(&ev, &mut told).unwrap()).unwrap();
+        assert_eq!(got, json!({"kind":"handback","text":"Agent \"Say pong\" finished","toolUseId":"toolu_1"}));
+        assert!(super::replayed_notice(&ev, &mut told).is_none(), "said once");
+        // What was typed here, replayed too, is the page's own.
+        let typed = json!({"type":"user","isReplay":true,"message":{"role":"user","content":"hi"}});
+        assert!(super::replayed_notice(&typed, &mut told).is_none());
+        let peer = json!({"type":"user","isReplay":true,"origin":{"kind":"peer"},"message":{"role":"user","content":
+            "Another Claude session sent a message:\n<agent-message from=\"a1\">\n[Subagent hand-back] The report follows:\n  Done\n</agent-message>"}});
+        let got: serde_json::Value = serde_json::from_str(&super::replayed_notice(&peer, &mut told).unwrap()).unwrap();
+        assert_eq!(got, json!({"kind":"message","text":"Message from a subagent: Done","body":"Done"}));
+    }
+
+    #[test]
+    fn what_the_cli_says_in_its_own_voice_reaches_the_page_as_a_notice() {
+        let said = |v: serde_json::Value| super::notice_json(&v).map(|s| serde_json::from_str::<serde_json::Value>(&s).unwrap());
+        assert_eq!(
+            said(json!({"type":"system","subtype":"informational","level":"notice","content":" Sonnet 5.5's safeguards stopped the response above · continuing once with that noted "})),
+            Some(json!({"kind":"informational","text":"Sonnet 5.5's safeguards stopped the response above · continuing once with that noted"})));
+        assert_eq!(said(json!({"type":"system","subtype":"informational","level":"info","content":"x"})), None);
+        assert_eq!(said(json!({"type":"system","subtype":"informational","content":"x"})), None);
+        assert_eq!(said(json!({"type":"system","subtype":"informational","level":"warning","content":""})), None);
+        // A refusal's fallback is shown whatever level it carries, as the warning it is.
+        assert_eq!(
+            said(json!({"type":"system","subtype":"model_refusal_fallback","direction":"retry","content":"Switched."})),
+            Some(json!({"kind":"refusal","text":"Switched."})));
+    }
+
+    #[test]
     fn a_task_update_that_does_not_name_the_flag_changes_nothing() {
         let mut tasks = AgentTasks::new();
         started(&mut tasks, "fg1", false, None);
@@ -4950,6 +5081,17 @@ mod card_cancel_tests {
         started(&mut tasks, "a", false, Some("b"));
         started(&mut tasks, "b", false, Some("a"));
         assert!(!CardsToCancel::TurnEnded.takes(&agent_card("a"), &tasks));
+    }
+
+    #[test]
+    fn an_agent_waits_on_its_own_until_the_agents_it_started_are_over() {
+        let mut tasks = AgentTasks::new();
+        started(&mut tasks, "outer", true, None);
+        started(&mut tasks, "inner", true, Some("outer"));
+        assert!(super::waits_on_its_own(&tasks, "outer"));
+        assert!(!super::waits_on_its_own(&tasks, "inner"));
+        note_agent_task(&mut tasks, &json!({"type":"system","subtype":"task_notification","task_id":"inner","status":"completed"}));
+        assert!(!super::waits_on_its_own(&tasks, "outer"));
     }
 
     #[test]

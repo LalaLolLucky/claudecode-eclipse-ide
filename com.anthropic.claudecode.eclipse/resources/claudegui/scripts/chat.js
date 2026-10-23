@@ -1084,6 +1084,14 @@ function applyAgentActivity(json, t) {
     // "completed" vs "stopped" (the user hit Stop agent) — agents.js's detail view
     // shows this instead of always saying "Finished".
     if (info.status) log.finishStatus = info.status;
+    // A background agent handing its work back is a line in the conversation, as VS Code
+    // draws it ("Agent "X" finished"); one that ran in the foreground returned its result to
+    // the call and says nothing of its own. Worded as the CLI words it in the notification it
+    // queues: how it ended, and for a stop, who stopped it when that is known.
+    if (log.isBackgrounded && log.input && log.input.description && !log.handbackSaid) {
+      const ending = handbackEnding(info, log);
+      if (ending) setHandback(t || activeTab(), info.parentId, 'Agent "' + log.input.description + '" ' + ending);
+    }
     if (typeof dropAgentAsks === 'function') dropAgentAsks(log.taskId, t || activeTab());
     log.endedAt = (typeof info.durationMs === 'number' && log.startedAt)
         ? log.startedAt + info.durationMs
@@ -1100,6 +1108,17 @@ function applyAgentActivity(json, t) {
     if (typeof info.isBackgrounded === 'boolean') log.isBackgrounded = info.isBackgrounded;
   }
   if (window.renderAgentsPanel) window.renderAgentsPanel();
+}
+/** How the CLI ends the line it queues for an agent's end ("Agent "X" <ending>"), from the
+ *  event that said so. The event says only completed, failed or stopped, so a failure gives no
+ *  cause here and a stop reads "by user" only when the Stop agent button sent it. Empty for one
+ *  the CLI found orphaned after a restart (`reason`): that is worded as a session end. */
+function handbackEnding(info, log) {
+  if (info.reason) return '';
+  if (info.status === 'completed') return info.waiting ? 'is waiting on its own background work' : 'finished';
+  if (info.status === 'failed') return 'failed';
+  if (info.status === 'stopped') return log.userStopped ? 'was stopped by user' : 'was stopped';
+  return '';
 }
 /** Builds ONE log item's DOM node — shared by the live inline collapsible below and
  *  agents.js's "Open transcript" full view, so a subagent's work never renders two
@@ -1714,6 +1733,56 @@ function markInterrupted() {
   const dot = line.querySelector('.dot');
   if (dot) dot.className = 'dot red';
   return true;
+}
+/* A line of the CLI speaking to the user, as its own turn: a muted italic note, the way VS Code
+   draws them, with the refusal fallback's warning set apart. With a `body` (a message from
+   another session or a subagent, or text the CLI wrapped in a tag) it is a collapsed line,
+   opened for the message; `mono` sets that message as preformatted text.
+   kind: "handback" | "message" | "informational" | "refusal" (the core's "notice" items,
+   and onCliNotice). */
+function makeNoticeTurn(kind, text, body, mono) {
+  const turn = document.createElement('div'); turn.className = 'turn';
+  if (body) {
+    const el = document.createElement('div'); el.className = 'compacted notice-fold';
+    const head = document.createElement('div'); head.className = 'comp-head';
+    head.innerHTML = '<span class="comp-lbl"></span><span class="chev">' + CHEV_DOWN + '</span>';
+    head.querySelector('.comp-lbl').textContent = text;
+    head.onclick = () => el.classList.toggle('open');
+    const b = document.createElement('div'); b.className = 'comp-body a-body';
+    if (mono) { b.classList.add('mono'); b.textContent = body; } else b.innerHTML = renderMarkdown(body);
+    el.appendChild(head); el.appendChild(b); turn.appendChild(el);
+  } else {
+    const note = document.createElement('div');
+    note.className = kind === 'refusal' ? 'notice warn' : 'notice';
+    note.textContent = text;
+    turn.appendChild(note);
+  }
+  return turn;
+}
+/* The note put into a tab's conversation where the turn has got to, above the working
+   indicator; what Claude writes next starts a turn under it. */
+function addNotice(t, kind, text, body) {
+  if (!t || !t.pane || !text) return null;
+  endAssistant();
+  const turn = makeNoticeTurn(kind, text, body);
+  const working = t.pane.querySelector(':scope > .working-turn');
+  if (working) t.pane.insertBefore(turn, working); else t.pane.appendChild(turn);
+  if (t === activeTab()) scrollBottom();
+  return turn;
+}
+/* The line an Agent call's hand-back leaves, said by the CLI itself (a replayed notification) or,
+   before that, made from its end event (applyAgentActivity). Whichever comes first draws it; the
+   CLI's own wording then takes the place of the other's, and nothing is drawn twice. */
+function setHandback(t, toolUseId, text) {
+  const log = toolUseId ? agentLogs.get(toolUseId) : null;
+  if (log && log.handbackEl && log.handbackEl.isConnected) {
+    const note = log.handbackEl.querySelector('.notice');
+    if (note) note.textContent = text;
+    log.handbackSaid = text;
+    return;
+  }
+  const el = addNotice(t, 'handback', text);
+  if (log) { log.handbackEl = el; log.handbackSaid = text; }
 }
 /* Append the italic "Tool interrupted" / "Interrupted" note as its own turn, last
    (below the "Request cancelled." system line). With `into`, the note goes there instead

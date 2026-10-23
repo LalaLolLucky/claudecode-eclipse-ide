@@ -92,6 +92,107 @@ fn is_task_notification(event: &serde_json::Value, content: &str) -> bool {
         || event["attachment"]["commandMode"].as_str() == Some(MODE)
 }
 
+/// What lies between the first `<tag>` and the `</tag>` after it. Plain tags only.
+fn tag_text<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let from = s.find(&open)? + open.len();
+    let len = s[from..].find(&format!("</{tag}>"))?;
+    Some(s[from..from + len].trim())
+}
+
+/// The muted line a background task's notification leaves in the conversation, the one
+/// VS Code draws for it: the notification's own `<summary>` ("Agent "X" finished"), and
+/// nothing of its status, result or usage. None for one without a summary, and for a
+/// task that was already told of under the same status (the CLI can write a notification
+/// as a user line and again as a queued one).
+fn task_notice(text: &str, told: &mut HashSet<String>) -> Option<serde_json::Value> {
+    let summary = tag_text(text, "summary").filter(|s| !s.is_empty())?;
+    let key = format!("{}|{}|{}", tag_text(text, "task-id").unwrap_or(""),
+                      tag_text(text, "status").unwrap_or(""), summary);
+    if !told.insert(key) {
+        return None;
+    }
+    Some(serde_json::json!({ "t": "notice", "kind": "handback", "text": summary }))
+}
+
+/// What a hook said to the user, as the CLI words it for a client (and VS Code draws it, live):
+/// a line "<hook> says: <line>" for each line of its message. From the `hook_system_message`
+/// attachment the transcript keeps; None for any other attachment or an empty message.
+fn hook_said(attachment: &serde_json::Value) -> Option<String> {
+    if attachment["type"].as_str() != Some("hook_system_message") {
+        return None;
+    }
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = one_line(attachment["hookName"].as_str().unwrap_or(""));
+    let lines: Vec<String> = attachment["content"].as_str()?.lines()
+        .map(|l| l.trim()).filter(|l| !l.is_empty())
+        .map(|l| format!("{name} says: {l}")).collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// The parts of a background task's notification that a line is made of.
+pub(crate) struct TaskNotice {
+    pub summary: String,
+    pub task_id: String,
+    /// The Agent call it belongs to; absent for a background command.
+    pub tool_use_id: String,
+    pub status: String,
+}
+
+/// A `<task-notification>` read for its line: what [`task_notice`] says, with the ids that
+/// say which task it is. None for one without a summary.
+pub(crate) fn notification_parts(text: &str) -> Option<TaskNotice> {
+    let summary = tag_text(text, "summary").filter(|s| !s.is_empty())?;
+    let part = |tag| tag_text(text, tag).unwrap_or("").to_string();
+    Some(TaskNotice { summary: summary.to_string(), task_id: part("task-id"),
+                      tool_use_id: part("tool-use-id"), status: part("status") })
+}
+
+/// What another session or a subagent sent in, as the CLI writes it into a user line:
+/// "Another Claude session sent a message:" and an `<agent-message from="…">` block. The
+/// conversation shows a collapsed line saying who it is from and how it starts, and the
+/// message, with the CLI's warning frame and the indent it puts on every line taken off,
+/// when opened. Not the user's words either way. `agents` is what each launched subagent was
+/// asked to do, by its id.
+pub(crate) fn peer_notice(event: &serde_json::Value, content: &str, agents: &HashMap<String, String>) -> Option<serde_json::Value> {
+    let c = content.trim_start();
+    let peer = event["origin"]["kind"].as_str() == Some("peer")
+        || ((c.starts_with("Another Claude session sent a message:") || c.starts_with("<agent-message")) && c.contains("<agent-message"));
+    if !peer {
+        return None;
+    }
+    let (_, tag_end) = find_open_tag(c, "agent-message", 0)?;
+    let from = c[..tag_end].split("from=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("");
+    let inner = &c[tag_end..];
+    let inner = inner.split("</agent-message>").next().unwrap_or(inner);
+    let handback = inner.contains("[Subagent hand-back]");
+    // The report follows the frame's last sentence; a message without a frame is all body.
+    let body = inner.split_once("The report follows:").map_or(inner, |(_, b)| b);
+    let body: String = body.trim_matches('\n').lines()
+        .map(|l| l.strip_prefix("  ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
+    let body = body.trim().to_string();
+    if body.is_empty() {
+        return None;
+    }
+    let first = body.lines().map(|l| l.trim().trim_start_matches(['#', '*', '-', ' '])).find(|l| !l.is_empty()).unwrap_or("");
+    let preview: String = if first.chars().count() > 80 {
+        first.chars().take(80).collect::<String>() + "…"
+    } else {
+        first.to_string()
+    };
+    // A subagent is named by what it was asked to do, which the call that launched it recorded.
+    let who = match agents.get(from) {
+        Some(what) if handback => format!("subagent \"{what}\""),
+        _ if handback => "a subagent".to_string(),
+        _ if from.is_empty() => "another session".to_string(),
+        _ => format!("@{from}"),
+    };
+    Some(serde_json::json!({
+        "t": "notice", "kind": "message",
+        "text": format!("Message from {who}: {preview}"), "body": body,
+    }))
+}
+
 /// Finds the next `<tag ...>` opening (word-boundary after the tag name, like
 /// `\b` in a regex) at or after byte `from`. Returns (start, end-of-open-tag)
 /// byte offsets, the end being one past the closing `>`.
@@ -1484,6 +1585,10 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
     // resumed conversation showed tool input but never its output, since history.js's
     // reconstruction never had anything but errorText to hand makeToolLine.
     let mut result_success_text: HashMap<String, String> = HashMap::new();
+    // The background tasks whose notification already has its line, by task and status.
+    let mut told_tasks: HashSet<String> = HashSet::new();
+    // Each subagent launched, by id: what it was asked to do.
+    let mut agent_names: HashMap<String, String> = HashMap::new();
 
     for line in lines {
         let line = line.as_ref();
@@ -1497,16 +1602,38 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
 
         match event["type"].as_str() {
             Some("user") => {
+                // The CLI's own note to the model after the safeguards stopped a reply
+                // ("Your response above was stopped by a safety classifier…"), written as a
+                // user line flagged as meta. The one line of notice above says it for the reader.
+                if event["isMeta"].as_bool().unwrap_or(false)
+                    && (event["turnCompanion"].as_bool().unwrap_or(false) || event["refusedMessageId"].is_string())
+                {
+                    continue;
+                }
+                // A launched agent's id and what it was asked to do, to name it when it reports.
+                if let (Some(id), Some(what)) = (event["toolUseResult"]["agentId"].as_str(), event["toolUseResult"]["description"].as_str()) {
+                    agent_names.insert(id.to_string(), what.to_string());
+                }
                 let content = &event["message"]["content"];
                 if let Some(c) = content.as_str() {
                     // A post-compaction summary is stored as a user line flagged
                     // isCompactSummary — surface it as the expandable "Compacted
                     // chat" body, never as a (huge) user bubble.
-                    if is_non_user_notice(&event, c) || is_task_notification(&event, c) || is_hang_resume(c) || is_image_note(c) {
+                    if let Some(note) = peer_notice(&event, c, &agent_names) {
+                        if items.last() != Some(&note) {
+                            items.push(note);
+                        }
+                    } else if is_task_notification(&event, c) {
+                        // A background task's notification: a muted line saying so, then
+                        // Claude's reply to it.
+                        if let Some(note) = task_notice(c, &mut told_tasks) {
+                            items.push(note);
+                        }
+                    } else if is_non_user_notice(&event, c) || is_hang_resume(c) || is_image_note(c) {
                         // Not something the user typed (the browser-disconnected notice,
-                        // a background-task notification, or the FreeBSD carry-on after a
-                        // frozen CLI was restarted): Claude's reply to it is what the
-                        // conversation shows.
+                        // the FreeBSD carry-on after a frozen CLI was restarted, or the
+                        // CLI's note on where it saved an image): Claude's reply to it is
+                        // what the conversation shows.
                     } else if event["isCompactSummary"].as_bool().unwrap_or(false) {
                         items.push(serde_json::json!({ "t": "compact_summary", "text": c }));
                     } else {
@@ -1783,8 +1910,29 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
             // in an attachment at the point it handed them over, and writes no user line for
             // it (unless the turn was interrupted, when it writes one later).
             Some("attachment") => {
-                if let Some(q) = QueuedPrompt::of(&event, items.len()) {
+                // A message from a subagent or another session handed over mid-turn is queued the
+                // same way as the user's own words, and is not them: its origin says so.
+                let peer = queued_prompt_raw(&event).and_then(|raw| peer_notice(&event["attachment"], &raw, &agent_names));
+                if let Some(note) = peer {
+                    // The same message can be written twice, as an attachment and as a user line.
+                    if items.last() != Some(&note) {
+                        items.push(note);
+                    }
+                } else if let Some(q) = QueuedPrompt::of(&event, items.len()) {
                     queued.push(q);
+                } else if event["attachment"]["commandMode"].as_str() == Some("task-notification") {
+                    // A notification handed over in the middle of a turn has no user line
+                    // of its own, only this attachment.
+                    let raw = match &event["attachment"]["prompt"] {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Array(b) => b.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+                        _ => String::new(),
+                    };
+                    if let Some(note) = task_notice(&raw, &mut told_tasks) {
+                        items.push(note);
+                    }
+                } else if let Some(text) = hook_said(&event["attachment"]) {
+                    items.push(serde_json::json!({ "t": "notice", "kind": "informational", "text": text }));
                 }
             }
             // The line the VS Code extension writes where it brings a web conversation down (one
@@ -1814,6 +1962,23 @@ fn items_of(dir: &Path, session_id: &str, lines: impl Iterator<Item = impl AsRef
                     && !items.iter().any(|it| it["t"].as_str() == Some("teleported"))
                 {
                     items.push(serde_json::json!({ "t": "teleported" }));
+                }
+                // What the CLI says to the user in its own voice: a hook that blocked a
+                // turn, a model the organisation restricts, and the one line that explains
+                // a reply cut short by the model's safeguards. Level "info" is bookkeeping.
+                if event["subtype"].as_str() == Some("informational") {
+                    let text = event["content"].as_str().unwrap_or("").trim();
+                    if !text.is_empty() && !matches!(event["level"].as_str(), None | Some("info")) {
+                        items.push(serde_json::json!({ "t": "notice", "kind": "informational", "text": text }));
+                    }
+                }
+                // The answer to a refusal that was run again on another model: the CLI's
+                // own explanation, which the page sets apart as a warning.
+                if event["subtype"].as_str() == Some("model_refusal_fallback") {
+                    let text = event["content"].as_str().unwrap_or("").trim();
+                    if !text.is_empty() {
+                        items.push(serde_json::json!({ "t": "notice", "kind": "refusal", "text": text }));
+                    }
                 }
             }
             _ => {}
@@ -3459,9 +3624,60 @@ mod tests {
         let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
         let want: serde_json::Value = serde_json::from_str(r#"[
             {"t":"user","content":"hi","ts":"2026-09-16T17:19:00.000Z"},
+            {"t":"notice","kind":"handback","text":"Monitor event"},
             {"t":"text","text":"noted.","model":"claude-opus-5"}
         ]"#).unwrap();
-        assert_eq!(got, want, "a notification nobody typed must not come back as a message");
+        assert_eq!(got, want, "a notification nobody typed comes back as its summary line, not as a message");
+    }
+
+    /// What VS Code draws as muted lines beyond compaction: a background task's summary
+    /// (also when only a queued attachment carries it, and once when both do), a message
+    /// from a subagent as a collapsed line, and what the CLI says in its own voice.
+    #[test]
+    fn load_session_notes_the_cli_notices() {
+        let mut env = EnvGuard::lock();
+        let home = std::env::temp_dir().join("claude-eclipse-session-notices-home");
+        let root = r"C:\noticesws";
+        let dir = home.join(".claude").join("projects").join("C--noticesws");
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        let note = "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent \"Scan\" finished</summary>\n<result>long</result>\n</task-notification>";
+        let note_json = serde_json::to_string(note).unwrap();
+        let peer = "Another Claude session sent a message:\n<agent-message from=\"a3928ab\">\n[Subagent hand-back] The report follows:\n  ## Found it\n  in `Foo.java`\n</agent-message>";
+        let peer_json = serde_json::to_string(peer).unwrap();
+        let named_json = serde_json::to_string(&peer.replace("a3928ab", "a77")).unwrap();
+        let lines = [
+            r#"{"type":"user","message":{"role":"user","content":"go"},"timestamp":"2026-09-16T17:19:00.000Z"}"#.to_string(),
+            format!(r#"{{"type":"attachment","attachment":{{"type":"queued_command","commandMode":"task-notification","prompt":{note_json}}}}}"#),
+            format!(r#"{{"type":"user","message":{{"role":"user","content":{note_json}}},"origin":{{"kind":"task-notification"}}}}"#),
+            format!(r#"{{"type":"user","isMeta":true,"message":{{"role":"user","content":{peer_json}}},"origin":{{"kind":"peer"}}}}"#),
+            r#"{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","isMeta":true,"origin":{"kind":"peer","from":"a9"},"prompt":"<agent-message from=\"a9\">\n  Note: a classifier was unavailable.\n[Subagent hand-back] The report follows:\n  4\n</agent-message>"}}"#.to_string(),
+            r#"{"type":"system","subtype":"informational","level":"notice","content":"Sonnet 5.5's safeguards stopped the response above · continuing once with that noted"}"#.to_string(),
+            r#"{"type":"system","subtype":"informational","level":"info","content":"bookkeeping"}"#.to_string(),
+            r#"{"type":"user","toolUseResult":{"isAsync":true,"agentId":"a77","description":"Find the cause"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}"#.to_string(),
+            format!(r#"{{"type":"user","isMeta":true,"message":{{"role":"user","content":{named_json}}},"origin":{{"kind":"peer"}}}}"#),
+            r#"{"type":"user","isMeta":true,"turnCompanion":true,"refusedMessageId":"msg_1","message":{"role":"user","content":"Your response above was stopped by a safety classifier — this is not a tool or API error."}}"#.to_string(),
+            r#"{"type":"system","subtype":"model_refusal_fallback","direction":"retry","content":"Opus 5.5's safeguards flagged this message."}"#.to_string(),
+            r#"{"type":"attachment","attachment":{"type":"hook_system_message","hookName":"PostToolUse:Edit","content":"Formatted 2 files\n\nLint clean"}}"#.to_string(),
+        ];
+        fs::write(dir.join("sessn.jsonl"), lines.join("\n") + "\n").unwrap();
+
+        env.set_home(&home);
+        let loaded = super::load_session_history(root, "sessn");
+        let _ = fs::remove_dir_all(&home);
+
+        let got: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let want: serde_json::Value = serde_json::from_str(r###"[
+            {"t":"user","content":"go","ts":"2026-09-16T17:19:00.000Z"},
+            {"t":"notice","kind":"handback","text":"Agent \"Scan\" finished"},
+            {"t":"notice","kind":"message","text":"Message from a subagent: Found it","body":"## Found it\nin `Foo.java`"},
+            {"t":"notice","kind":"message","text":"Message from a subagent: 4","body":"4"},
+            {"t":"notice","kind":"informational","text":"Sonnet 5.5's safeguards stopped the response above · continuing once with that noted"},
+            {"t":"notice","kind":"message","text":"Message from subagent \"Find the cause\": Found it","body":"## Found it\nin `Foo.java`"},
+            {"t":"notice","kind":"refusal","text":"Opus 5.5's safeguards flagged this message."},
+            {"t":"notice","kind":"informational","text":"PostToolUse:Edit says: Formatted 2 files\nPostToolUse:Edit says: Lint clean"}
+        ]"###).unwrap();
+        assert_eq!(got, want);
     }
 
 

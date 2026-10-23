@@ -324,7 +324,9 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 /* italic "Tool interrupted" / "Interrupted" note shown when the user stops a turn;
    aligned to the dot rail (4px), not the text indent */
-.interrupted, .resume-note { font-style: italic; color: var(--fg-faint); font-size: 12.5px; margin: 9px 0; padding-left: 4px; }
+.interrupted, .resume-note, .notice { font-style: italic; color: var(--fg-faint); font-size: 12.5px; margin: 9px 0; padding-left: 4px; }
+.notice { white-space: pre-line; overflow-wrap: anywhere; }
+.notice.warn { border-left: 2px solid var(--warn-border); color: var(--warn-fg); font-style: normal; padding-left: 8px; }
 .a-item.muted { color: var(--fg-dim); }
 .a-item strong { color: var(--fg); font-weight: 600; }
 
@@ -675,6 +677,7 @@ body.mode-bypassPermissions .working .gerund .cursor { color: var(--mode-bypass)
 .compacted .comp-body { display: none; margin-top: 8px; color: var(--fg-dim);
   font-size: 12.5px; line-height: 1.55; }
 .compacted.open .comp-body { display: block; }
+.compacted .comp-body.mono { white-space: pre-wrap; overflow-wrap: anywhere; font-family: 'Cascadia Code','Consolas',monospace; }
 /* What was said above the last compaction (stream.js, foldBeforeCompaction): out of the
    way until its "Messages before compaction" line is opened, and with the preference to
    hide it, gone together with that line. Hidden, never removed: find.js passes over
