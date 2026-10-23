@@ -138,6 +138,9 @@ function openChangelogDialog() {
         body.appendChild(cwEl('div', 'cw-dim', "This build doesn't carry the changelog."));
         return;
       }
+      // Over everything: a newer version of this plugin than the one these notes are of.
+      const update = cwEl('div', 'cl-update-slot');
+      body.appendChild(update);
       const bar = cwEl('div', 'cl-bar');
       const input = cwEl('input', 'cw-input cl-search');
       input.type = 'text'; input.placeholder = 'Search'; input.spellcheck = false;
@@ -152,7 +155,8 @@ function openChangelogDialog() {
       body.appendChild(main);
       document.getElementById('cli-win').appendChild(
         cwKeys([[['↑', '↓'], 'to browse versions'], [['Esc'], dlg.query ? 'to clear the search' : 'to close']]));
-      dlg.els = { input, rail, entry };
+      dlg.els = { input, rail, entry, update };
+      dlg.paintUpdate();
       dlg.paintRail();
       dlg.paintEntry();
       setTimeout(() => { if (cliDlg === dlg) input.focus(); }, 0);
@@ -176,6 +180,21 @@ function openChangelogDialog() {
       const to = i < 0 ? 0 : Math.min(shown.length - 1, Math.max(0, i + (down ? step : -step)));
       dlg.pick(shown[to]);
       return true;
+    },
+    /** The header saying a newer version is out, when the last look for updates found one
+        (updates.js; it is asked for when this window opens, and fills this in when it answers). */
+    paintUpdate() {
+      if (!dlg.els) return;
+      const slot = dlg.els.update;
+      slot.innerHTML = '';
+      const pl = typeof lastUpdateCheck !== 'undefined' && lastUpdateCheck && lastUpdateCheck.plugin;
+      if (!pl || !pl.updateAvailable) return;
+      const head = cwEl('div', 'cl-update');
+      head.appendChild(cwEl('span', 'cl-update-text',
+        'Version ' + pl.latest + ' is available — you have ' + pl.installed + '.'));
+      head.appendChild(cwBtn('Update…', 'primary', () => openUpdatesDialog()));
+      if (pl.url) head.appendChild(cwBtn('Release notes', '', () => { if (window._openExternal) _openExternal(pl.url); }));
+      slot.appendChild(head);
     },
     /** The versions on the rail: all of them, or those that mention the search. */
     shown() {
@@ -299,6 +318,11 @@ function openChangelogDialog() {
     },
   };
   openCliDialog(dlg);
+  // Whether a newer version is out is not known until it has been looked for. Asked once,
+  // here, when it has not been: the answer fills the header in, and nothing waits for it.
+  if (typeof lastUpdateCheck !== 'undefined' && !lastUpdateCheck && window._checkUpdates) {
+    try { _checkUpdates(); } catch (e) {}
+  }
   if (all.length) markChangelogSeen();
 }
 
