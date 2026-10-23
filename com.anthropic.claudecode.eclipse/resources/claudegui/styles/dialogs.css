@@ -215,6 +215,11 @@
 #cli-win.cl { width: 760px; height: 86%; max-height: 86%; }
 #cli-win .cl-body { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; padding-right: 0; }
 #cli-win .cl-bar { margin-bottom: 10px; flex-shrink: 0; }
+/* The header over the Changelog when a newer version is out. */
+#cli-win .cl-update { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex-shrink: 0; margin: 0 0 10px;
+  padding: 7px 10px; border: 1px solid var(--accent); border-radius: 6px; font-size: 12.5px; color: var(--fg); }
+#cli-win .cl-update .cl-update-text { flex: 1 1 auto; min-width: 0; }
+#cli-win .cl-update .cw-btn { flex: 0 0 auto; width: auto; margin-top: 0; padding: 4px 12px; }
 #cli-win .cl-main { flex: 1 1 auto; min-height: 0; display: flex; gap: 0;
   border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 /* The rail: a timeline, one dot per version, the line through them. */
@@ -289,6 +294,7 @@
   #cli-win .cl-entry { padding: 12px; }
 }
 
-/* A word after a menu row's label: "New" on Changelog until it has been read. */
-#actions-menu .item .pill { margin-left: 7px; padding: 0 6px; border-radius: 8px; font-size: 10px; font-weight: 600;
+/* A word after a menu row's label: "New" on Changelog until it has been read. Sized by its
+   text: the composer's .pill (layout.css) is a 26px square, which it would otherwise be. */
+#actions-menu .item .pill { width: auto; height: auto; margin-left: 7px; padding: 0 6px; border-radius: 8px; font-size: 10px; font-weight: 600;
   line-height: 15px; display: inline-block; vertical-align: 1px; color: var(--on-accent); background: var(--accent); }

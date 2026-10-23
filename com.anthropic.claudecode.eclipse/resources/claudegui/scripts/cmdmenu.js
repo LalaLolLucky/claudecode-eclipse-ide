@@ -162,14 +162,6 @@ function modelSupportsFast(t) {
 const CMD_SECTIONS = ['Context', 'Model', 'Customize', 'Settings', 'Appearance', 'Support'];
 const HELP_DOCS_URL = 'https://code.claude.com/docs/en/overview';
 
-/** Whether this Eclipse has the Marketplace client. Asked once: it does not come and go. */
-let marketplaceKnown = null;
-function hasMarketplace() {
-  if (marketplaceKnown === null) {
-    try { marketplaceKnown = !!window._ide && _ide('hasMarketplace', '', '') === 'true'; } catch (e) { marketplaceKnown = false; }
-  }
-  return marketplaceKnown;
-}
 /** The menu's rows as they stand now. A row is an action, a switch (`toggle`, which
     leaves the menu open), or a part built in the page and moved in (`node`). */
 function cmdMenuRows() {
@@ -217,8 +209,6 @@ function cmdMenuRows() {
     { id: 'memory', sec: 'Customize', label: 'Memory', icon: 'NOTE', run: () => openMemoryDialog('memory') },
     { id: 'instructions', sec: 'Customize', label: 'Instructions', icon: 'PENCIL',
       tip: 'Edit CLAUDE.md files', run: () => openMemoryDialog('instructions') },
-    { id: 'marketplace', sec: 'Customize', label: 'Eclipse Marketplace', icon: 'BAG',
-      show: () => hasMarketplace(), run: () => ide('marketplace') },
     { id: 'plugins', sec: 'Customize', label: 'Manage plugins', icon: 'ADDON', run: () => openPlugins() },
     // The tab's own conversation moves to the Terminal (tabs.js, openTabInTerminal). No row
     // for a tab under another folder: the Terminal runs in the workspace folder, where
@@ -242,6 +232,9 @@ function cmdMenuRows() {
     { id: 'focus', sec: 'Settings', label: 'Focus view', icon: 'FOCUS', toggle: true,
       tip: "Show only your prompts and Claude's responses", on: () => focusView, run: () => setFocusView(!focusView) },
 
+    { id: 'updates', sec: 'Support', label: 'Check for updates', icon: 'UPDATE',
+      tip: 'Look for a newer Claude Code CLI and a newer version of this plugin',
+      badge: () => updateKnown() ? 'New' : '', run: () => openUpdatesDialog() },
     { id: 'changelog', sec: 'Support', label: 'Changelog', icon: 'CHANGELOG',
       tip: "What's new in this version, and in every one before it",
       badge: () => changelogUnseen() ? 'New' : '', run: () => openChangelogDialog() },

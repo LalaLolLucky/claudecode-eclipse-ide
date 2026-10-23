@@ -230,6 +230,8 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
     @SuppressWarnings("unused") private SimpleFunction loadSessionPrefsFn;
     @SuppressWarnings("unused") private SimpleFunction setPermissionModeFn;
     @SuppressWarnings("unused") private SimpleFunction updateCliFn;
+    @SuppressWarnings("unused") private SimpleFunction checkUpdatesFn;
+    @SuppressWarnings("unused") private SimpleFunction updatePluginFn;
     @SuppressWarnings("unused") private SimpleFunction runManagedUpdateFn;
     @SuppressWarnings("unused") private SimpleFunction rewindListFn;
     @SuppressWarnings("unused") private SimpleFunction rewindPreviewFn;
@@ -1190,6 +1192,49 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 org.osgi.framework.Version v = Activator.getDefault().getBundle().getVersion();
                 return v.getMajor() + "." + v.getMinor() + "." + v.getMicro();
             } catch (Throwable t) { return ""; }
+        });
+        // The command menu's "Check for updates": both versions looked up afresh (the CLI's
+        // hour-long cache is dropped) and answered together on window.onUpdateCheck. The CLI
+        // answer also goes to the update banner, so the two never disagree.
+        checkUpdatesFn = new SimpleFunction(browser, "_checkUpdates", a -> {
+            CliVersionService.invalidate();
+            final java.util.concurrent.atomic.AtomicReference<CliVersionService.Info> cli = new java.util.concurrent.atomic.AtomicReference<>();
+            final java.util.concurrent.atomic.AtomicReference<PluginUpdateService.Info> plugin = new java.util.concurrent.atomic.AtomicReference<>();
+            final Runnable answer = () -> {
+                if (cli.get() == null || plugin.get() == null) return;
+                JsonObject res = new JsonObject();
+                res.add("cli", JsonParser.parseString(cli.get().toJson()));
+                res.add("plugin", plugin.get().toJson());
+                cliVersionJson = cli.get().toJson();
+                Display.getDefault().asyncExec(() -> {
+                    pushCliVersion();
+                    if (browser != null && !browser.isDisposed())
+                        browser.execute("window.onUpdateCheck && window.onUpdateCheck('" + esc(res.toString()) + "')");
+                });
+            };
+            String installed;
+            try {
+                org.osgi.framework.Version v = Activator.getDefault().getBundle().getVersion();
+                installed = v.getMajor() + "." + v.getMinor() + "." + v.getMicro();
+            } catch (Throwable t) { installed = ""; }
+            CliVersionService.checkAsync(configuredClaudeCmd(), info -> { cli.set(info); answer.run(); });
+            PluginUpdateService.checkAsync(installed, info -> { plugin.set(info); answer.run(); });
+            return null;
+        });
+        // The "Update plugin…" button of that window: looks for a newer version of this plug-in
+        // alone, on its own update site, and opens Eclipse's update wizard for just that. The
+        // answer goes to window.onPluginUpdate ({status, message}, see PluginUpdater).
+        updatePluginFn = new SimpleFunction(browser, "_updatePlugin", a -> {
+            java.util.function.Consumer<String> reply = json -> Display.getDefault().asyncExec(() -> {
+                if (browser != null && !browser.isDisposed())
+                    browser.execute("window.onPluginUpdate && window.onPluginUpdate('" + esc(json) + "')");
+            });
+            try {
+                PluginUpdater.start(reply);
+            } catch (Throwable t) {   // the p2 bundles are optional: without them, this class does not load
+                reply.accept("{\"status\":\"unavailable\",\"message\":\"\"}");
+            }
+            return null;
         });
         // Adding or removing a server is the CLI's own `claude mcp add|remove`, run in
         // the tab's folder. Blocking, so off the UI thread; the outcome comes back on
@@ -4312,10 +4357,6 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 "window.onMcp && window.onMcp('" + esc(tabId) + "','" + esc(json) + "')"));
     }
 
-    /** The Eclipse Marketplace client's "open the Marketplace" command. The client is
-     *  optional in an Eclipse, so the command is looked up by id, never linked against. */
-    private static final String MARKETPLACE_COMMAND = "org.eclipse.epp.mpc.ui.command.showMarketplaceWizard";
-
     /** One of the page's errands for the IDE (see {@code _ide}). Runs on the UI thread.
      *  A file is read or written only when it is Markdown: the errands are for the
      *  memory and instruction files, and are of no use for anything else. */
@@ -4326,16 +4367,6 @@ public class ClaudeGuiView extends ViewPart implements IShowInTarget {
                 org.eclipse.ui.dialogs.PreferencesUtil.createPreferenceDialogOn(browser.getShell(),
                         "com.anthropic.claudecode.eclipse.preferences", null, null).open();
                 return "ok";
-            case "hasMarketplace": {
-                org.eclipse.ui.commands.ICommandService cs = wb.getService(org.eclipse.ui.commands.ICommandService.class);
-                return String.valueOf(cs != null && cs.getCommand(MARKETPLACE_COMMAND).isDefined());
-            }
-            case "marketplace": {
-                org.eclipse.ui.handlers.IHandlerService hs = wb.getService(org.eclipse.ui.handlers.IHandlerService.class);
-                if (hs == null) return "";
-                hs.executeCommand(MARKETPLACE_COMMAND, null);
-                return "ok";
-            }
             case "home":
                 return System.getProperty("user.home", "");
             case "changelog": {
