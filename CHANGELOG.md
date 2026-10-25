@@ -4,7 +4,14 @@ All notable changes to Claude Code for Eclipse are documented here.
 
 ---
 
-## [3.2.24] — 2026-10-24 *(current)*
+## [3.2.25] — 2026-10-25 *(current)*
+
+### Changed
+- Build and release maintenance.
+
+---
+
+## [3.2.24] — 2026-10-24
 
 ### Added
 - **Changelog** in the command menu: every version's notes with a search; the arrow keys browse versions.
