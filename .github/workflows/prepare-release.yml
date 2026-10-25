@@ -62,7 +62,8 @@ jobs:
             pom.xml \
             com.anthropic.claudecode.eclipse/pom.xml \
             com.anthropic.claudecode.eclipse.feature/pom.xml \
-            com.anthropic.claudecode.eclipse.site/pom.xml
+            com.anthropic.claudecode.eclipse.site/pom.xml \
+            claude-eclipse-core/pom.xml
 
           # The version banner the plugin itself prints on startup -- every
           # past manual release commit has bumped this same line by hand
